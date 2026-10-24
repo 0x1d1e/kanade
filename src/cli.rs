@@ -201,12 +201,16 @@ niri-config set <path> <value>
 niri-config remove <path>
 niri-config get|set|remove 'output[\"<name>\"].<key>'
 niri-config restore <n>|orig
+niri-config rules
+niri-config rules apply|remove <id>
   <path>: dotted node names in niri's config, like layout.gaps or layout.focus-ring.off
   <value>: true, false, a number or text; text that looks like a number in \"double quotes\"
   output[\"<name>\"].<key>: a key of niri's `output \"<name>\"` block (off, scale, transform, position,
     mode, variable-refresh-rate), the name in double quotes (\\\" and \\\\ inside); position and
     variable-refresh-rate take properties, `x=1 y=2`, `on-demand=true`, or nothing for the bare node;
     `remove output[\"<name>\"]` removes the keys above and the block if nothing else is in it
+  rules: list recommended layer rules (blur-xray, screencast-banners, overview-backdrop) and status
+  rules apply|remove <id>: apply or remove a recommended layer rule by its id
   --config <file>: right after niri-config, another file than niri's own (NIRI_CONFIG is read too)
   set, remove: splice the one node into the file, ask `niri validate` first, keep a backup
   undo: puts back the last change while the file is as it left it
@@ -664,7 +668,13 @@ fn niri_config(words: &[&str]) -> ExitCode {
 
     let writes = matches!(
         words,
-        ["set", ..] | ["remove", ..] | ["undo"] | ["restore", ..] | ["backups"]
+        ["set", ..]
+            | ["remove", ..]
+            | ["undo"]
+            | ["restore", ..]
+            | ["backups"]
+            | ["rules", "apply", ..]
+            | ["rules", "remove", ..]
     );
 
     if writes && let Err(why) = state {
@@ -679,6 +689,9 @@ fn niri_config(words: &[&str]) -> ExitCode {
         ["undo"] => editor.undo(),
         ["backups"] => Ok(editor.backups()),
         ["restore", which] => editor.restore(which),
+        ["rules"] => print_rules(&editor),
+        ["rules", "apply", id] => editor.apply_rule(id),
+        ["rules", "remove", id] => editor.remove_rule(id),
         _ => {
             complain(&mistake(&["niri-config"], Style::of(&io::stderr())));
             return ExitCode::from(2);
@@ -686,6 +699,23 @@ fn niri_config(words: &[&str]) -> ExitCode {
     };
 
     keyed(said.map(|said| format!("{said}\n")))
+}
+
+fn print_rules(editor: &crate::niri_config::Editor) -> Result<String, String> {
+    let rules = editor.rules()?;
+    let mut lines = Vec::new();
+    lines.push(format!("{:<22} STATUS", "RULE"));
+    for rule in rules {
+        let status = match rule.status {
+            crate::niri_config::RuleStatus::Active => String::from("active"),
+            crate::niri_config::RuleStatus::Missing => String::from("missing"),
+            crate::niri_config::RuleStatus::Included(path) => {
+                format!("included ({})", path.display())
+            }
+        };
+        lines.push(format!("{:<22} {}", rule.id, status));
+    }
+    Ok(lines.join("\n"))
 }
 
 // `config validate <file>`: 1 for a problem in it, or for a file that does not read

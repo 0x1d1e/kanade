@@ -686,7 +686,7 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
         .iter()
         .flat_map(|page| page.sections)
         .flat_map(|section| section.rows)
-        .any(|row| matches!(row, Line::Niri(_)) && matches(row, &query))
+        .any(|row| matches!(row, Line::Niri(_) | Line::NiriRule(_)) && matches(row, &query))
     {
         items.extend(niri_page::notices(settings));
     }
@@ -734,6 +734,10 @@ fn matches(row: &Line, query: &str) -> bool {
 
     if let Line::Niri(path) = row {
         return niri_page::mentions(path, query);
+    }
+
+    if let Line::NiriRule(id) = row {
+        return niri_page::mentions_rule(id, query);
     }
 
     row.keys().into_iter().any(|key| {
@@ -959,6 +963,7 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
         Line::Login => login_view(settings, roles),
         Line::Niri(path) => niri_page::row(path, settings, roles),
         Line::Outputs => Box::new(outputs_page::section(settings, roles)),
+        Line::NiriRule(id) => niri_page::rule_row(id, settings, roles),
         Line::Position { edge, align } => {
             let edge = setting(edge).expect("the layout's keys are the schema's");
             let align = setting(align).expect("the layout's keys are the schema's");

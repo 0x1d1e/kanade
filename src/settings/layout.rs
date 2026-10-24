@@ -48,6 +48,9 @@ pub enum Row {
 
     // the connected monitors, a card each, tried live and then kept or reverted (`outputs`)
     Outputs,
+
+    // a recommended layer rule from Installation.md
+    NiriRule(&'static str),
 }
 
 impl Row {
@@ -55,7 +58,7 @@ impl Row {
         match self {
             Row::Key(key) => vec![key],
             Row::Position { edge, align } => vec![edge, align],
-            Row::Health | Row::Login | Row::Niri(_) | Row::Outputs => Vec::new(),
+            Row::Health | Row::Login | Row::Niri(_) | Row::Outputs | Row::NiriRule(_) => Vec::new(),
         }
     }
 }
@@ -652,6 +655,14 @@ pub const PAGES: &[Page] = &[
                     Row::Niri("screenshot-path"),
                 ],
             },
+            Section {
+                title: "Recommended rules",
+                rows: &[
+                    Row::NiriRule("blur-xray"),
+                    Row::NiriRule("screencast-banners"),
+                    Row::NiriRule("overview-backdrop"),
+                ],
+            },
         ],
     },
 ];
@@ -745,6 +756,28 @@ mod tests {
             assert_eq!(rows.iter().filter(|&row| row == path).count(), 1, "{path}");
         }
         assert_eq!(rows.len(), super::super::niri::ITEMS.len());
+    }
+
+    #[test]
+    fn every_niri_rule_is_a_preset_listed_once() {
+        let rules: Vec<&str> = PAGES
+            .iter()
+            .flat_map(|page| page.sections)
+            .flat_map(|section| section.rows)
+            .filter_map(|row| match row {
+                Row::NiriRule(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+
+        for id in &rules {
+            assert!(
+                crate::niri_config::preset(id).is_some(),
+                "{id} is no preset"
+            );
+            assert_eq!(rules.iter().filter(|&rule| rule == id).count(), 1, "{id}");
+        }
+        assert_eq!(rules.len(), crate::niri_config::PRESETS.len());
     }
 
     #[test]

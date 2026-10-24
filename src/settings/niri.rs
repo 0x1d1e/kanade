@@ -647,6 +647,9 @@ pub struct State {
     // the engine's reading of each path
     values: HashMap<&'static str, Reading>,
 
+    // status of recommended installation rules
+    pub rules: Vec<niri_config::RuleInfo>,
+
     // why the config cannot be changed, though it can be read
     pub not_editable: Option<String>,
 
@@ -738,6 +741,18 @@ impl State {
             busy: self.busy.contains(&item.path),
             refused: self.refused.get(item.path).cloned(),
         }
+    }
+
+    pub fn editable(&self) -> bool {
+        self.loaded && self.unreadable.is_none() && self.not_editable.is_none()
+    }
+
+    pub fn is_busy(&self, row: &str) -> bool {
+        self.busy.contains(&row)
+    }
+
+    pub fn rule_status(&self, id: &str) -> Option<&niri_config::RuleStatus> {
+        self.rules.iter().find(|r| r.id == id).map(|r| &r.status)
     }
 
     fn reading(&self, path: &str) -> &Reading {
@@ -880,6 +895,7 @@ impl State {
     fn done(&mut self, done: Done) {
         self.loaded = true;
         self.values = done.read.values;
+        self.rules = done.read.rules;
         self.not_editable = done.read.not_editable;
         self.unreadable = done.read.unreadable;
         self.bare = done.read.bare;
@@ -1155,6 +1171,22 @@ pub fn undo() {
     post(Job::Undo { after });
 }
 
+/// Applies a recommended rule from niri's config.kdl.
+pub fn apply_rule(id: &'static str) {
+    let mut niri = Settings::write();
+    niri.niri.begin(Some(id));
+    drop(niri);
+    post(Job::ApplyRule { id });
+}
+
+/// Removes a recommended rule from niri's config.kdl.
+pub fn remove_rule(id: &'static str) {
+    let mut niri = Settings::write();
+    niri.niri.begin(Some(id));
+    drop(niri);
+    post(Job::RemoveRule { id });
+}
+
 // ---- the worker ----
 
 enum Job {
@@ -1162,6 +1194,12 @@ enum Job {
     Change {
         row: &'static str,
         changes: Vec<(&'static str, Option<String>)>,
+    },
+    ApplyRule {
+        id: &'static str,
+    },
+    RemoveRule {
+        id: &'static str,
     },
     Undo {
         // the hash the page's own change left, so a later change by hand is not undone
@@ -1173,6 +1211,7 @@ enum Job {
 #[derive(Default)]
 struct Read {
     values: HashMap<&'static str, Reading>,
+    rules: Vec<niri_config::RuleInfo>,
     not_editable: Option<String>,
     unreadable: Option<String>,
 
@@ -1282,6 +1321,7 @@ fn spawn() -> Option<Sender<Job>> {
 fn row_of(job: &Job) -> (Option<&'static str>, bool) {
     match job {
         Job::Change { row, .. } => (Some(row), false),
+        Job::ApplyRule { id } | Job::RemoveRule { id } => (Some(id), false),
         Job::Undo { .. } => (None, true),
         Job::Read => (None, false),
     }
@@ -1483,6 +1523,8 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
 
             Some(editor.apply(&changes))
         }
+        Job::ApplyRule { id } => Some(editor.apply_rule(id)),
+        Job::RemoveRule { id } => Some(editor.remove_rule(id)),
         Job::Undo { after } => Some(editor.undo_only(after.as_deref())),
     };
     let after = Stamp::of(&file);
@@ -1565,6 +1607,8 @@ fn read_all(editor: &Editor) -> Read {
             }
         }
     }
+
+    read.rules = editor.rules().unwrap_or_default();
 
     read
 }

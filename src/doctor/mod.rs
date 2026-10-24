@@ -779,7 +779,9 @@ fn backdrop_check(found: Result<bool, binds::Unread>) -> Check {
         )),
         Ok(false) => Check {
             detail: vec![
-                String::from("add to niri's config.kdl, see docs/wiki/Installation.md:"),
+                String::from(
+                    "apply with `kanade niri-config rules apply overview-backdrop`, or add to niri's config.kdl:",
+                ),
                 format!(
                     "layer-rule {{ match namespace=\"^{}\"; place-within-backdrop true; }}",
                     wallpaper::DAEMON
@@ -816,7 +818,9 @@ fn blur_check() -> Option<Check> {
         )),
         Ok(xrayed) => Check {
             detail: vec![
-                String::from("add to niri's config.kdl, see docs/wiki/Installation.md:"),
+                String::from(
+                    "apply with `kanade niri-config rules apply blur-xray`, or add to niri's config.kdl:",
+                ),
                 String::from(
                     "layer-rule { match namespace=\"^kanade(-dock|-banners)?$\"; \
                      background-effect { xray false; }; }",
@@ -858,7 +862,7 @@ fn screencast_check(config: &Config) -> Option<Check> {
         Ok(false) => Check {
             detail: vec![
                 String::from(
-                    "opt in with this rule in niri's config.kdl, see docs/wiki/Installation.md:",
+                    "opt in with `kanade niri-config rules apply screencast-banners`, or add to niri's config.kdl:",
                 ),
                 String::from(
                     "layer-rule { match namespace=\"^kanade-banners$\"; block-out-from \"screencast\"; }",

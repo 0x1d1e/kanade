@@ -28,6 +28,7 @@
 
 mod backup;
 mod edit;
+pub mod rules;
 
 use std::env;
 use std::fs::{self, File, OpenOptions};
@@ -47,6 +48,8 @@ use crate::sources::binds;
 use backup::{Last, Ring};
 use edit::{Block, Hit, OutputBlock};
 pub use edit::{Op, Value};
+#[allow(unused_imports)]
+pub use rules::{PRESETS, RuleInfo, RulePreset, RuleStatus, preset};
 
 /// How long `niri validate` may take; it takes about 10 ms.
 const VALIDATE: Duration = Duration::from_secs(10);

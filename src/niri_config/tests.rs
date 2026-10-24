@@ -1589,3 +1589,125 @@ fn repeated_nodes_spawn_sh_and_layer_rule() {
         "spawn-sh-at-startup \"notify-send hello\"\nlayer-rule {\n    match namespace=\"waybar\"\n}\nlayer-rule {\n}\n"
     );
 }
+
+#[test]
+fn rules_status_reporting_and_includes() {
+    let dir = Dir::new("rules-status", "layout {\n    gaps 4\n}\n");
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    // Initial state: all rules missing
+    let rules = editor.rules().unwrap();
+    assert_eq!(rules.len(), 3);
+    for rule in &rules {
+        assert_eq!(rule.status, RuleStatus::Missing, "{}", rule.id);
+    }
+
+    // Now include a file with overview-backdrop
+    let inc = dir.0.join("included.kdl");
+    fs::write(
+        &inc,
+        "layer-rule {\n    match namespace=\"^awww-daemon\"\n    place-within-backdrop true\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.config(),
+        format!("include \"{}\"\nlayout {{\n    gaps 4\n}}\n", inc.display()),
+    )
+    .unwrap();
+
+    let rules = editor.rules().unwrap();
+    let backdrop = rules.iter().find(|r| r.id == "overview-backdrop").unwrap();
+    assert_eq!(backdrop.status, RuleStatus::Included(inc.clone()));
+
+    let blur = rules.iter().find(|r| r.id == "blur-xray").unwrap();
+    assert_eq!(blur.status, RuleStatus::Missing);
+
+    // Applying an included rule returns Ok without modifying
+    let res = editor.apply_rule("overview-backdrop").unwrap();
+    assert!(res.contains("already"), "{res}");
+
+    // Removing an included rule returns an error
+    let err = editor.remove_rule("overview-backdrop").unwrap_err();
+    assert!(err.contains("an include"), "{err}");
+}
+
+#[test]
+fn rules_apply_idempotence_and_remove_lifecycle() {
+    let dir = Dir::new("rules-lifecycle", "layout {\n    gaps 4\n}\n");
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    // 1. Apply blur-xray
+    let msg = editor.apply_rule("blur-xray").unwrap();
+    assert!(msg.contains("applied"), "{msg}");
+
+    let rules = editor.rules().unwrap();
+    let blur = rules.iter().find(|r| r.id == "blur-xray").unwrap();
+    assert_eq!(blur.status, RuleStatus::Active);
+
+    let text_after_first = dir.text();
+    assert!(text_after_first.contains("layer-rule {"));
+    assert!(text_after_first.contains("xray false"));
+
+    // 2. Idempotence: applying again does not modify
+    let msg = editor.apply_rule("blur-xray").unwrap();
+    assert!(msg.contains("active already"), "{msg}");
+    assert_eq!(dir.text(), text_after_first);
+
+    // 3. Apply screencast-banners
+    editor.apply_rule("screencast-banners").unwrap();
+    let rules = editor.rules().unwrap();
+    let screencast = rules.iter().find(|r| r.id == "screencast-banners").unwrap();
+    assert_eq!(screencast.status, RuleStatus::Active);
+
+    // 4. Apply overview-backdrop
+    editor.apply_rule("overview-backdrop").unwrap();
+    let rules = editor.rules().unwrap();
+    for r in &rules {
+        assert_eq!(r.status, RuleStatus::Active, "{}", r.id);
+    }
+
+    // 5. Remove blur-xray
+    let msg = editor.remove_rule("blur-xray").unwrap();
+    assert!(msg.contains("removed"), "{msg}");
+
+    let rules = editor.rules().unwrap();
+    let blur = rules.iter().find(|r| r.id == "blur-xray").unwrap();
+    assert_eq!(blur.status, RuleStatus::Missing);
+    let screencast = rules.iter().find(|r| r.id == "screencast-banners").unwrap();
+    assert_eq!(screencast.status, RuleStatus::Active);
+
+    // 6. Removing already missing rule returns error
+    let err = editor.remove_rule("blur-xray").unwrap_err();
+    assert!(err.contains("not set"), "{err}");
+
+    // 7. Undo restores blur-xray
+    editor.undo().unwrap();
+    let rules = editor.rules().unwrap();
+    let blur = rules.iter().find(|r| r.id == "blur-xray").unwrap();
+    assert_eq!(blur.status, RuleStatus::Active);
+}
+
+#[test]
+fn rules_error_rejections() {
+    let dir = Dir::new("rules-rejections", "layout {\n    gaps 4\n}\n");
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    assert!(
+        editor
+            .apply_rule("non-existent-rule")
+            .unwrap_err()
+            .contains("unknown rule")
+    );
+    assert!(
+        editor
+            .remove_rule("non-existent-rule")
+            .unwrap_err()
+            .contains("unknown rule")
+    );
+}

@@ -202,6 +202,13 @@ pub fn places_within_backdrop(
  * not make, and a false ok about notification text on a screencast is worse than a warn
  */
 fn covers(pattern: &str, namespace: &str) -> Option<bool> {
+    if pattern == "^kanade(-dock|-banners)?$" || pattern == "^kanade(-banners|-dock)?$" {
+        return Some(matches!(
+            namespace,
+            "kanade" | "kanade-dock" | "kanade-banners"
+        ));
+    }
+
     let (start, rest) = match pattern.strip_prefix('^') {
         Some(rest) => (true, rest),
         None => (false, pattern),

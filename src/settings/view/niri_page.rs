@@ -84,6 +84,19 @@ pub fn mentions(path: &str, query: &str) -> bool {
             .is_some_and(|item| mentions(item.label) || mentions(item.help) || mentions(item.path))
 }
 
+/// Whether a recommended rule matches the search query.
+pub fn mentions_rule(id: &str, query: &str) -> bool {
+    let mentions = |text: &str| words(text).any(|word| word.starts_with(query));
+
+    query == "niri"
+        || mentions("rule")
+        || mentions("rules")
+        || mentions("layer-rule")
+        || mentions(id)
+        || crate::niri_config::preset(id)
+            .is_some_and(|p| mentions(p.label) || mentions(p.description))
+}
+
 // the words of `text`, lowercased, with a path's separators counted as breaks
 fn words(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split(|char: char| !char.is_alphanumeric())
@@ -128,6 +141,77 @@ pub fn row(path: &'static str, settings: &Settings, roles: &ThemeRoles) -> Box<d
         settings,
         roles,
     )
+}
+
+pub fn rule_row(id: &'static str, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
+    let preset = crate::niri_config::preset(id).expect("the layout's rule rows are presets");
+    let status = settings
+        .niri
+        .rule_status(id)
+        .cloned()
+        .unwrap_or(crate::niri_config::RuleStatus::Missing);
+
+    let busy = settings.niri.is_busy(id);
+    let on = matches!(
+        status,
+        crate::niri_config::RuleStatus::Active | crate::niri_config::RuleStatus::Included(_)
+    );
+    let is_included = matches!(status, crate::niri_config::RuleStatus::Included(_));
+    let enabled = settings.niri.editable() && !busy && !is_included;
+
+    let switch_id = format!("switch niri rule {id}");
+    let hovered = settings.is_hovered(&switch_id);
+    let track = super::switch_track(on, hovered, roles);
+
+    let control: Box<dyn Widget> = if !enabled {
+        Box::new(track.opacity(theme::DISABLED))
+    } else {
+        pressed(
+            track,
+            switch_id,
+            move || {
+                if on {
+                    niri::remove_rule(id);
+                } else {
+                    niri::apply_rule(id);
+                }
+            },
+            TARGET / 2.0,
+            roles,
+        )
+    };
+
+    let mut marks: Vec<Box<dyn Widget>> = Vec::new();
+    if busy {
+        marks.push(Box::new(
+            Text::new("Saving\u{2026}")
+                .size(theme::text::LABEL_SMALL)
+                .color(roles.primary)
+                .weight(theme::text::SEMIBOLD),
+        ));
+    }
+
+    let detail = match &status {
+        crate::niri_config::RuleStatus::Included(path) => {
+            Some(format!("Set by {}, an include", path.display()))
+        }
+        _ => None,
+    };
+
+    let label = Label {
+        node: id,
+        hover_id: format!("row niri rule {id}"),
+        title: preset.label.to_owned(),
+        help: preset.description.to_owned(),
+        marks,
+        detail,
+        keys: settings
+            .inspect
+            .then(|| String::from("layer-rule  (niri config.kdl)")),
+        off: None,
+    };
+
+    labeled(label, control, true, settings, roles)
 }
 
 fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeRoles) -> Label {
