@@ -175,7 +175,12 @@ fn act(schedule: &mut Schedule, actions: Vec<Action>, now: Instant) {
                 if let Err(why) = locked(retry) {
                     eprintln!("kanade: idle did not lock, asking again: {why}");
                     SEEN.locked().failed = Some(why);
-                    schedule.lock_failed(Instant::now());
+                    if schedule
+                        .lock_failed(Instant::now())
+                        .contains(&Action::Undim)
+                    {
+                        overlay::undim();
+                    }
                 } else {
                     SEEN.locked().failed = None;
                     schedule.lock_held();

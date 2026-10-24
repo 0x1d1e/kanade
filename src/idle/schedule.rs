@@ -160,9 +160,15 @@ impl Schedule {
     }
 
     /// The lock asked at `at` did not hold: ask again after `RETRY` while still idle.
-    pub fn lock_failed(&mut self, at: Instant) {
+    pub fn lock_failed(&mut self, at: Instant) -> Vec<Action> {
         if self.counting().is_some() {
             self.retry = Some(at + RETRY);
+        }
+
+        if std::mem::take(&mut self.dimmed) {
+            vec![Action::Undim]
+        } else {
+            Vec::new()
         }
     }
 
@@ -431,13 +437,13 @@ mod tests {
         let (mut schedule, start) = idle_at(stages());
 
         assert!(schedule.tick(start + secs(300)).contains(&Action::Lock));
-        schedule.lock_failed(start + secs(301));
+        assert_eq!(schedule.lock_failed(start + secs(301)), [Action::Undim]);
         assert_eq!(schedule.next(), Some(start + secs(311)));
         assert_eq!(schedule.tick(start + secs(310)), []);
         assert_eq!(schedule.tick(start + secs(311)), [Action::Lock]);
 
         // input ends the retries: the user is there
-        schedule.lock_failed(start + secs(312));
+        assert_eq!(schedule.lock_failed(start + secs(312)), []);
         schedule.resumed();
         assert_eq!(schedule.tick(start + secs(400)), []);
     }

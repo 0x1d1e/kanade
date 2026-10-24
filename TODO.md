@@ -128,7 +128,7 @@ Not worth changing, by this review:
 - [x] A dmenu reply to a client that stopped reading may block the UI thread up to 1 s (`IpcReply::send`): resolved in commit ff56942 by dispatching replies on a dedicated thread in `IpcReply::send` (`crates/runtime/src/ipc.rs:63`).
 - A three-letter layout label may be cramped in the OSD capsule; Controls grew 290 to 330 px, check Tray, Weather and Session by eye.
 - [x] The critical battery countdown names no battery reason line: resolved in commit a2c9d5a via `Cause::Battery(percent)` which renders "Battery at {percent}%" in both `forms.rs` and `surfaces/session.rs`.
-- The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
+- [x] The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim: resolved via Action::Undim in Schedule::lock_failed when dimmed and overlay::undim in idle::act.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
 
 - Calendar Surface: no undo for a removed event, and recurrence, place and a reminder cannot be typed (a file that holds them keeps them, ADR 0113); a change is read, checked and written in separate steps, so another writer between them wins.
