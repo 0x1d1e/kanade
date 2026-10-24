@@ -1387,3 +1387,205 @@ fn the_command_line_warns_that_it_cannot_see_a_block_named_by_make_model_and_ser
 
     assert!(!said.contains("make, model"), "{said}");
 }
+
+#[test]
+fn repeated_nodes_spawn_at_startup_query_get_set_remove_and_undo() {
+    let dir = Dir::new(
+        "repeated-spawn",
+        "spawn-at-startup \"alacritty\" \"-e\" \"htop\" // main terminal\nspawn-at-startup \"waybar\"\n\nlayout {\n    gaps 4\n}\n",
+    );
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    // 1. Bare query lists all occurrences with indices
+    let list = editor.get("spawn-at-startup").unwrap();
+    assert_eq!(list, "[0] \"alacritty\" \"-e\" \"htop\"\n[1] \"waybar\"");
+
+    // 2. Indexed get
+    let first = editor.get("spawn-at-startup[0]").unwrap();
+    assert_eq!(first, "\"alacritty\" \"-e\" \"htop\"");
+    let second = editor.get("spawn-at-startup[1]").unwrap();
+    assert_eq!(second, "\"waybar\"");
+    assert!(editor.get("spawn-at-startup[2]").is_err());
+
+    // 3. Set replaces args and preserves comment
+    let said = editor.set("spawn-at-startup[0]", "foot").unwrap();
+    assert!(said.contains("spawn-at-startup[0] = \"foot\""));
+    assert!(said.contains("when it starts"), "{said}");
+    assert_eq!(editor.get("spawn-at-startup[0]").unwrap(), "\"foot\"");
+    assert!(
+        dir.text()
+            .contains("spawn-at-startup \"foot\" // main terminal\n")
+    );
+
+    // 4. Set on [new] appends directly below existing last node
+    let said = editor.set("spawn-at-startup[new]", "mako").unwrap();
+    assert!(said.contains("spawn-at-startup[new] = \"mako\""));
+    assert!(said.contains("when it starts"), "{said}");
+    assert_eq!(
+        dir.text(),
+        "spawn-at-startup \"foot\" // main terminal\nspawn-at-startup \"waybar\"\nspawn-at-startup \"mako\"\n\nlayout {\n    gaps 4\n}\n"
+    );
+    assert_eq!(editor.get("spawn-at-startup[2]").unwrap(), "\"mako\"");
+
+    // 5. Remove cleans line
+    let said = editor.remove("spawn-at-startup[0]").unwrap();
+    assert!(said.contains("spawn-at-startup[0] removed"));
+    assert_eq!(
+        dir.text(),
+        "spawn-at-startup \"waybar\"\nspawn-at-startup \"mako\"\n\nlayout {\n    gaps 4\n}\n"
+    );
+    assert_eq!(editor.get("spawn-at-startup[0]").unwrap(), "\"waybar\"");
+
+    // 6. Undo restores previous state
+    editor.undo().unwrap();
+    assert_eq!(
+        dir.text(),
+        "spawn-at-startup \"foot\" // main terminal\nspawn-at-startup \"waybar\"\nspawn-at-startup \"mako\"\n\nlayout {\n    gaps 4\n}\n"
+    );
+}
+
+#[test]
+fn repeated_nodes_spawn_at_startup_appends_before_closing_include() {
+    let dir = Dir::new(
+        "repeated-spawn-include",
+        "layout {\n    gaps 4\n}\n\ninclude optional=true \"kanade.kdl\"\n",
+    );
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    assert_eq!(
+        editor.get("spawn-at-startup").unwrap_err(),
+        "spawn-at-startup: not set (niri's default applies)"
+    );
+
+    // Appending when none exist inserts before the closing include "kanade.kdl"
+    editor.set("spawn-at-startup[new]", "alacritty").unwrap();
+    assert_eq!(
+        dir.text(),
+        "layout {\n    gaps 4\n}\n\nspawn-at-startup \"alacritty\"\n\ninclude optional=true \"kanade.kdl\"\n"
+    );
+    assert_eq!(editor.get("spawn-at-startup[0]").unwrap(), "\"alacritty\"");
+}
+
+#[test]
+fn repeated_nodes_window_rule_lifecycle() {
+    let dir = Dir::new("repeated-window-rule", "layout {\n    gaps 4\n}\n");
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    // Unset returns error
+    assert!(editor.get("window-rule").is_err());
+    assert!(editor.get("window-rule[0]").is_err());
+
+    // 1. Append a new window-rule via window-rule[new]
+    editor.set("window-rule[new]", "{}").unwrap();
+    assert_eq!(dir.text(), "layout {\n    gaps 4\n}\n\nwindow-rule {\n}\n");
+    assert!(editor.get("window-rule").unwrap().contains("[0]"));
+
+    // 2. Set property within window-rule[0].open-floating
+    editor.set("window-rule[0].open-floating", "true").unwrap();
+    assert_eq!(editor.get("window-rule[0].open-floating").unwrap(), "true");
+    assert_eq!(
+        dir.text(),
+        "layout {\n    gaps 4\n}\n\nwindow-rule {\n    open-floating true\n}\n"
+    );
+
+    // 3. Modify property
+    editor.set("window-rule[0].open-floating", "false").unwrap();
+    assert_eq!(editor.get("window-rule[0].open-floating").unwrap(), "false");
+
+    // 4. Remove property
+    editor.remove("window-rule[0].open-floating").unwrap();
+    assert_eq!(dir.text(), "layout {\n    gaps 4\n}\n\nwindow-rule {\n}\n");
+
+    // 5. Remove window-rule[0]
+    editor.remove("window-rule[0]").unwrap();
+    assert_eq!(dir.text(), "layout {\n    gaps 4\n}\n");
+    assert!(editor.get("window-rule").is_err());
+
+    // 6. Undo restores window-rule
+    editor.undo().unwrap();
+    assert_eq!(dir.text(), "layout {\n    gaps 4\n}\n\nwindow-rule {\n}\n");
+}
+
+#[test]
+fn repeated_nodes_rejections_and_boundaries() {
+    let dir = Dir::new("repeated-rejections", "spawn-at-startup \"alacritty\"\n");
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    // Bare repeated node cannot be set or removed
+    assert!(
+        editor
+            .set("spawn-at-startup", "foot")
+            .unwrap_err()
+            .contains("more than once")
+    );
+    assert!(
+        editor
+            .remove("spawn-at-startup")
+            .unwrap_err()
+            .contains("more than once")
+    );
+
+    // [new] is only for set
+    assert!(
+        editor
+            .get("spawn-at-startup[new]")
+            .unwrap_err()
+            .contains("[new] is only for appending")
+    );
+    assert!(
+        editor
+            .remove("spawn-at-startup[new]")
+            .unwrap_err()
+            .contains("[new] is only for appending")
+    );
+
+    // Non-repeated node cannot take index
+    assert!(
+        editor
+            .set("layout[0].gaps", "4")
+            .unwrap_err()
+            .contains("only repeated nodes take an index")
+    );
+}
+
+#[test]
+fn repeated_nodes_spawn_sh_and_layer_rule() {
+    let dir = Dir::new(
+        "repeated-spawn-sh-and-layer",
+        "spawn-sh-at-startup \"notify-send hello\"\nlayer-rule {\n    match namespace=\"waybar\"\n}\n",
+    );
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    // spawn-sh-at-startup list and get
+    assert_eq!(
+        editor.get("spawn-sh-at-startup").unwrap(),
+        "[0] \"notify-send hello\""
+    );
+    assert_eq!(
+        editor.get("spawn-sh-at-startup[0]").unwrap(),
+        "\"notify-send hello\""
+    );
+
+    // layer-rule get and property access
+    assert_eq!(
+        editor.get("layer-rule[0].match").unwrap(),
+        "namespace=\"waybar\""
+    );
+
+    // Set new layer-rule
+    editor.set("layer-rule[new]", "{}").unwrap();
+    assert_eq!(
+        dir.text(),
+        "spawn-sh-at-startup \"notify-send hello\"\nlayer-rule {\n    match namespace=\"waybar\"\n}\nlayer-rule {\n}\n"
+    );
+}

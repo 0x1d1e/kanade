@@ -40,6 +40,59 @@ const REPEATED: &[&str] = &[
     "include",
 ];
 
+/// Whether `path` is a repeated node without an index (like `"spawn-at-startup"`).
+pub fn is_repeated_bare(path: &str) -> Result<bool, String> {
+    if path.contains('.') || path.contains('[') {
+        return Ok(false);
+    }
+    Ok(REPEATED.contains(&path))
+}
+
+/// An index picking an occurrence of a repeated node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Index {
+    /// The nth occurrence from 0.
+    Nth(usize),
+
+    /// A new occurrence to be appended.
+    New,
+}
+
+/// Parses a segment like `"spawn-at-startup[0]"` or `"window-rule[new]"` or `"layout"`.
+/// Returns `(base_name, Option<Index>)`.
+pub fn parse_segment(segment: &str) -> Result<(&str, Option<Index>), String> {
+    if let Some((name, rest)) = segment.split_once('[') {
+        let Some(index_str) = rest.strip_suffix(']') else {
+            return Err(format!("{segment}: unclosed bracket in path segment"));
+        };
+        if name.is_empty() {
+            return Err(format!("{segment}: missing node name before bracket"));
+        }
+        if !REPEATED.contains(&name) {
+            return Err(format!("{name}: only repeated nodes take an index"));
+        }
+        if index_str == "new" {
+            Ok((name, Some(Index::New)))
+        } else if let Ok(n) = index_str.parse::<usize>() {
+            Ok((name, Some(Index::Nth(n))))
+        } else {
+            Err(format!(
+                "{segment}: invalid index, write it like [0] or [new]"
+            ))
+        }
+    } else if segment.contains(']') {
+        Err(format!(
+            "{segment}: unexpected closing bracket in path segment"
+        ))
+    } else {
+        Ok((segment, None))
+    }
+}
+
+fn clean_name(segment: &str) -> &str {
+    parse_segment(segment).map_or(segment, |(name, _)| name)
+}
+
 /// Nodes niri takes as flags, `off` and not `off true`; set `true` makes one, `false` removes it.
 /// (The engine keeps to that; a caller that must keep a flag from being implied, as the page does
 /// for `layout.border` whose bare block niri reads as on, sets `off` itself.)
@@ -337,6 +390,10 @@ pub fn segments(path: &str) -> Result<Vec<&str>, String> {
         ));
     }
 
+    for segment in &segments {
+        parse_segment(segment)?;
+    }
+
     Ok(segments)
 }
 
@@ -359,7 +416,8 @@ fn writable_name(name: &str) -> bool {
 // what a path can reach, where it is not
 fn addressable(segments: &[&str], block: bool) -> Result<(), String> {
     for segment in segments.iter().skip(usize::from(block)) {
-        if REPEATED.contains(segment) {
+        let (name, index) = parse_segment(segment)?;
+        if REPEATED.contains(&name) && index.is_none() {
             return Err(format!(
                 "{segment}: niri takes it more than once, which a path cannot pick one of"
             ));
@@ -503,19 +561,23 @@ fn search(
     depth: usize,
     found: &mut Search,
 ) -> Result<(), String> {
-    let want = segments[depth];
+    let (want, want_index) = parse_segment(segments[depth])?;
     let nodes = document.nodes();
-    let disabled = slashdashed(text, nodes, &scope)
-        .iter()
-        .any(|(name, argument)| {
-            name == want
-                && match (depth, pick) {
-                    // a block under `/-` is no block for another name
-                    (0, Some(Block::New(new))) => argument.as_deref() == Some(new),
-                    (0, Some(Block::Nth(_))) => false,
-                    _ => true,
-                }
-        });
+    let disabled = if matches!(want_index, Some(Index::New)) {
+        false
+    } else {
+        slashdashed(text, nodes, &scope)
+            .iter()
+            .any(|(name, argument)| {
+                name == want
+                    && match (depth, pick) {
+                        // a block under `/-` is no block for another name
+                        (0, Some(Block::New(new))) => argument.as_deref() == Some(new),
+                        (0, Some(Block::Nth(_))) => false,
+                        _ => true,
+                    }
+            })
+    };
     let mut ordinal = 0;
 
     if depth >= found.deepest.0 {
@@ -529,6 +591,17 @@ fn search(
 
             if *block != Block::Nth(ordinal - 1) {
                 continue;
+            }
+        }
+
+        let this_ordinal = ordinal;
+        ordinal += 1;
+
+        if pick.is_none() {
+            match want_index {
+                Some(Index::Nth(n)) if this_ordinal != n => continue,
+                Some(Index::New) => continue,
+                _ => {}
             }
         }
 
@@ -1012,6 +1085,22 @@ fn unit(text: &str, document: &KdlDocument) -> String {
 
 // the node a flag or a value makes, none for a flag that is off
 fn node_text(name: &str, value: &Value) -> Option<String> {
+    if name == "window-rule" || name == "layer-rule" {
+        return match value {
+            Value::Str(s) if s.is_empty() || s == "{}" => Some(format!("{name} {{\n}}")),
+            Value::Str(s) => {
+                let s = s.trim();
+                if s.starts_with('{') && s.ends_with('}') {
+                    Some(format!("{name} {s}"))
+                } else {
+                    Some(format!("{name} {{\n    {s}\n}}"))
+                }
+            }
+            Value::Props(p) if p.is_empty() => Some(format!("{name} {{\n}}")),
+            _ => Some(format!("{name} {{\n}}")),
+        };
+    }
+
     match value {
         Value::Props(props) if props.is_empty() => Some(name.to_owned()),
         Value::Bool(true) if FLAGS.contains(&name) => Some(name.to_owned()),
@@ -1057,7 +1146,10 @@ fn create(
     leaf: &str,
 ) -> Result<Splice, String> {
     let (depth, parent, disabled) = &found.deepest;
-    let mut missing: Vec<String> = segments[*depth..].iter().map(|&s| s.to_owned()).collect();
+    let mut missing: Vec<String> = segments[*depth..]
+        .iter()
+        .map(|&s| clean_name(s).to_owned())
+        .collect();
 
     // the first block, when it is made, is named: `output "DP-1"`
     if let (0, Some(head)) = (*depth, head) {
@@ -1077,6 +1169,37 @@ fn create(
 
     match parent {
         Parent::File => {
+            let first_segment = clean_name(segments[*depth]);
+
+            // If a node of this kind already exists in the file, place directly below the last one
+            let last_of_kind =
+                if head.is_none() && first_segment != "output" && REPEATED.contains(&first_segment)
+                {
+                    document
+                        .nodes()
+                        .iter()
+                        .rfind(|node| node.name().value() == first_segment)
+                } else {
+                    None
+                };
+
+            if let Some(last) = last_of_kind {
+                let span = span!(last.span());
+                let line_end = text[span.end..]
+                    .find('\n')
+                    .map_or(text.len(), |p| span.end + p + 1);
+                let line_start = text[..span.start].rfind('\n').map_or(0, |p| p + 1);
+                let indent = &text[line_start..span.start];
+                let body = chain(missing, leaf, indent, &unit, eol);
+                let lead = if text[..line_end].ends_with('\n') || line_end == 0 {
+                    ""
+                } else {
+                    eol
+                };
+
+                return Ok((line_end..line_end, format!("{lead}{body}")));
+            }
+
             // before the appearance sync's include when that ends the file
             let sync = document.nodes().last().filter(|node| {
                 node.name().value() == "include"
@@ -1200,31 +1323,40 @@ fn splice(text: &str, mut splices: Vec<Splice>) -> String {
 // left out when nothing else is in them, as an edit may make or empty one. The top-level `output`
 // nodes are told apart by their place (`output#1`); `gone` is the one an edit removes, left out
 // with the later ones counted without it
-fn flat(document: &KdlDocument, skip: &[String], gone: Option<usize>) -> Vec<String> {
+fn flat(document: &KdlDocument, skip: &[String], gone: Option<(&str, usize)>) -> Vec<String> {
     fn walk(
         nodes: &[KdlNode],
         path: &mut Vec<String>,
         skip: &[String],
-        gone: Option<usize>,
+        gone: Option<(&str, usize)>,
         out: &mut Vec<String>,
     ) {
-        let mut outputs = 0;
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         for node in nodes {
             let mut name = node.name().value().to_owned();
 
-            if path.is_empty() && name == "output" {
-                let place = outputs;
+            if path.is_empty() && REPEATED.contains(&name.as_str()) {
+                let place = *counts.entry(name.clone()).or_insert(0);
+                counts.insert(name.clone(), place + 1);
 
-                outputs += 1;
+                if name == "output" {
+                    let place = match gone {
+                        Some(("output", g)) if place == g => continue,
+                        Some(("output", g)) if place > g => place - 1,
+                        _ => place,
+                    };
 
-                let place = match gone {
-                    Some(gone) if place == gone => continue,
-                    Some(gone) if place > gone => place - 1,
-                    _ => place,
-                };
+                    name = format!("output#{place}");
+                } else {
+                    let place = match gone {
+                        Some((k, g)) if k == name && place == g => continue,
+                        Some((k, g)) if k == name && place > g => place - 1,
+                        _ => place,
+                    };
 
-                name = format!("output#{place}");
+                    name = format!("{name}[{place}]");
+                }
             }
 
             path.push(name);
@@ -1379,7 +1511,7 @@ fn drop_empty(text: &str, ordinal: usize) -> Result<Option<String>, String> {
             .count()
     };
 
-    if flat(&document, &[], Some(ordinal)) != flat(&after, &[], None)
+    if flat(&document, &[], Some(("output", ordinal))) != flat(&after, &[], None)
         || count(&after) + 1 != count(&document)
     {
         return Err(String::from(
@@ -1400,10 +1532,21 @@ fn apply_at(
 
     addressable(segments, block.is_some())?;
 
+    if matches!(op, Op::Remove | Op::DropEmpty)
+        && segments
+            .iter()
+            .any(|s| parse_segment(s).ok().and_then(|(_, idx)| idx) == Some(Index::New))
+    {
+        return Err(format!(
+            "{}: [new] is only for appending a new node; cannot remove",
+            segments.join(".")
+        ));
+    }
+
     let path = segments.join(".");
     let document = parse(text)?;
     let found = find(text, &document, segments, block)?;
-    let name = segments[segments.len() - 1];
+    let name = clean_name(segments[segments.len() - 1]);
     let outputs = document
         .nodes()
         .iter()
@@ -1434,7 +1577,10 @@ fn apply_at(
     let splices: Vec<Splice> = match (found.leaves.first(), op) {
         (None, Op::Remove | Op::DropEmpty) => return Ok(None),
         (None, Op::Set(value)) => {
-            if let Some(bad) = segments.iter().find(|segment| !writable_name(segment)) {
+            if let Some(bad) = segments
+                .iter()
+                .find(|segment| !writable_name(clean_name(segment)))
+            {
                 return Err(format!("{path}: {bad} is not a name Kanade writes"));
             }
 
@@ -1451,14 +1597,31 @@ fn apply_at(
             }
         }
         (Some(leaf), Op::Remove) => {
-            if leaf.block {
+            let (last_name, last_index) = parse_segment(segments[segments.len() - 1])?;
+            let is_indexed_repeated = REPEATED.contains(&last_name) && last_index.is_some();
+
+            if leaf.block && !is_indexed_repeated {
                 return Err(format!("{path}: is a block; remove what is in it"));
             }
 
-            vec![remove(text, leaf)]
+            let mut splice = remove(text, leaf);
+            if leaf.block
+                && let Some(start) = blank_line_before(&text[..splice.0.start])
+                && {
+                    let after = &text[splice.0.end..];
+
+                    after.trim().is_empty() || after.starts_with('\n') || after.starts_with("\r\n")
+                }
+            {
+                splice.0.start = start;
+            }
+            vec![splice]
         }
         (Some(leaf), Op::Set(value)) => {
-            if leaf.block {
+            let (last_name, last_index) = parse_segment(segments[segments.len() - 1])?;
+            let is_indexed_repeated = REPEATED.contains(&last_name) && last_index.is_some();
+
+            if leaf.block && !is_indexed_repeated {
                 return Err(format!("{path}: is a block; set what is in it"));
             }
 
@@ -1506,6 +1669,9 @@ fn apply_at(
                 (arguments, value) if !arguments.is_empty() => {
                     let new = value.v1();
                     let span = arguments[0].start..arguments[arguments.len() - 1].end;
+                    if text[span.clone()] == new {
+                        return Ok(None);
+                    }
                     vec![(span, new)]
                 }
                 _ => {
@@ -1523,20 +1689,70 @@ fn apply_at(
     // only that node may have changed
     let after = parse(&edited)
         .map_err(|why| format!("the edit made invalid KDL ({why}); nothing written"))?;
-    let mut skip: Vec<String> = segments.iter().map(|&s| s.to_owned()).collect();
 
-    if let Some(Block::Nth(place)) = &after_block {
-        skip[0] = format!("output#{place}");
-    }
+    let (first_name, first_index) = parse_segment(segments[0])?;
+    let is_repeated_first = REPEATED.contains(&first_name);
 
-    if flat(&document, &skip, None) != flat(&after, &skip, None) {
+    let (skip_doc, skip_after, gone) = match (op, first_index) {
+        (Op::Remove, Some(Index::Nth(n))) if segments.len() == 1 && is_repeated_first => {
+            (vec![], vec![], Some((first_name, n)))
+        }
+        (Op::Set(_), Some(Index::New)) if is_repeated_first => {
+            let doc_count = document
+                .nodes()
+                .iter()
+                .filter(|node| node.name().value() == first_name)
+                .count();
+            let new_ordinal = doc_count;
+            let mut after_skip = vec![format!("{first_name}[{new_ordinal}]")];
+            after_skip.extend(segments[1..].iter().map(|s| s.to_string()));
+            (vec![], after_skip, None)
+        }
+        _ => {
+            let mut skip_path: Vec<String> = segments.iter().map(|&s| s.to_owned()).collect();
+            if let Some(Block::Nth(place)) = &after_block {
+                skip_path[0] = format!("output#{place}");
+            }
+            (skip_path.clone(), skip_path, None)
+        }
+    };
+
+    if flat(&document, &skip_doc, gone) != flat(&after, &skip_after, None) {
         return Err(String::from(
             "the edit changed more than its node; nothing written",
         ));
     }
 
-    let now = find(&edited, &after, segments, after_block.as_ref())?.leaves;
+    let check_segments: Vec<String> = match (op, first_index) {
+        (Op::Set(_), Some(Index::New)) if is_repeated_first => {
+            let doc_count = document
+                .nodes()
+                .iter()
+                .filter(|node| node.name().value() == first_name)
+                .count();
+            let mut segs = vec![format!("{first_name}[{doc_count}]")];
+            segs.extend(segments[1..].iter().map(|s| s.to_string()));
+            segs
+        }
+        _ => segments.iter().map(|&s| s.to_string()).collect(),
+    };
+    let check_refs: Vec<&str> = check_segments.iter().map(|s| s.as_str()).collect();
+
+    let now = find(&edited, &after, &check_refs, after_block.as_ref())?.leaves;
     let right = match op {
+        Op::Remove | Op::DropEmpty if is_repeated_first && segments.len() == 1 => {
+            let count_before = document
+                .nodes()
+                .iter()
+                .filter(|n| n.name().value() == first_name)
+                .count();
+            let count_after = after
+                .nodes()
+                .iter()
+                .filter(|n| n.name().value() == first_name)
+                .count();
+            count_after + 1 == count_before
+        }
         Op::Remove | Op::DropEmpty => now.is_empty(),
         Op::Set(Value::Props(props)) => matches!(
             now.as_slice(),
@@ -1545,6 +1761,11 @@ fn apply_at(
         Op::Set(value) => match (now.as_slice(), value, FLAGS.contains(&name)) {
             ([], Value::Bool(false), true) => true,
             ([leaf], Value::Bool(true), _) if leaf.values.is_empty() && !leaf.block => true,
+            ([leaf], _, _)
+                if leaf.block && (first_name == "window-rule" || first_name == "layer-rule") =>
+            {
+                true
+            }
             ([leaf], value, _) => {
                 leaf.values.len() == 1
                     && leaf.props.is_empty()

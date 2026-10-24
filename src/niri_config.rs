@@ -430,6 +430,16 @@ impl Editor<'_> {
             return self.get_output(&id, &key);
         }
 
+        if path.contains("[new]") {
+            return Err(format!(
+                "{path}: [new] is only for appending a new node with set"
+            ));
+        }
+
+        if edit::is_repeated_bare(path)? {
+            return self.get_repeated(path);
+        }
+
         match self.read(path)? {
             Reading::Own(shown) | Reading::Overridden(shown, _) => Ok(shown),
             Reading::Included(shown, file) => Ok(format!("{shown}  # from {}", file.display())),
@@ -442,6 +452,33 @@ impl Editor<'_> {
 
     /// As `get`, in a form to match on: where the value stands, if the path is set at all.
     pub fn read(&self, path: &str) -> Result<Reading, String> {
+        if path.contains("[new]") {
+            return Err(format!(
+                "{path}: [new] is only for appending a new node with set"
+            ));
+        }
+
+        if edit::is_repeated_bare(path)? {
+            let text = fs::read_to_string(&self.file)
+                .map_err(|error| format!("{}: {error}", self.file.display()))?;
+            let found = self.gather(&text, &[path])?;
+
+            if found.is_empty() {
+                return Ok(Reading::Unset);
+            }
+
+            let shown = self.get_repeated(path)?;
+            let owner = found.iter().find(|(file, _)| *file != self.file);
+
+            return Ok(match owner {
+                Some((file, _)) if found.iter().all(|(f, _)| f != &self.file) => {
+                    Reading::Included(shown, file.clone())
+                }
+                Some((file, _)) => Reading::Overridden(shown, file.clone()),
+                None => Reading::Own(shown),
+            });
+        }
+
         let segments = edit::segments(path)?;
         let text = fs::read_to_string(&self.file)
             .map_err(|error| format!("{}: {error}", self.file.display()))?;
@@ -460,6 +497,31 @@ impl Editor<'_> {
             }
             (Some((_, hit)), None) => Reading::Own(hit.shown.clone()),
         })
+    }
+
+    fn get_repeated(&self, kind: &str) -> Result<String, String> {
+        let segments = [kind];
+        let text = fs::read_to_string(&self.file)
+            .map_err(|error| format!("{}: {error}", self.file.display()))?;
+        let found = self.gather(&text, &segments)?;
+
+        if found.is_empty() {
+            return Err(format!("{kind}: not set (niri's default applies)"));
+        }
+
+        let lines: Vec<String> = found
+            .iter()
+            .enumerate()
+            .map(|(i, (file, hit))| {
+                if *file != self.file {
+                    format!("[{i}] {}  # from {}", hit.shown, file.display())
+                } else {
+                    format!("[{i}] {}", hit.shown)
+                }
+            })
+            .collect();
+
+        Ok(lines.join("\n"))
     }
 
     /// Every file the config includes, in the order niri reads them, with the config itself left
@@ -941,6 +1003,12 @@ impl Editor<'_> {
             }
 
             return self.remove_output(&id, &key);
+        }
+
+        if path.contains("[new]") {
+            return Err(format!(
+                "{path}: [new] is only for appending a new node with set"
+            ));
         }
 
         self.edit(&[(path, Op::Remove)])
