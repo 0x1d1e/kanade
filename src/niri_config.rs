@@ -5,19 +5,20 @@
 //! the result.
 //!
 //! The flow of a change, which any step refuses by leaving the file as it is:
-//! 1. the file must be a regular file of the user's, not a symlink nor a hard link, and the
-//!    directory writable (a symlinked config is read-only in this version);
+//! 1. the file must be a regular file of the user's or a symlink to one (with symlink and target
+//!    owned by the user, target having one link and not under /etc, and both target and its parent
+//!    writable); a hard link is refused;
 //! 2. its bytes are read and a snapshot taken (modification time, length, SHA-256);
 //! 3. `niri validate` runs on the file as it is: a config niri rejects, a v2 syntax or a missing
 //!    include included, is not edited;
 //! 4. the new text is computed from the bytes (a node an include owns, or one under `/-`, is
-//!    refused), and staged in a hidden file beside the original, with its mode, flushed;
-//! 5. `niri validate` runs on the staged file, beside the original so its relative includes
+//!    refused), and staged in a hidden file beside the target, with its mode, flushed;
+//! 5. `niri validate` runs on the staged file, beside the target so its relative includes
 //!    resolve; on an error the staged file is deleted and the error shown;
 //! 6. the old bytes are kept in the backup ring (`backup`);
-//! 7. the original is read and hashed again; if it differs from the snapshot the change is aborted
-//!    as 'changed on disk';
-//! 8. the staged file is renamed over the original and the change recorded for `undo`.
+//! 7. the target is read and hashed again (and any symlink checked that it was not repointed);
+//!    if it differs from the snapshot the change is aborted as 'changed on disk';
+//! 8. the staged file is renamed over the target and the change recorded for `undo`.
 //!
 //! Step 7 leaves the time between the check and the rename, microseconds, in which an editor's
 //! save would be lost; no lock is shared with other programs to close it.
@@ -1139,9 +1140,19 @@ impl Editor<'_> {
         // resolve
         self.writable()?;
         let _lock = self.lock()?;
-        let meta = fs::symlink_metadata(&self.file)
+        let symlink_meta = fs::symlink_metadata(&self.file)
             .map_err(|error| format!("{}: {error}", self.file.display()))?;
-        let (snapshot, old) = Snapshot::of(&self.file)?;
+        let is_symlink = symlink_meta.file_type().is_symlink();
+        let target = if is_symlink {
+            self.file
+                .canonicalize()
+                .map_err(|error| format!("{}: {error}", self.file.display()))?
+        } else {
+            self.file.clone()
+        };
+        let meta =
+            fs::metadata(&target).map_err(|error| format!("{}: {error}", target.display()))?;
+        let (snapshot, old) = Snapshot::of(&target)?;
 
         if validate_original {
             (self.validate)(&self.file).map_err(|why| {
@@ -1155,14 +1166,14 @@ impl Editor<'_> {
         };
 
         let staged = atomic::stage(
-            &self.file,
+            &target,
             &new,
             Mode::Exactly(meta.permissions().mode() & 0o7777),
         )
         .map_err(|error| {
             format!(
                 "cannot stage the change beside {}: {error}",
-                self.file.display()
+                target.display()
             )
         })?;
 
@@ -1190,7 +1201,7 @@ impl Editor<'_> {
             .map_err(|error| format!("cannot keep a backup, so nothing was changed: {error}"))?;
 
         // read again at the last moment: a save by an editor since the snapshot is not lost
-        let (now, _) = Snapshot::of(&self.file)?;
+        let (now, _) = Snapshot::of(&target)?;
 
         if now.hash != snapshot.hash || now.len != snapshot.len || now.modified != snapshot.modified
         {
@@ -1201,17 +1212,25 @@ impl Editor<'_> {
             ));
         }
 
+        if is_symlink && self.file.canonicalize().ok().as_ref() != Some(&target) {
+            ring.discard(&before);
+
+            return Err(String::from(
+                "config symlink changed on disk since it was read; nothing was written, try again",
+            ));
+        }
+
         let after = hash(&new);
 
-        if let Err(error) = staged.commit(&self.file) {
+        if let Err(error) = staged.commit(&target) {
             ring.discard(&before);
-            return Err(format!("cannot replace {}: {error}", self.file.display()));
+            return Err(format!("cannot replace {}: {error}", target.display()));
         }
 
         ring.prune();
 
         let recorded = ring.record(&Last {
-            config: self.file.clone(),
+            config: target,
             after,
             before,
         });
@@ -1292,9 +1311,60 @@ impl Editor<'_> {
         })?;
 
         if meta.file_type().is_symlink() {
-            return Err(format!(
-                "{shown} is a symbolic link (a managed or dotfile-repo config); Kanade edits only a regular file in this version"
-            ));
+            if meta.uid() != rustix::process::geteuid().as_raw() {
+                return Err(format!("{shown} is not owned by you"));
+            }
+
+            let canonical = self.file.canonicalize().map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    format!("{shown}: dangling symbolic link")
+                } else if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                    format!("{shown}: symbolic link loop")
+                } else {
+                    format!("{shown}: {error}")
+                }
+            })?;
+
+            if canonical.starts_with("/etc") {
+                return Err(format!(
+                    "{shown} points to {}, which is under /etc and not edited by Kanade",
+                    canonical.display()
+                ));
+            }
+
+            let canonical_meta = fs::metadata(&canonical)
+                .map_err(|error| format!("{}: {error}", canonical.display()))?;
+
+            if !canonical_meta.is_file() {
+                return Err(format!("{} is not a regular file", canonical.display()));
+            }
+
+            if canonical_meta.nlink() > 1 {
+                return Err(format!(
+                    "{} is a hard link (another name for the same file); Kanade edits only a file with one name in this version",
+                    canonical.display()
+                ));
+            }
+
+            if canonical_meta.uid() != rustix::process::geteuid().as_raw() {
+                return Err(format!("{} is not owned by you", canonical.display()));
+            }
+
+            let dir = canonical
+                .parent()
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+
+            if rustix::fs::access(&canonical, Access::WRITE_OK).is_err()
+                || rustix::fs::access(dir, Access::WRITE_OK).is_err()
+            {
+                return Err(format!(
+                    "{} or its directory is not writable",
+                    canonical.display()
+                ));
+            }
+
+            return Ok(canonical_meta);
         }
 
         if !meta.is_file() {

@@ -49,13 +49,13 @@ pub struct Last {
 
 impl Ring {
     pub fn new(state: &Path, config: &Path) -> Ring {
-        let file = config.file_name().map_or_else(
-            || String::from("config.kdl"),
-            |name| name.to_string_lossy().into_owned(),
-        );
         let path = fs::canonicalize(config)
             .or_else(|_| std::path::absolute(config))
             .unwrap_or_else(|_| config.to_owned());
+        let file = path.file_name().map_or_else(
+            || String::from("config.kdl"),
+            |name| name.to_string_lossy().into_owned(),
+        );
         let digest = ring::digest::digest(&ring::digest::SHA256, path.as_os_str().as_bytes());
         let key = digest.as_ref()[..4]
             .iter()
@@ -287,5 +287,29 @@ mod tests {
         assert_eq!(ring.read("20").unwrap().1, b"v0");
 
         let _ = fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    #[test]
+    fn ring_with_symlink_matches_target_ring() {
+        let base = dir("symlink-ring");
+        let state = base.join("state");
+        let target_dir = base.join("dotfiles");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target = target_dir.join("niri.kdl");
+        fs::write(&target, "layout {}\n").unwrap();
+
+        let link_dir = base.join("config");
+        fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("config.kdl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let ring_target = Ring::new(&state, &target);
+        let ring_link = Ring::new(&state, &link);
+
+        assert_eq!(ring_target.name, ring_link.name);
+        assert_eq!(ring_target.orig(), ring_link.orig());
+        assert_eq!(ring_target.last_file(), ring_link.last_file());
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

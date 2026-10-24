@@ -602,33 +602,16 @@ fn an_include_loop_or_a_missing_include_is_a_refusal() {
 }
 
 #[test]
-fn a_symlinked_or_system_config_is_read_only() {
-    let dir = Dir::new("symlink", "layout {\n    gaps 4\n}\n");
+fn a_hard_linked_or_system_config_is_read_only() {
+    let dir = Dir::new("hardlink", "layout {\n    gaps 4\n}\n");
     let real = dir.0.join("dotfiles.kdl");
     let seen = RefCell::new(Vec::new());
     let validate = fake(&seen);
 
     fs::rename(dir.config(), &real).unwrap();
-    symlink(&real, dir.config()).unwrap();
-
-    let editor = editor(&dir, &validate);
-    let why = editor.set("layout.gaps", "1").unwrap_err();
-
-    assert!(why.contains("symbolic link"), "{why}");
-    assert!(editor.undo().is_err());
-    assert_eq!(
-        fs::read_to_string(&real).unwrap(),
-        "layout {\n    gaps 4\n}\n"
-    );
-    assert!(dir.strays().is_empty());
-
-    // reading is fine
-    assert_eq!(editor.get("layout.gaps").unwrap(), "4");
-
-    // a hard link is another name of a file that may be shared: not replaced either
-    fs::remove_file(dir.config()).unwrap();
     fs::hard_link(&real, dir.config()).unwrap();
 
+    let editor = editor(&dir, &validate);
     let why = editor.set("layout.gaps", "1").unwrap_err();
 
     assert!(why.contains("hard link"), "{why}");
@@ -649,6 +632,127 @@ fn a_symlinked_or_system_config_is_read_only() {
     assert!(
         why.contains("system config") && why.contains("cp /etc/niri/config.kdl"),
         "{why}"
+    );
+}
+
+#[test]
+fn editing_a_symlinked_config_updates_canonical_target_and_preserves_symlink() {
+    let dir = Dir::new("symlink-edit", "layout {\n    gaps 4\n}\n");
+    let dotfiles = dir.0.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    let real = dotfiles.join("config.kdl");
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+
+    fs::rename(dir.config(), &real).unwrap();
+    symlink(&real, dir.config()).unwrap();
+
+    let editor = editor(&dir, &validate);
+    let said = editor.set("layout.gaps", "1").unwrap();
+    assert!(said.contains("layout.gaps = 1"));
+
+    // edits apply to the canonical dotfiles target
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        "layout {\n    gaps 1\n}\n"
+    );
+
+    // the config path is still a symlink pointing to dotfiles
+    let meta = fs::symlink_metadata(dir.config()).unwrap();
+    assert!(meta.file_type().is_symlink());
+    assert_eq!(fs::read_link(dir.config()).unwrap(), real);
+    assert!(dir.strays().is_empty());
+
+    // reading through the symlink gets the new value
+    assert_eq!(editor.get("layout.gaps").unwrap(), "1");
+
+    // undo reverts the target while keeping the symlink intact
+    let undone = editor.undo().unwrap();
+    assert!(undone.contains("undone"));
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        "layout {\n    gaps 4\n}\n"
+    );
+
+    let meta = fs::symlink_metadata(dir.config()).unwrap();
+    assert!(meta.file_type().is_symlink());
+    assert_eq!(fs::read_link(dir.config()).unwrap(), real);
+    assert!(dir.strays().is_empty());
+
+    // backups list and restore also work on a symlinked config
+    assert!(!editor.backups().is_empty());
+    let restored = editor.restore("1").unwrap();
+    assert!(restored.contains("restored"));
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        "layout {\n    gaps 1\n}\n"
+    );
+    assert!(
+        fs::symlink_metadata(dir.config())
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_link(dir.config()).unwrap(), real);
+}
+
+#[test]
+fn symlink_edge_cases_dangling_loop_and_read_only() {
+    let dir = Dir::new("symlink-edge", "layout {\n    gaps 4\n}\n");
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+
+    // 1. dangling symlink
+    let missing = dir.0.join("non_existent.kdl");
+    fs::remove_file(dir.config()).unwrap();
+    symlink(&missing, dir.config()).unwrap();
+
+    let editor = editor(&dir, &validate);
+    let err = editor.set("layout.gaps", "1").unwrap_err();
+    assert!(err.contains("dangling"), "{err}");
+
+    // 2. symlink loop
+    let loop_file = dir.0.join("loop.kdl");
+    fs::remove_file(dir.config()).unwrap();
+    symlink(&loop_file, dir.config()).unwrap();
+    symlink(dir.config(), &loop_file).unwrap();
+
+    let err = editor.set("layout.gaps", "1").unwrap_err();
+    assert!(err.contains("loop"), "{err}");
+
+    // clean up loop so drop won't fail
+    let _ = fs::remove_file(dir.config());
+    let _ = fs::remove_file(&loop_file);
+
+    // 3. read-only target file
+    let dotfiles = dir.0.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    let real = dotfiles.join("config.kdl");
+    fs::write(&real, "layout {\n    gaps 4\n}\n").unwrap();
+    symlink(&real, dir.config()).unwrap();
+
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o555)).unwrap();
+    let err = editor.set("layout.gaps", "1").unwrap_err();
+    assert!(err.contains("not writable"), "{err}");
+
+    // restore file permissions
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o644)).unwrap();
+
+    // 4. read-only target parent directory
+    fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o555)).unwrap();
+    let err = editor.set("layout.gaps", "1").unwrap_err();
+    assert!(err.contains("not writable"), "{err}");
+
+    // restore directory permissions for cleanup
+    fs::set_permissions(&dotfiles, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // 5. symlink pointing to /etc
+    fs::remove_file(dir.config()).unwrap();
+    symlink("/etc/hosts", dir.config()).unwrap();
+    let err = editor.set("layout.gaps", "1").unwrap_err();
+    assert!(
+        err.contains("under /etc") || err.contains("system config"),
+        "{err}"
     );
 }
 
