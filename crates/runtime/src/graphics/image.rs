@@ -33,6 +33,10 @@ const WORKERS: usize = 3;
 const THUMBNAILS: usize = 128;
 const THUMBNAIL_BYTES: usize = 24 << 20;
 
+// the most thumbnails waiting for a worker; past this, the longest unused go so scrolling
+// past many pictures doesn't keep them waiting or decode them after they're gone
+const QUEUED: usize = 64;
+
 // an svg's bytes drawn with the longest side `longest` pixels across: width, height, plain RGBA
 pub fn draw_svg(bytes: &[u8], longest: f32) -> Option<(u32, u32, Vec<u8>)> {
     // the side bounds the square the drawing fits in, so a request past `MOST_PIXELS` is refused
@@ -172,6 +176,7 @@ fn ask(path: &Path, cover: Option<(u32, u32)>) -> (ImageState, Option<Arc<Bitmap
 
         return match &entry.slot {
             Slot::Loading => {
+                loader.prioritize(&key);
                 changes::note_read(TypeId::of::<Decoded>());
                 (ImageState::Loading, None)
             }
@@ -187,7 +192,11 @@ fn ask(path: &Path, cover: Option<(u32, u32)>) -> (ImageState, Option<Arc<Bitmap
             used: tick,
         },
     );
-    loader.waiting.push(key);
+    loader.waiting.push(key.clone());
+
+    if key.1.is_some() {
+        loader.trim_waiting();
+    }
 
     if loader.workers < WORKERS {
         loader.workers += 1;
@@ -258,6 +267,34 @@ fn finish(key: Key, image: Option<Bitmap>) {
 }
 
 impl Loader {
+    // moves an image asked again to the back of the queue, so it decodes before older ones
+    fn prioritize(&mut self, key: &Key) {
+        if let Some(pos) = self.waiting.iter().position(|k| k == key) {
+            let key = self.waiting.remove(pos);
+            self.waiting.push(key);
+        }
+    }
+
+    // queued thumbnails past QUEUED go, the longest unused first
+    fn trim_waiting(&mut self) {
+        while self.waiting.iter().filter(|k| k.1.is_some()).count() > QUEUED {
+            let oldest = self
+                .waiting
+                .iter()
+                .enumerate()
+                .filter(|(_, k)| k.1.is_some())
+                .min_by_key(|(_, k)| self.entries.get(*k).map(|e| e.used).unwrap_or(0))
+                .map(|(i, _)| i);
+
+            let Some(pos) = oldest else {
+                break;
+            };
+
+            let evicted = self.waiting.remove(pos);
+            self.entries.remove(&evicted);
+        }
+    }
+
     /*
      * small copies past THUMBNAILS or THUMBNAIL_BYTES go, the longest unused first; one a window
      * holds stays, and so does one still decoding. A failed one goes too, so a file being written
@@ -268,12 +305,15 @@ impl Loader {
         fn thumbnail<'a>(
             (key, entry): (&'a Key, &'a Entry),
         ) -> Option<(&'a Key, &'a Entry, usize)> {
+            key.1?;
+
             let bytes = match &entry.slot {
                 Slot::Ready(image) => image.bytes(),
-                _ => 0,
+                Slot::Failed => 0,
+                Slot::Loading => return None,
             };
 
-            key.1.is_some().then_some((key, entry, bytes))
+            Some((key, entry, bytes))
         }
 
         let (mut count, mut bytes) = self
@@ -446,5 +486,57 @@ mod tests {
 
         assert_eq!(stamp(&path), None);
         assert_eq!(stamp(&path), None);
+    }
+
+    /*
+     * thumbnails waiting for a worker are bounded so a fast scroll past many pictures doesn't keep
+     * them queued or decode them after they are gone; one asked for again after eviction re-queues
+     * and decodes correctly
+     */
+    #[test]
+    fn queued_thumbnails_are_bounded_and_reload_after_eviction() {
+        let path = std::env::temp_dir().join(format!("kanade-queue-{}.png", std::process::id()));
+        write_png(&path, 0);
+
+        // overflow the queue with thumbnail requests so older ones are evicted
+        for i in 1..=300 {
+            let cover = Some((32, i as u32));
+            state(&path, cover);
+        }
+
+        let evicted_cover = {
+            let loader = LOADER.locked();
+            let waiting_thumbnails = loader.waiting.iter().filter(|k| k.1.is_some()).count();
+            assert!(
+                waiting_thumbnails <= QUEUED,
+                "waiting thumbnails exceeded the bound: {waiting_thumbnails} > {QUEUED}"
+            );
+
+            (1..=300)
+                .map(|i| Some((32, i as u32)))
+                .find(|cover| {
+                    let key = (path.clone(), *cover, stamp(&path));
+                    !loader.entries.contains_key(&key)
+                })
+                .expect("overflowing the queue must evict older thumbnails")
+        };
+
+        // the evicted thumbnail was removed from entries; asking for it again re-queues and loads it
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(image) = load(&path, evicted_cover) {
+                assert_eq!(image.pixels[..], [0, 0, 0, 0]);
+                break;
+            }
+
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the evicted thumbnail was never loaded when asked for again"
+            );
+
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        fs::remove_file(&path).unwrap();
     }
 }
