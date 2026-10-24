@@ -19,16 +19,16 @@ use super::{
 
 impl WaylandState {
     pub fn open_normal(&mut self, name: &'static str, view: fn() -> Window) {
-        let surface = self.compositor.create_surface(&self.qh);
+        let (view, initial) = View::normal(name, view);
 
-        let window = view();
+        let surface = self.compositor.create_surface(&self.qh);
 
         // the compositor draws the title bar when it can, the runtime has none of its own
         let xdg_window =
             self.xdg_shell
                 .create_window(surface, WindowDecorations::RequestServer, &self.qh);
 
-        xdg_window.set_title(window.title.clone());
+        xdg_window.set_title(initial.title);
         xdg_window.set_app_id("kanade");
 
         // a window asks in the virtual space and opens at the UI scale it was opened under
@@ -36,13 +36,13 @@ impl WaylandState {
 
         let up = |length: f32| (length * ui).round() as u32;
 
-        let size = (up(window.width), up(window.height));
+        let size = (up(initial.width), up(initial.height));
 
         // the same smallest and biggest size is how a window says it cannot be resized
-        if !window.resizable {
+        if !initial.resizable {
             xdg_window.set_min_size(Some(size));
             xdg_window.set_max_size(Some(size));
-        } else if let Some((width, height)) = window.min_size {
+        } else if let Some((width, height)) = initial.min_size {
             xdg_window.set_min_size(Some((up(width), up(height))));
         }
 
@@ -54,7 +54,11 @@ impl WaylandState {
             size,
         };
 
-        self.add(View::Normal(name, view), None, role);
+        self.add(view, None, role);
+
+        if let Some(window) = self.windows.last_mut() {
+            window.reads = initial.reads;
+        }
 
         OPEN.locked().push(name);
     }

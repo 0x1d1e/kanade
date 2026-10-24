@@ -52,6 +52,11 @@ impl Reads {
         self.services.extend(more.services);
         self.scopes.extend(more.scopes);
     }
+
+    #[cfg(test)]
+    pub fn contains_service<S: 'static>(&self) -> bool {
+        self.services.contains(&TypeId::of::<S>())
+    }
 }
 
 /// What changed since the windows last looked.
@@ -150,6 +155,11 @@ pub fn take() -> Option<Changed> {
 
 pub fn note_read(service: TypeId) {
     READ.with_borrow_mut(|read| read.services.insert(service));
+}
+
+// notes reads that were recorded earlier, e.g. when opening a normal window
+pub fn note_reads(reads: Reads) {
+    READ.with_borrow_mut(|read| read.extend(reads));
 }
 
 // a read of one part of a service: only a change to it, or to the whole service, draws again

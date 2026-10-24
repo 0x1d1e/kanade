@@ -38,7 +38,7 @@ impl OpenWindow {
         let name = content.name();
 
         self.name = match &self.view {
-            View::Normal(shown, _) => shown,
+            View::Normal(shown, ..) => shown,
             _ => name,
         };
 

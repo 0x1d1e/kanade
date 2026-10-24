@@ -20,7 +20,7 @@ use super::{
 };
 
 impl WaylandState {
-    pub fn open(&mut self, view: View, output: Option<WlOutput>) {
+    pub fn open(&mut self, mut view: View, output: Option<WlOutput>) {
         let surface = self.compositor.create_surface(&self.qh);
 
         /*

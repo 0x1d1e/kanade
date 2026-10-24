@@ -87,6 +87,22 @@ pub enum Role {
     },
 }
 
+#[derive(Debug)]
+pub struct NormalInfo {
+    pub title: String,
+    pub width: f32,
+    pub height: f32,
+    pub resizable: bool,
+    pub min_size: Option<(f32, f32)>,
+    pub reads: Reads,
+}
+
+pub struct InitialNormal {
+    pub window: Window,
+    pub reads: Reads,
+    pub moving: bool,
+}
+
 // what a window runs on every redraw to find out what it shows
 pub enum View {
     Plain(fn() -> LayerWindow),
@@ -94,8 +110,8 @@ pub enum View {
     // the monitor is replaced when the compositor reports a change to it
     Monitor(fn(&Monitor) -> LayerWindow, Monitor),
 
-    // the name tells it apart from other normal windows
-    Normal(&'static str, fn() -> Window),
+    // the name tells it apart from other normal windows, with the initial window kept for the first frame
+    Normal(&'static str, fn() -> Window, Option<InitialNormal>),
 }
 
 // what a view gave back
@@ -151,16 +167,50 @@ impl Role {
 }
 
 impl View {
-    pub fn run(&self) -> Content {
+    // runs the view once to inspect sizing and title, holding the window for the first frame
+    pub fn normal(name: &'static str, view: fn() -> Window) -> (Self, NormalInfo) {
+        let (window, reads) = crate::frame::run_view(view, 0.0, 0.0);
+        let moving = crate::animation::moving::take();
+
+        let info = NormalInfo {
+            title: window.title.clone(),
+            width: window.width,
+            height: window.height,
+            resizable: window.resizable,
+            min_size: window.min_size,
+            reads: reads.clone(),
+        };
+
+        let initial = InitialNormal {
+            window,
+            reads,
+            moving,
+        };
+
+        (View::Normal(name, view, Some(initial)), info)
+    }
+
+    pub fn run(&mut self) -> Content {
         match self {
             View::Plain(view) => Content::Layer(view()),
             View::Monitor(view, monitor) => Content::Layer(view(monitor)),
-            View::Normal(_, view) => Content::Normal(view()),
+            View::Normal(_, view, initial) => match initial.take() {
+                Some(initial) => {
+                    crate::changes::note_reads(initial.reads);
+
+                    if initial.moving {
+                        crate::animation::moving::set();
+                    }
+
+                    Content::Normal(initial.window)
+                }
+                None => Content::Normal(view()),
+            },
         }
     }
 
     pub fn shows(&self, name: &str) -> bool {
-        let View::Normal(shown, _) = self else {
+        let View::Normal(shown, ..) = self else {
             return false;
         };
 
@@ -198,5 +248,93 @@ impl Content {
                 on_lost: window.on_lost,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::service::Service;
+
+    #[derive(Default)]
+    struct NormalTestState;
+
+    impl Service for NormalTestState {
+        fn new() -> Self {
+            Self
+        }
+
+        fn listen() {}
+    }
+
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_normal_view() -> Window {
+        RUNS.fetch_add(1, Ordering::SeqCst);
+        drop(NormalTestState::read());
+
+        Window::new()
+            .title("Test Normal Window")
+            .size(720.0, 480.0)
+            .min_size(360.0, 240.0)
+            .resizable(true)
+    }
+
+    #[test]
+    fn open_normal_runs_view_once_across_open_and_initial_frame() {
+        RUNS.store(0, Ordering::SeqCst);
+
+        // opening the normal window runs the view once to read title and size
+        let (mut view, info) = View::normal("test_normal", test_normal_view);
+
+        assert_eq!(RUNS.load(Ordering::SeqCst), 1);
+        assert_eq!(info.title, "Test Normal Window");
+        assert_eq!(info.width, 720.0);
+        assert_eq!(info.height, 480.0);
+        assert_eq!(info.min_size, Some((360.0, 240.0)));
+        assert!(info.resizable);
+        assert!(info.reads.contains_service::<NormalTestState>());
+
+        // initial frame run: reuses the retained Window, view is not called again
+        let (content, reads) = crate::frame::run_view(|| view.run(), info.width, info.height);
+
+        assert_eq!(RUNS.load(Ordering::SeqCst), 1);
+        assert!(reads.contains_service::<NormalTestState>());
+
+        let Content::Normal(window) = content else {
+            panic!("expected Content::Normal");
+        };
+        assert_eq!(window.title, "Test Normal Window");
+
+        // subsequent frame run: view function runs again
+        let (_next_content, next_reads) =
+            crate::frame::run_view(|| view.run(), info.width, info.height);
+
+        assert_eq!(RUNS.load(Ordering::SeqCst), 2);
+        assert!(next_reads.contains_service::<NormalTestState>());
+    }
+
+    static MOVING_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+    fn moving_normal_view() -> Window {
+        MOVING_RUNS.fetch_add(1, Ordering::SeqCst);
+        crate::animation::moving::set();
+
+        Window::new().title("Moving Window")
+    }
+
+    #[test]
+    fn open_normal_preserves_moving_animation_across_first_frame() {
+        MOVING_RUNS.store(0, Ordering::SeqCst);
+
+        let (mut view, _info) = View::normal("moving_normal", moving_normal_view);
+        assert_eq!(MOVING_RUNS.load(Ordering::SeqCst), 1);
+
+        // initial frame run: reuses window and restores moving status
+        let _ = view.run();
+        assert_eq!(MOVING_RUNS.load(Ordering::SeqCst), 1);
+        assert!(crate::animation::moving::take());
     }
 }
