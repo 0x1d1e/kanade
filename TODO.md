@@ -122,12 +122,12 @@ Not worth changing, by this review:
 
 - Keys and Wallpapers stat the files on each frame they draw (`binds()`, `wallpaper::images()`); cache by mtime if it shows.
 - The image loader keeps queued thumbnails scrolled past; a thumbnail is keyed by path only, so a picture replaced in place shows the old one until restart.
-- `night_light::turn` rereads the calendars it does not need.
-- Reminders: MORE's `of` grows with each reminder joined; a deleted event's reminder stays until dismissed or due.
-- Clipboard and Launcher search look duplicated with `src/surfaces/search.rs`.
-- A dmenu reply to a client that stopped reading may block the UI thread up to 1 s (`IpcReply::send`).
+- [x] `night_light::turn` rereads the calendars it does not need: resolved in commit 2c50f08 by running `modules::reread()` only when module enablement changes (`next.off != running.off`).
+- [x] Reminders: MORE's `of` grows with each reminder joined; a deleted event's reminder stays until dismissed or due: resolved in commit c58bf5a via `fn stands()` and candidate reconciliation (`src/sources/reminders.rs:612`, `:1128`).
+- [x] Clipboard and Launcher search look duplicated with `src/surfaces/search.rs`: Clipboard's search field now uses `search::field(Icon::Search, ...)`, while Launcher's field retains its selection highlight and in-query cursor placement over shared `search::tail`.
+- [x] A dmenu reply to a client that stopped reading may block the UI thread up to 1 s (`IpcReply::send`): resolved in commit ff56942 by dispatching replies on a dedicated thread in `IpcReply::send` (`crates/runtime/src/ipc.rs:63`).
 - A three-letter layout label may be cramped in the OSD capsule; Controls grew 290 to 330 px, check Tray, Weather and Session by eye.
-- The critical battery countdown names no battery reason line.
+- [x] The critical battery countdown names no battery reason line: resolved in commit a2c9d5a via `Cause::Battery(percent)` which renders "Battery at {percent}%" in both `forms.rs` and `surfaces/session.rs`.
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
 

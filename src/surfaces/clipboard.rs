@@ -40,7 +40,6 @@ fn width() -> f32 {
 }
 
 const FIELD: f32 = 44.0;
-const FIELD_INSET: f32 = 16.0;
 const FOOTER: f32 = 28.0;
 const GAP: f32 = 12.0;
 
@@ -67,10 +66,6 @@ const THUMB_RADIUS: f32 = 6.0;
 
 // the pixels a thumbnail is kept at per point, as the Wallpapers' tiles
 const SCALE: f32 = 2.0;
-
-// the typed text's size, and the caret after it
-const QUERY: f32 = theme::text::TITLE;
-const CARET: f32 = 1.5;
 
 // the most of a text a row shows; it is elided to its width anyway
 const PREVIEW: usize = 200;
@@ -609,7 +604,10 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let shape = view::largest();
 
     let sections = vec![
-        Box::new(view::rise(0, field(&search.query))) as Box<dyn Widget>,
+        Box::new(view::rise(
+            0,
+            super::search::field(Icon::Search, &search.query, "Search clipboard", width()),
+        )) as Box<dyn Widget>,
         Box::new(view::rise(1, list)),
         Box::new(view::rise(
             2,
@@ -624,66 +622,6 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .semantics(|| Semantics::new(Role::Region, "clipboard"))
         .child(Column::new(sections).width(width()).gap(GAP))
-}
-
-/*
- * a search icon, what is typed with the caret after it, or what to type faded; a query wider than
- * the field shows its end, where the typing is
- */
-fn field(query: &str) -> Rectangle {
-    let room = width() - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
-
-    let caret = Rectangle::new()
-        .width(CARET)
-        .height(QUERY + 4.0)
-        .fill(theme::island().on_surface);
-
-    let typed: Box<dyn Widget> = if query.is_empty() {
-        Box::new(
-            Row::new(children![
-                caret,
-                Text::new("Search clipboard")
-                    .size(QUERY)
-                    .color(theme::island().on_surface_variant)
-                    .weight(theme::text::MEDIUM),
-            ])
-            .align(Center),
-        )
-    } else {
-        Box::new(Row::new(children![super::search::tail(query, room), caret]).align(Center))
-    };
-
-    Rectangle::new()
-        .width(width())
-        .height(FIELD)
-        .radius(FIELD / 2.0)
-        .fill(theme::island().surface_container)
-        .padding(Padding {
-            top: 0.0,
-            right: FIELD_INSET,
-            bottom: 0.0,
-            left: FIELD_INSET,
-        })
-        .align_child(Start, Center)
-        .semantics(|| {
-            Semantics::new(Role::TextInput, "search")
-                .text(query)
-                .focused(true)
-        })
-        .child(
-            Row::new(vec![
-                Box::new(
-                    Rectangle::new()
-                        .width(TARGET)
-                        .height(TARGET)
-                        .align_child(Center, Center)
-                        .child(Icon::Search.on(16.0, theme::island().on_surface_variant)),
-                ) as Box<dyn Widget>,
-                typed,
-            ])
-            .gap(ICON_GAP)
-            .align(Center),
-        )
 }
 
 // what it means, in the middle of where the rows go
