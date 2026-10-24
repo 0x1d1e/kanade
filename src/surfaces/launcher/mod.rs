@@ -1127,7 +1127,7 @@ fn forget() {
 /*
  * what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit.
  * `read` says whether the apps were read at all: until they are, an app may be the answer, so the
- * web is not offered for a query they could still match
+ * web is not offered for a query they could still match.
  *
  * The answer is kept from the frame before, and what it depends on is read every time, so a change
  * still draws the window that shows it: the Services it reads are read here, not only when the

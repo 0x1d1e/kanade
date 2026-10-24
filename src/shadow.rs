@@ -1,12 +1,10 @@
 /*
- * the body's drop shadow, blurred once per corner radius and drawn as eight images around the
- * body: four corners at their own size and four edges stretched along it. A corner reaches a blur
- * along the body's long sides, so a body standing upright, as on a side edge, takes corners turned
- * to reach down it rather than across, which on a narrow pill would overlap. The runtime's own shadow
- * goes through Vello, which on every morphing frame cost enough gpu time to drop frames;
- * images only move textures. Every piece is cut out where the body covers it, and there is no
- * piece for its middle. Each piece is
- * a draw of its own, which on an integrated gpu costs more than the pixels it fills, so the
+ * the body's drop shadow: eight images around the body — four corners at their own size, four
+ * edges stretched along it. Corners reach a blur down the body's long sides; on a side edge they
+ * turn to reach down rather than across, which on a narrow pill would overlap. The runtime's own
+ * shadow goes through Vello, costing enough gpu time per morphing frame to drop frames; images
+ * only move textures. Every piece is cut out where the body covers it, none for the middle. Each
+ * piece is its own draw, which on an integrated gpu costs more than the pixels it fills, so
  * corners stay whole rather than cut down to what the body leaves showing
  */
 

@@ -7,16 +7,15 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 use super::{Gpu, texture};
 
 /*
- * a vello of its own for the scenes that resolve no late bound resource at all, which are the cuts,
- * trims and shadows, and the frames that draw fills and paths only. vello sizes its image atlas
- * from the images a scene resolves, so a scene with none in it leaves the atlas a single texel
- * wide: that is a new atlas, the old one is freed, and every window's images and letters that were
- * in it are gone while vello still counts them as uploaded, so they sample texels that hold
- * nothing. nothing is ever sent to this one, so its atlas holds nothing to go stale
+ * a vello of its own for scenes that resolve no late bound resource (cuts, trims, shadows, fills
+ * and paths only). vello sizes its image atlas from the scene's images, so a scene with none
+ * leaves the atlas one texel wide: a new atlas, the old one freed, every window's images and
+ * letters in it gone while vello still counts them as uploaded — they sample texels that hold
+ * nothing. Nothing is ever sent here, so its atlas holds nothing to go stale.
  *
- * the price is that vello's own drop of what a visit left (memory.rs) is taken by whichever
- * renderer resolves first, so this one may take it and the shared one keep those encodings a
- * visit longer. that is memory, not what is drawn, and the next visit asks for the drop again
+ * The price: vello's drop of what a visit left (memory.rs) is taken by whichever renderer
+ * resolves first, so this one may take it and the shared one keeps those encodings a visit
+ * longer. That is memory, not what is drawn; the next visit asks for the drop again.
  */
 thread_local! {
     static PATHS: RefCell<Option<Renderer>> = const { RefCell::new(None) };

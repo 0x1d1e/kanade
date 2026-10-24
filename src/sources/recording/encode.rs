@@ -269,16 +269,16 @@ impl Encoding {
     }
 
     /*
-     * the GStreamer elements of a window's pipeline from the first converter to the encoder, the
-     * `!` between them included, at `size`. `add-borders` keeps the aspect, so a window that is
-     * resized stays whole in the frame, provided the cast is held to square pixels
-     * (`plan::encoder`; else `vapostproc` cannot calculate the borders and stretches the picture)
-     * and the caps here fix them on the output too. The caps name BT.709, the matrix the picture
-     * is converted with, which the muxer then tags. niri's cast offers DMA-BUF only (a mandatory modifier list,
-     * Intel's compressed tiled ones among them), and `pipewiresrc` offers a format only if the
-     * element after it takes it: `vapostproc` does, a CPU converter does not (`no more input
-     * formats`, not-negotiated). So NVENC and x264 get the frames in system memory from the VA-API
-     * post-processor of a node that works (it converts and scales on the way), or else through EGL
+     * the GStreamer elements of a window's pipeline from the first converter to the encoder, at
+     * `size`, the `!` between them included. `add-borders` keeps the aspect, so a resized window
+     * stays whole in the frame, provided the cast is held to square pixels (`plan::encoder`; else
+     * `vapostproc` cannot calculate the borders and stretches the picture). The caps fix them on
+     * the output too and name BT.709, the matrix the picture is converted with, which the muxer
+     * then tags. niri's cast offers DMA-BUF only (a mandatory modifier list, Intel's compressed
+     * tiled ones among them), and `pipewiresrc` offers a format only if the element after it takes
+     * it: `vapostproc` does, a CPU converter does not (`no more input formats`,
+     * not-negotiated). So NVENC and x264 get frames in system memory from the VA-API
+     * post-processor of a node that works (converts and scales on the way), or else through EGL
      * (`Download::Gl`), which Mesa refuses for the compressed tiled ones
      */
     pub fn chain(&self, size: (u32, u32)) -> Vec<String> {
