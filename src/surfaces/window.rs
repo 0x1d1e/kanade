@@ -266,7 +266,13 @@ fn button(
             left: 8.0,
         })
         .align_child(Center, Center)
-        .semantics(|| Semantics::new(Role::Button, node).label(label))
+        .semantics(|| {
+            let mut sem = Semantics::new(Role::Button, node).label(label);
+            if disabled {
+                sem = sem.disabled(true);
+            }
+            sem
+        })
         .child(
             Text::new(label)
                 .size(theme::text::LABEL_SMALL)
@@ -278,16 +284,23 @@ fn button(
         rect = rect.cursor(Cursor::Pointer).on_click(on_left(press));
     }
 
+    let fill = if active {
+        roles.surface_container_high
+    } else if disabled {
+        roles.surface
+    } else {
+        roles.surface_container
+    };
+
+    let rect = rect.fill(fill);
     if ring {
         rect.border_if(true)
     } else if active {
-        rect.fill(roles.surface_container_high)
-            .border(1.0, roles.primary)
+        rect.border(1.0, roles.primary)
     } else if disabled {
         rect.border(1.0, roles.surface_container)
     } else {
-        rect.fill(roles.surface_container)
-            .border(1.0, roles.surface_container_high)
+        rect.border(1.0, roles.surface_container_high)
     }
 }
 
@@ -328,13 +341,19 @@ fn workspace_pill(
                 .weight(theme::text::SEMIBOLD),
         );
 
+    let fill = if active {
+        roles.primary
+    } else {
+        roles.surface_container
+    };
+
+    let rect = rect.fill(fill);
     if ring {
         rect.border_if(true)
     } else if active {
-        rect.fill(roles.primary)
+        rect
     } else {
-        rect.fill(roles.surface_container)
-            .border(1.0, roles.surface_container_high)
+        rect.border(1.0, roles.surface_container_high)
     }
 }
 
