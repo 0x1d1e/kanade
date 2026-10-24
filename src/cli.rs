@@ -529,9 +529,10 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return dictate::run(request);
     }
 
-    // the shell never holds a call, so this asks again until there is a press
+    // the shell holds the call until a press arrives, so one ask is enough; the client's
+    // timeout is its own, and a press the shell already holds is answered at once
     if let Call::Live(live::Request::Wait { id, timeout }) = &asked {
-        return live::wait(id, *timeout);
+        return activity_wait(id, *timeout);
     }
 
     // the agent's event comes on stdin, never the arguments
@@ -750,6 +751,56 @@ fn call_waiting(arguments: &[String]) -> Result<Reply, String> {
     let stream = connect(arguments, None)?;
 
     send(stream, &IpcCall::new(HANDLER, arguments), None)
+}
+
+/*
+ * `kanade activity wait`: one `pressed-wait` call the shell holds until a press arrives, so
+ * there is no polling; with a timeout the call runs on a thread this leaves behind when the
+ * time is up, whose answer, if one arrives anyway, is dropped with it
+ */
+fn activity_wait(id: &str, timeout: Option<Duration>) -> ExitCode {
+    let arguments = vec![
+        String::from("activity"),
+        String::from("pressed-wait"),
+        String::from(id),
+    ];
+
+    let asked = match timeout {
+        None => call_waiting(&arguments),
+        Some(timeout) => {
+            let (sender, receiver) = mpsc::channel();
+
+            thread::spawn(move || drop(sender.send(call_waiting(&arguments))));
+
+            match receiver.recv_timeout(timeout) {
+                Ok(asked) => asked,
+                Err(_) => {
+                    complain(&format!("kanade: timed out waiting for a press on {id}"));
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
+
+    match asked {
+        Ok(Reply::Done(key)) if !key.is_empty() => print(&format!("{key}\n"), ExitCode::SUCCESS),
+        Ok(Reply::Done(_)) => {
+            complain("kanade: no press received");
+            ExitCode::FAILURE
+        }
+        Ok(Reply::Refused(why)) => {
+            complain(&format!("kanade: {why}"));
+            ExitCode::FAILURE
+        }
+        Ok(Reply::Unknown(why)) => {
+            complain(&format!("kanade: {why}"));
+            ExitCode::FAILURE
+        }
+        Err(why) => {
+            complain(&format!("kanade: {why}"));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /*

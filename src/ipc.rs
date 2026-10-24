@@ -70,6 +70,8 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         Ok(Call::Lock) => lock::request(Later::new(reply)),
         // answered from the windows as they were last drawn, at once
         Ok(Call::Ui(request)) => ui::request(request, reply),
+        // a `pressed-wait` is held until a press arrives; every other live verb answers at once
+        Ok(Call::Live(live::Request::PressedWait { id })) => live::held(&id, reply),
         Ok(call) => reply.send(&run(call).encode()),
         Err(refused) => reply.send(&refused.encode()),
     }

@@ -199,9 +199,9 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] A recording stopped just before the session locks can capture audio until the recorder exits (at most the 3 s kill timeout); documented in ADR 0111.
 - [ ] Launcher decayed frecency (ADR 0127) keeps up to 300 items and 20 learned queries each; not verified live on an all-day session.
 
-## Live actions (ADR 0110, review, low-level, unfixed)
+## Live actions (ADR 0110, review, low-level)
 
-- [ ] `activity wait` and `run --action cancel` poll every 250 ms: each ask is a connect and an IPC on the draw thread, about 4 shell wakeups a second while anyone waits (for `run`, the command's lifetime). A subscription or a longer-held call would cost less.
+- [x] `activity wait` and `run --action cancel` polled every 250 ms: each ask was a connect and an IPC on the draw thread, about 4 shell wakeups a second while anyone waited. Fixed for `wait` (`pressed-wait` holds one call the shell answers when a press arrives, `src/sources/live.rs`, `src/cli.rs`); `run --action cancel` still polls every `POLL` for the command's lifetime, as it must also watch the child itself.
 
 ## Notification sounds (ADR 0118, review, low-level, unfixed)
 

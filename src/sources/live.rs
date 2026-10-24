@@ -28,8 +28,8 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::MutexExt;
 use kanade_runtime::service::Service;
+use kanade_runtime::{IpcReply, MutexExt};
 use rustix::process::{Pid, Signal, kill_process};
 
 use super::capture::SHOWN;
@@ -143,6 +143,11 @@ pub enum Request {
         id: String,
     },
 
+    // the client's own: waits for a press instead of polling `Pressed`; the shell holds the call
+    PressedWait {
+        id: String,
+    },
+
     // the client's own: asks `Pressed` until there is one, or the time is up
     Wait {
         id: String,
@@ -199,6 +204,7 @@ impl Request {
                     .collect::<Option<_>>()?,
             }),
             ["pressed", key] => Some(Request::Pressed { id: id(key)? }),
+            ["pressed-wait", key] => Some(Request::PressedWait { id: id(key)? }),
             ["wait", key] => Some(Request::Wait {
                 id: id(key)?,
                 timeout: None,
@@ -803,6 +809,51 @@ static BOARD: Mutex<Board> = Mutex::new(Board::new());
 // wakes the thread that withdraws stale ones when what is live changes
 static CHANGED: Condvar = Condvar::new();
 
+// the replies to `pressed-wait` calls, held until a press of that Activity arrives; one waiter
+// after another on one id, the first of them answered when a press does
+static PRESS_WAIT: Mutex<Vec<(String, IpcReply)>> = Mutex::new(Vec::new());
+
+/*
+ * a `pressed-wait`, the call behind `activity wait`: no press is waiting, so the reply is held
+ * until one arrives (`act`) or the Activity is no longer live to press. Answered at once when a
+ * press already waits; one call the shell holds instead of four asks a second, each its own
+ * connect and turn of the draw thread
+ */
+pub fn held(id: &str, reply: IpcReply) {
+    let now = Instant::now();
+    let mut board = BOARD.locked();
+
+    match board.pressed(id, now) {
+        Ok(key) if !key.is_empty() => reply.send(&Reply::Done(key).encode()),
+        Ok(_) => PRESS_WAIT.locked().push((id.to_owned(), reply)),
+        Err(why) => reply.send(&Reply::Refused(why).encode()),
+    }
+}
+
+// the first wait on `id`, answered with the press that arrived
+fn answered_one(id: &str, key: &str) {
+    let mut waiting = PRESS_WAIT.locked();
+
+    if let Some(at) = waiting.iter().position(|(waiting, _)| waiting == id) {
+        let (_, reply) = waiting.remove(at);
+
+        reply.send(&Reply::Done(String::from(key)).encode());
+    }
+}
+
+// every wait on `id`, answered with why there will be no press to wait for
+fn answered_all(id: &str) {
+    let mut waiting = PRESS_WAIT.locked();
+
+    for at in (0..waiting.len()).rev() {
+        if waiting[at].0 == id {
+            let (_, reply) = waiting.remove(at);
+
+            reply.send(&Reply::Refused(unknown(id)).encode());
+        }
+    }
+}
+
 // a request, on the draw thread; nothing is said of what it shows, but for `pressed`, which says the key
 pub fn request(request: Request) -> Result<String, String> {
     let now = Instant::now();
@@ -810,7 +861,13 @@ pub fn request(request: Request) -> Result<String, String> {
 
     let (id, job) = match request {
         Request::Start { id, title } => {
-            let (job, _) = board.start(&id, title, now)?;
+            let (job, evicted) = board.start(&id, title, now)?;
+
+            // its place taken by a new one of the same share, so no press of its own arrives
+            if let Some(oldest) = evicted {
+                answered_all(&oldest);
+            }
+
             (id, Some(job))
         }
         Request::Progress { id, progress } => {
@@ -823,6 +880,10 @@ pub fn request(request: Request) -> Result<String, String> {
         }
         Request::End { id, ended, detail } => {
             let job = board.end(&id, ended, detail)?;
+
+            // ended, so a wait on it will not be answered by a press
+            answered_all(&id);
+
             (id, Some(job))
         }
         Request::Touch { id } => {
@@ -835,7 +896,11 @@ pub fn request(request: Request) -> Result<String, String> {
         }
         Request::Pressed { id } => return board.pressed(&id, now),
         Request::List => return Ok(board.list().join("\n")),
-        Request::Run { .. } | Request::Wait { .. } | Request::Hook(_) => {
+        // these run in the client; a `pressed-wait` is answered by `held`, before `run`
+        Request::Run { .. }
+        | Request::Wait { .. }
+        | Request::Hook(_)
+        | Request::PressedWait { .. } => {
             return Err(String::from(
                 "`activity run`, `wait` and `hook` run in the client",
             ));
@@ -884,6 +949,10 @@ pub fn act(key: &str, subject: &str) {
 
             IslandService::write().post(activity(id, job, actions), now);
         }
+
+        // a held wait is answered with this press, which does not wait in the mailbox for the
+        // next `pressed` to take it
+        answered_one(id, key);
     }
 
     // the thread lapses the pending press when it is due
@@ -914,6 +983,8 @@ pub fn show(
         let (_, evicted) = board.start(id, title.clone(), now)?;
 
         if let Some(oldest) = evicted {
+            answered_all(&oldest);
+
             IslandService::write().withdraw(&Id::new(Kind::Live, oldest), now);
         }
     }
@@ -961,6 +1032,8 @@ pub fn withdraw(id: &str) {
     let mut board = BOARD.locked();
 
     if board.live.remove(id).is_some() {
+        answered_all(id);
+
         IslandService::write().withdraw(&Id::new(Kind::Live, id), now);
         CHANGED.notify_one();
     }
@@ -976,6 +1049,10 @@ pub fn follow() {
         let now = Instant::now();
         let gone = board.expire(now, stale);
         let held = board.flush(now);
+
+        for id in &gone {
+            answered_all(id);
+        }
 
         if !gone.is_empty() || !held.is_empty() {
             let mut island = IslandService::write();
@@ -1348,32 +1425,10 @@ pub fn pressed(id: &str) -> ExitCode {
     }
 }
 
-// `kanade activity wait`: asks for a press every `POLL` until there is one, to print and exit 0, or
-// the timeout passes, exit 1. The shell answers each ask at once and holds nothing between them; the
-// client asks about four times a second, a call that fails for now tried again, and one that is
-// refused for good or finds no shell exit 1
-pub fn wait(id: &str, timeout: Option<Duration>) -> ExitCode {
-    let until = timeout.map(|timeout| Instant::now() + timeout);
-
-    loop {
-        match press_of(id) {
-            Ok(Some(key)) => return cli::print(&format!("{key}\n"), ExitCode::SUCCESS),
-            Ok(None) => {}
-            Err(lapse) if lapse.for_good => {
-                complain(&format!("kanade: {}", lapse.why));
-                return ExitCode::FAILURE;
-            }
-            Err(_) => {}
-        }
-
-        if until.is_some_and(|until| Instant::now() >= until) {
-            complain(&format!("kanade: timed out waiting for a press on {id}"));
-            return ExitCode::FAILURE;
-        }
-
-        thread::sleep(POLL);
-    }
-}
+// `kanade activity pressed` no longer polls the shell: `wait` holds one call (`pressed-wait`)
+// that the shell answers when a press arrives (`cli::activity_wait`), so there is one connect
+// and one wakeup instead of four asks a second. `POLL` stays the pace of `run`'s own looks at
+// its command
 
 fn complain(text: &str) {
     drop(writeln!(io::stderr().lock(), "{text}"));
