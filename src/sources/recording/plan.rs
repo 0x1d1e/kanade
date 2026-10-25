@@ -385,12 +385,14 @@ fn quote(name: &str) -> String {
 }
 
 // the arguments of `ffmpeg` that join the segments `list` names, copying what they hold
-pub fn joiner<'a>(list: &'a str, joined: &'a str) -> [&'a str; 15] {
+pub fn joiner<'a>(list: &'a str, joined: &'a str) -> [&'a str; 17] {
     [
         "-hide_banner",
         "-loglevel",
         "error",
         "-nostdin",
+        "-fflags",
+        "+genpts",
         "-f",
         "concat",
         "-safe",
@@ -695,5 +697,47 @@ mod tests {
                 usize::from(audio != Audio::None)
             );
         }
+    }
+
+    // data integrity: joining paused segments regenerates pts before concat so trailing packets without
+    // durations produce monotonic timestamps
+    #[test]
+    fn the_joiner_regenerates_pts_before_concat() {
+        let arguments = joiner("list.txt", "out.mp4");
+        assert_eq!(
+            arguments,
+            [
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-fflags",
+                "+genpts",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                "list.txt",
+                "-c",
+                "copy",
+                "-map",
+                "0",
+                "out.mp4",
+            ]
+        );
+
+        let flags = arguments
+            .iter()
+            .position(|&argument| argument == "-fflags")
+            .expect("-fflags");
+        assert_eq!(arguments[flags + 1], "+genpts");
+
+        let format = arguments
+            .iter()
+            .position(|&argument| argument == "-f")
+            .expect("-f");
+        assert_eq!(arguments[format + 1], "concat");
+        assert_eq!(flags + 2, format);
     }
 }

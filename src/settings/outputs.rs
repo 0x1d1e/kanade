@@ -1226,15 +1226,9 @@ impl Controller {
         self.session = None;
     }
 
-    /// What became of the Keep once niri has said its word on the reload: the one rule for it,
-    /// taken by the worker's own confirmation and by the tests. `loaded` is `ConfigLoaded`'s state
-    /// as it moved, or none when niri said nothing in the window.
-    ///
-    /// A rejected config puts back what was there before the trial: the config by `undo_write`,
-    /// and the output by a revert, or, when the config cannot be put back, only by putting the
-    /// output back and keeping the file for a start to clear. A reload niri made ends the trial:
-    /// the file goes. One that never came leaves the file as a record of a change already in the
-    /// config, since the config holds the trial and the output already shows it.
+    /// Resolves keep outcome after reload: rejected configs undo the write and revert compositor
+    /// state; accepted reloads confirm keep and remove the pending file; unconfirmed reloads
+    /// abandon keep while preserving the record.
     pub fn resolve_keep_reload(
         &mut self,
         port: &dyn Port,
@@ -1359,11 +1353,8 @@ impl Controller {
         Ok(Ended::Reverted)
     }
 
-    /// Reverts the trial when it is due: at once when the page it was made on is gone and no revert
-    /// has been tried since, otherwise at its deadline (or `RETRY_MS` after a failed revert).
-    /// `None` while it is not yet time, so a tick before the deadline does nothing, and none for a
-    /// trial the config holds. A deadline that passed while nothing was watching is due at once:
-    /// nothing here is counted from a tick.
+    /// Reverts an unkept trial when its deadline passes or immediately if its page is gone.
+    /// Returns `None` before the deadline or once the trial has already been kept in config.
     pub fn revert_when_due(
         &mut self,
         port: &dyn Port,
@@ -1375,11 +1366,8 @@ impl Controller {
         due.then(|| self.revert(port))
     }
 
-    /// Reverts the trial only while the config does not hold it, for a trial ended from outside the
-    /// page's own clock: Kanade exiting, or the worker dying. A Keep writes the config at once and
-    /// is confirmed up to `CONFIRM_TIMEOUT` later, so a `kept` session is one niri already applies:
-    /// putting the output back then would undo a change the user kept, while the config kept it.
-    /// `None` while there is no trial, or the config holds it.
+    /// Reverts an active trial only while unkept by config, preventing external exits or worker
+    /// shutdowns from rolling back changes the user has already kept.
     pub fn revert_unkept(&mut self, port: &dyn Port) -> Option<Result<Ended, String>> {
         self.unkept()?;
 
@@ -1392,14 +1380,9 @@ impl Controller {
         self.revert_when_due(port, false)
     }
 
-    /// Puts back what a Kanade that died mid-trial left, at start. `Ok(None)` when there was no
-    /// file. A file marked `saved` is a record of a config change already written: it is deleted
-    /// without asking niri. An unsaved file older than `RECOVERY_MS`, or one that cannot be read,
-    /// is deleted unread unless niri's live output still shows the unconfirmed trial changes.
-    ///
-    /// A recovery and a trial never share the file: one that holds a trial here (`session`) leaves
-    /// it alone, and a trial begun while a file is here is refused (`is_foreign`), so the file is
-    /// always the one thing it says it is.
+    /// Recovers leftover trial state on startup without clobbering active trial ownership.
+    /// In-flight sessions leave the pending file untouched; stale or unconfirmed files are reverted
+    /// or cleaned up according to saved state and live compositor outputs.
     pub fn recover(&mut self, port: &dyn Port) -> Result<Option<String>, String> {
         // a file that is this shell's own trial's is not left over: taking it would put back the
         // trial's output while the page still shows the trial, and drop the file that reverts it

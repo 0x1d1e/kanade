@@ -1996,13 +1996,9 @@ fn ready(w: &Where, prefix: &str) -> Result<(), String> {
 }
 
 /*
- * writes the look the config asks for: the picture (or none) in the data directory and
- * `theme.conf.user` in the overlay. The executable theme itself is `kanade sddm setup`'s, as root: a
- * `sync` never writes QML, `theme.conf`, `theme.conf.user`'s theme half or anything else SDDM loads
- * code from. It does mend the overlay's own modes (ADR 0120), since root made them and the sddm user
- * must read them. Everything that can fail on the picture does before anything is written. With
- * `wallpaper`, no available wallpaper means no picture; an explicit `path` that is absent or invalid
- * is an error
+ * writes the picture in the data directory and `theme.conf.user` in the overlay. Security
+ * constraint: sync never writes QML, theme code, or executable paths; only data picture and overlay
+ * config, mending overlay file modes so the sddm user can read them (ADR 0120)
  */
 fn apply(
     w: &Where,
