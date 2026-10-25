@@ -104,7 +104,7 @@ Not worth changing, by this review:
   - `banners/mod.rs:315` already sets `monitor.height as f32` when `hang.sideways()`.
 - [ ] An upright Compact drops titles to the app's tile; a rotated, book-spine title could keep them.
 - [ ] An upright Rest and Compact have one length each (`geometry::rest`, `compact`), so a form that needs less (the timer) or more (a Rest with the battery) is padded or tight; the shape could take the primary Activity's Kind and the Rest's battery setting.
-- [ ] A body morphing through about square, between a wide and an upright form, overlaps its shadow's corners for a frame or two.
+- [x] Fixed: a body morphing through about square, between a wide and an upright form, overlaps its shadow's corners for a frame or two — clamped inner bounds and corner rects to half-dimensions in `src/shadow.rs`.
 
 ## Idle Island
 
@@ -196,7 +196,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 ## Launcher commands and dictation (ADR 0111, 0112, low-level, unfixed)
 
 - [x] Dictation's `paste` copies the raw `text`, so a multi-line dictation keeps its line breaks on the fallback path; only `Insert::Type` is flattened through `insert::typed` (`src/sources/dictation/run.rs:623`).
-- [ ] A recording stopped just before the session locks can capture audio until the recorder exits (at most the 3 s kill timeout); documented in ADR 0111.
+- [x] Fixed: a recording stopped just before the session locks can capture audio until the recorder exits — `dictation::locked()` immediately kills the child process, cancels stopping delay, drops held audio frames, and terminates reading without emitting audio (`src/sources/dictation/run.rs`, `src/lock/mod.rs`).
 - [ ] Launcher decayed frecency (ADR 0127) keeps up to 300 items and 20 learned queries each; not verified live on an all-day session.
 
 ## Live actions (ADR 0110, review, low-level)
@@ -320,8 +320,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [x] Fixed: a `theme use` that fails after the picture step puts the picture back as well as the setting — the picture bytes are snapshotted before and restored on failure (`sddm/commands.rs:362`, `:417`).
 - [x] Fixed: the Login screen page's header says a row below is not current — `is_status_warning` over the status lines decides both the wording and its ink (`settings/view.rs:1121`).
 - [x] Fixed: the Login screen status is re-read after a change to one of its rows, not only on open and Refresh — `change`/`change_all` call `login::load()` when a changed key is under `sddm` or the page is shown (`settings/view.rs:42`, `:51`).
-- [ ] Iris: the avatar overlaps the clock at 520x330 (a small login surface). A live or rendered greeter only: the layout is QML (`dist/sddm/kanade/Greeter.qml:120`) and `scripts/sddm-preview` has no target at that size.
-- [ ] Iris: a Qt 5 greeter decodes a huge hand-set backdrop in `theme.conf.user` with no size cap; the theme cannot check a file's size from QML, so the wiki says to keep it small (Kanade's own picture stays under 16 MiB). A live greeter only, and an accepted limitation (`docs/wiki/SDDM.md:51`).
+- [x] Fixed: the avatar overlaps the clock at 520x330 — responsive sizing in `Greeter.qml` when `viewHeight < 450`, and `qt6-small` target in `scripts/sddm-preview`.
+- [x] Fixed: a Qt 5 greeter decodes a huge hand-set backdrop in `theme.conf.user` with no size cap — added `sourceSize.width: Screen.width; sourceSize.height: Screen.height` on `Image` in `Greeter.qml` (ADR 0120).
 - [ ] Not run live: the follow path in the running shell (the hook, the worker thread, the niri size query), the Settings page, a farmed third-party theme on a live greeter, and the class of every installed theme. A live greeter and session only; nothing here is decidable from the code.
 - [x] Fixed: `plan`'s `walk` counts entries as it reads them and refuses the theme as soon as the cap is passed, so one huge directory is not read whole first (`sddm.rs:699`, test `a_directory_over_the_entry_cap_is_refused_as_it_is_read`).
 - [x] Fixed: `status` says `theme.conf.user: stale: does not name /usr/local/share/kanade-sddm-data/backdrop.png` when the overlay's file no longer names the data backdrop, and that line gates `current` (`sddm.rs:1485`, `:1492`).

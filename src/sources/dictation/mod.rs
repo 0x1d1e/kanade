@@ -12,6 +12,8 @@ pub mod machine;
 pub mod run;
 pub mod wav;
 
+pub use run::locked;
+
 use std::time::Duration;
 
 use ureq::Agent;

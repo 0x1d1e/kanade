@@ -470,6 +470,22 @@ mod tests {
     }
 
     #[test]
+    fn a_lock_event_stops_recording_immediately_without_trailing_audio_ingestion() {
+        let mut machine = recording();
+
+        hear(&mut machine, LEAST);
+        assert_eq!(
+            machine.step(Event::Locked { serial: 1 }),
+            [Effect::Stop, Effect::Show]
+        );
+        assert_eq!(*machine.state(), State::Failed(String::from(LOCKED)));
+
+        // Any trailing audio sent after lock produces no effects and keeps nothing
+        assert!(hear(&mut machine, 1024).is_empty());
+        assert_eq!(*machine.state(), State::Failed(String::from(LOCKED)));
+    }
+
+    #[test]
     fn a_dictation_goes_from_recording_to_the_text() {
         let mut machine = recording();
 

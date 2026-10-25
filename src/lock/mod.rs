@@ -30,7 +30,7 @@ use crate::config::{self, Config};
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::modules;
-use crate::sources::{recording, sleep};
+use crate::sources::{dictation, recording, sleep};
 
 mod keyboard;
 mod password;
@@ -667,6 +667,7 @@ fn request_lock(requests: &mut Requests, locker: &Locker) -> u64 {
 
     // a screen recording is saved and ends (ADR 0116); only spawns, so nothing waits under the requests
     recording::locked();
+    dictation::locked();
 
     // the scenes read the clock only while locked, so say so and hand them over first: the lock's
     // first frame has them. One that fails to build must not keep the lock

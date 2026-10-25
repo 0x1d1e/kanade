@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Window 2.15
 import "Sanitize.js" as S
 
 /*
@@ -101,8 +102,8 @@ Item {
     readonly property real fieldWidth: 240
     readonly property real fieldHeight: 36
     readonly property real statusHeight: 20
-    readonly property real avatarSize: 72
-    readonly property real gap: 20
+    readonly property real avatarSize: viewHeight < 450 ? Math.max(48, Math.round(72 * viewHeight / 450)) : 72
+    readonly property real gap: viewHeight < 450 ? Math.max(10, Math.round(20 * viewHeight / 450)) : 20
     readonly property real dot: 3.5
     readonly property real pitch: 11
     readonly property real inset: fieldHeight / 2
@@ -112,8 +113,8 @@ Item {
     readonly property real viewWidth: width / ui
     readonly property real viewHeight: height / ui
     readonly property real middle: viewWidth / 2
-    readonly property real dateBaseline: viewHeight * 0.09 + dateLine.ascent
-    readonly property real statusTop: viewHeight * 0.92 - statusHeight
+    readonly property real dateBaseline: (viewHeight < 450 ? viewHeight * 0.05 : viewHeight * 0.09) + dateLine.ascent
+    readonly property real statusTop: (viewHeight < 450 ? viewHeight * 0.94 : viewHeight * 0.92) - statusHeight
     readonly property real fieldTop: statusTop - gap - fieldHeight
     readonly property real nameHeight: nameLine.ascent + nameLine.descent
     readonly property real nameTop: fieldTop - gap - nameHeight
@@ -400,6 +401,8 @@ Item {
         id: backdrop
         anchors.fill: parent
         source: root.backdropPath === "" ? "" : (root.backdropPath.charAt(0) === "/" ? "file://" + root.backdropPath : Qt.resolvedUrl(root.backdropPath))
+        sourceSize.width: Screen.width
+        sourceSize.height: Screen.height
         fillMode: Image.PreserveAspectCrop
         smooth: true
         cache: false
@@ -434,7 +437,7 @@ Item {
             text: S.date(root.now)
             face: root.face
             ink: root.text
-            size: 24
+            size: root.viewHeight < 450 ? Math.max(14, Math.round(24 * root.viewHeight / 450)) : 24
             weight: Font.DemiBold
             base: root.dateBaseline
             x: root.middle - width / 2
@@ -445,15 +448,17 @@ Item {
             text: S.time(root.now, root.clock24)
             face: root.display
             ink: root.text
-            size: 112
+            size: root.viewHeight < 450 ? Math.min(112, Math.max(48, Math.round(root.viewHeight * 0.20))) : 112
             weight: Font.DemiBold
-            base: root.dateBaseline + dateLine.descent + 8 + cap
+            base: root.dateBaseline + dateLine.descent + (root.viewHeight < 450 ? 4 : 8) + cap
             x: root.middle - width / 2
         }
 
         // the avatar, and the user switcher under a click on it or the name
         Avatar {
             id: avatarItem
+            width: root.avatarSize
+            height: root.avatarSize
             x: root.middle - width / 2
             y: root.avatarTop
             face: root.face

@@ -254,20 +254,24 @@ fn place(body: Rect, radius: u32, upright: bool, style: ShadowStyle) -> [Rect; P
         (long, short)
     };
 
-    // how far into the body a corner reaches across and down
-    let (inner_width, inner_height) = (corner_width - reach, corner_height - reach);
+    // how far into the body a corner reaches across and down, clamped so opposite corners never meet
+    let inner_width = (body.width / 2.0).min(corner_width - reach).max(0.0);
+    let inner_height = (body.height / 2.0).min(corner_height - reach).max(0.0);
+
+    let corner_rect_width = (body.width / 2.0 + reach).min(corner_width);
+    let corner_rect_height = (body.height / 2.0 + reach).min(corner_height);
 
     let corner = |x, y| Rect {
         x,
         y,
-        width: corner_width,
-        height: corner_height,
+        width: corner_rect_width,
+        height: corner_rect_height,
     };
 
     let across = Rect {
         x: left + inner_width,
         y: top - reach,
-        width: body.width - 2.0 * inner_width,
+        width: (body.width - 2.0 * inner_width).max(0.0),
         height: reach - drop + overlap,
     };
 
@@ -275,7 +279,7 @@ fn place(body: Rect, radius: u32, upright: bool, style: ShadowStyle) -> [Rect; P
         x: left - reach,
         y: top + inner_height,
         width: reach + overlap,
-        height: body.height - 2.0 * inner_height,
+        height: (body.height - 2.0 * inner_height).max(0.0),
     };
 
     [
@@ -483,4 +487,94 @@ fn gaussian(spread: u32, kernel: u32) -> Vec<f32> {
     let total: f32 = weights.iter().sum();
 
     weights.into_iter().map(|weight| weight / total).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_and_narrow_bodies_have_no_negative_dimensions_or_corner_overlap() {
+        for body in [
+            Rect {
+                x: 100.0,
+                y: 100.0,
+                width: 50.0,
+                height: 50.0,
+            },
+            Rect {
+                x: 100.0,
+                y: 100.0,
+                width: 80.0,
+                height: 80.0,
+            },
+            Rect {
+                x: 100.0,
+                y: 100.0,
+                width: 30.0,
+                height: 120.0,
+            },
+            Rect {
+                x: 100.0,
+                y: 100.0,
+                width: 120.0,
+                height: 30.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+        ] {
+            for radius in [16, 24, 32] {
+                for upright in [false, true] {
+                    for style in ShadowStyle::ALL {
+                        let placed = place(body, radius, upright, style);
+
+                        for (i, rect) in placed.iter().enumerate() {
+                            assert!(
+                                rect.width >= 0.0,
+                                "piece {i} width is negative: {}",
+                                rect.width
+                            );
+                            assert!(
+                                rect.height >= 0.0,
+                                "piece {i} height is negative: {}",
+                                rect.height
+                            );
+                        }
+
+                        let [tl, tr, bl, br, ..] = placed;
+                        // horizontal overlap between left and right corners
+                        assert!(
+                            tl.x + tl.width <= tr.x + 1e-4,
+                            "top corners overlap: tl right {} > tr left {}",
+                            tl.x + tl.width,
+                            tr.x
+                        );
+                        assert!(
+                            bl.x + bl.width <= br.x + 1e-4,
+                            "bottom corners overlap: bl right {} > br left {}",
+                            bl.x + bl.width,
+                            br.x
+                        );
+                        // vertical overlap between top and bottom corners
+                        assert!(
+                            tl.y + tl.height <= bl.y + 1e-4,
+                            "left corners overlap: tl bottom {} > bl top {}",
+                            tl.y + tl.height,
+                            bl.y
+                        );
+                        assert!(
+                            tr.y + tr.height <= br.y + 1e-4,
+                            "right corners overlap: tr bottom {} > br top {}",
+                            tr.y + tr.height,
+                            br.y
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

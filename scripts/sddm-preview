@@ -196,6 +196,14 @@ def check(p, wrong_at):
     if p["ui"] != 1:
         return failed
 
+    if p["height"] < 450:
+        gap = max(10, round(20 * p["height"] / 450))
+        time_bottom = p["time"]["box"]["y"] + p["time"]["box"]["height"]
+        avatar_top = p["avatar"]["y"]
+        if avatar_top < time_bottom + gap:
+            failed.append(f"{name}: avatar top {avatar_top} is not below clock bottom {time_bottom} by at least gap {gap}")
+        return failed
+
     e = expected(p)
     middle = e["middle"]
 
@@ -505,6 +513,7 @@ def main():
         ("qt6-1080", "qml6", dict(width=1920, height=1080)),
         ("qt6-4k", "qml6", dict(width=1920, height=1080, size=(3840, 2160), scale=2)),
         ("qt6-software", "qml6", dict(width=800, height=800, software=True)),
+        ("qt6-small", "qml6", dict(width=520, height=330, software=True)),
     ]
     if shutil.which("qml-qt5"):
         runs += [

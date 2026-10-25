@@ -60,6 +60,7 @@ static RUNTIME: Mutex<Runtime> = Mutex::new(Runtime {
     child: None,
     focus: None,
     gate: None,
+    stop_cancel: None,
 });
 
 struct Runtime {
@@ -79,6 +80,9 @@ struct Runtime {
 
     // the ticket of a gate the machine asked for, until `request` hands it to the gate thread
     gate: Option<u64>,
+
+    // cancelled immediately if session lock requests shutdown
+    stop_cancel: Option<Sender<()>>,
 }
 
 // the arguments of `pw-record`: raw 16 kHz mono s16 on stdout, named so the graph shows it as Kanade
@@ -320,6 +324,25 @@ pub fn act(key: &str, serial: &str) {
     }
 }
 
+/*
+ * the session is locking: any recording or stopping dictation is stopped immediately, its child
+ * process killed, any stopping timer cancelled, and audio reading aborted.
+ */
+pub fn locked() {
+    let mut runtime = RUNTIME.locked();
+
+    runtime.stop_cancel = None;
+
+    if let Some((serial, child)) = runtime.child.as_mut() {
+        let serial = *serial;
+        drop(child.kill());
+
+        if matches!(runtime.machine.state(), State::Recording { .. }) {
+            runtime.feed(Event::Locked { serial }, &[]);
+        }
+    }
+}
+
 impl Runtime {
     /*
      * gives the machine `event`, with `chunk` the audio it is about, and carries out what it says;
@@ -386,6 +409,8 @@ impl Runtime {
     }
 
     fn start(&mut self, serial: u64) -> Result<(), String> {
+        self.stop_cancel = None;
+
         if let Some((_, mut old)) = self.child.take() {
             drop(old.kill());
             drop(old.wait());
@@ -430,13 +455,17 @@ impl Runtime {
 
         drop(clock::interrupt(child));
 
+        let (sender, receiver) = mpsc::channel();
+        self.stop_cancel = Some(sender);
+
         drop(
             thread::Builder::new()
                 .name(String::from("dictation stop"))
                 .spawn(move || {
-                    thread::sleep(STOPPING);
-
-                    if let Some((now, child)) = RUNTIME.locked().child.as_mut()
+                    if matches!(
+                        receiver.recv_timeout(STOPPING),
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                    ) && let Some((now, child)) = RUNTIME.locked().child.as_mut()
                         && *now == serial
                     {
                         drop(child.kill());
@@ -669,6 +698,15 @@ fn listen(serial: u64, out: Option<ChildStdout>, err: Option<ChildStderr>) {
 }
 
 fn hear(serial: u64, out: Option<ChildStdout>, err: Option<ChildStderr>) {
+    hear_stream(serial, out, err, lock::holds);
+}
+
+fn hear_stream<R: Read>(
+    serial: u64,
+    out: Option<R>,
+    err: Option<ChildStderr>,
+    is_locked: impl Fn() -> bool,
+) {
     let said = thread::Builder::new()
         .name(String::from("dictation said"))
         .spawn(move || caffeine::last_lines(err))
@@ -678,6 +716,15 @@ fn hear(serial: u64, out: Option<ChildStdout>, err: Option<ChildStderr>) {
         let (mut buffer, mut held) = ([0u8; 8192], Vec::new());
 
         loop {
+            // the microphone is not left open behind the lock screen: immediately drop any held
+            // audio buffers, do not feed Event::Audio, and terminate the reader loop
+            if is_locked() {
+                held.clear();
+                let mut runtime = RUNTIME.locked();
+                runtime.feed(Event::Locked { serial }, &[]);
+                break;
+            }
+
             match out.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => held.extend_from_slice(&buffer[..read]),
@@ -685,21 +732,15 @@ fn hear(serial: u64, out: Option<ChildStdout>, err: Option<ChildStderr>) {
                 Err(_) => break,
             }
 
+            if is_locked() {
+                held.clear();
+                let mut runtime = RUNTIME.locked();
+                runtime.feed(Event::Locked { serial }, &[]);
+                break;
+            }
+
             // a frame cut by the read waits for the rest of it
             let whole = held.len() / wav::FRAME * wav::FRAME;
-
-            // the microphone is not left open behind the lock screen: the machine gives up a
-            // recording not yet stopped (and has it stopped), and this stops reading, dropping the
-            // audio. One already stopped is on its way and is read to its end
-            if whole > 0 && lock::holds() {
-                let mut runtime = RUNTIME.locked();
-
-                runtime.feed(Event::Locked { serial }, &[]);
-
-                if runtime.machine.state().serial() != Some(serial) {
-                    break;
-                }
-            }
 
             if whole > 0 {
                 RUNTIME
@@ -734,6 +775,7 @@ fn reap(serial: u64) -> Option<ExitStatus> {
                 Some((now, child)) if *now == serial => {
                     if let Ok(Some(status)) = child.try_wait() {
                         runtime.child = None;
+                        runtime.stop_cancel = None;
                         return Some(status);
                     }
                 }
@@ -745,6 +787,7 @@ fn reap(serial: u64) -> Option<ExitStatus> {
     }
 
     let mut runtime = RUNTIME.locked();
+    runtime.stop_cancel = None;
 
     match runtime.child.take_if(|(now, _)| *now == serial) {
         Some((_, mut child)) => {
@@ -921,5 +964,35 @@ mod tests {
             Ok(Insert::Copy(Reason::FocusMoved))
         );
         assert!(!fake.done.borrow().iter().any(|call| call == "chord"));
+    }
+
+    #[test]
+    fn hear_stream_terminates_and_drops_audio_when_locked() {
+        use std::io::Cursor;
+
+        let serial = {
+            let mut runtime = RUNTIME.locked();
+            runtime.machine = Machine::new();
+            runtime.pcm = Vec::new();
+            runtime.machine.step(Event::Toggle);
+            runtime.machine.step(Event::Gated {
+                ticket: 1,
+                gate: gate::Gate::Ready,
+            });
+            runtime.machine.state().serial().unwrap()
+        };
+
+        // Mock audio stream containing 2 frames of audio
+        let audio_data = vec![0x42u8; wav::FRAME * 2];
+        let cursor = Cursor::new(audio_data);
+
+        // Lock holds immediately
+        hear_stream(serial, Some(cursor), None, || true);
+
+        let runtime = RUNTIME.locked();
+        // Machine should be in Failed state due to lock
+        assert!(matches!(runtime.machine.state(), State::Failed(_)));
+        // No trailing audio should have been ingested into runtime.pcm
+        assert!(runtime.pcm.is_empty());
     }
 }
