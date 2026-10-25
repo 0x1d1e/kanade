@@ -117,14 +117,19 @@ pub const fn upright(shape: Shape, hang: Hang) -> Shape {
  * Rest and Compact as they hang. Standing upright they hold a stacked time or a lead tile and a
  * mark, no words, so they are as long as that asks rather than as long as the horizontal ones
  */
-const UPRIGHT_REST_LENGTH: f32 = 116.0;
+pub const UPRIGHT_REST_SHORT: f32 = 76.0;
+pub const UPRIGHT_REST_LENGTH: f32 = 116.0;
 const UPRIGHT_COMPACT_LENGTH: f32 = 160.0;
 
-pub const fn rest(hang: Hang) -> Shape {
+pub const fn rest(hang: Hang, battery: bool) -> Shape {
     match hang.edge {
         Edge::Left | Edge::Right => Shape {
             width: REST.height,
-            height: UPRIGHT_REST_LENGTH,
+            height: if battery {
+                UPRIGHT_REST_LENGTH
+            } else {
+                UPRIGHT_REST_SHORT
+            },
             radius: REST.radius,
         },
         Edge::Top | Edge::Bottom => REST,
@@ -573,7 +578,7 @@ pub fn tray_slots(slots: u8, largest: Shape, hang: Hang, peek: TimePeek) -> usiz
  */
 pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimePeek) -> Shape {
     match presentation {
-        Presentation::Rest => rest(hang),
+        Presentation::Rest => rest(hang, peek.battery),
         Presentation::Compact => compact(hang),
         Presentation::Split => split(hang),
         Presentation::Peek => PEEK,
@@ -1007,5 +1012,44 @@ mod tests {
         let width = |monitor| sizes.target(tray, 0, sizes.holds(monitor)).width;
 
         assert!(width("bare") < width("other"));
+    }
+
+    // an upright Rest standing along a side edge is shorter without a battery
+    #[test]
+    fn an_upright_rest_follows_battery_presence() {
+        let left = Hang {
+            edge: Edge::Left,
+            ..Hang::default()
+        };
+
+        assert_eq!(rest(left, false).height, UPRIGHT_REST_SHORT);
+        assert_eq!(rest(left, true).height, UPRIGHT_REST_LENGTH);
+
+        assert_eq!(
+            shape(
+                Presentation::Rest,
+                DEFAULT_LARGEST,
+                left,
+                TimePeek {
+                    battery: false,
+                    ..TimePeek::default()
+                }
+            )
+            .height,
+            UPRIGHT_REST_SHORT,
+        );
+        assert_eq!(
+            shape(
+                Presentation::Rest,
+                DEFAULT_LARGEST,
+                left,
+                TimePeek {
+                    battery: true,
+                    ..TimePeek::default()
+                }
+            )
+            .height,
+            UPRIGHT_REST_LENGTH,
+        );
     }
 }

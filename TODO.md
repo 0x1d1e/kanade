@@ -102,8 +102,8 @@ Not worth changing, by this review:
 
 - [x] A side-edge Banner's window is full height.
   - `banners/mod.rs:315` already sets `monitor.height as f32` when `hang.sideways()`.
-- [ ] An upright Compact drops titles to the app's tile; a rotated, book-spine title could keep them.
-- [ ] An upright Rest and Compact have one length each (`geometry::rest`, `compact`), so a form that needs less (the timer) or more (a Rest with the battery) is padded or tight; the shape could take the primary Activity's Kind and the Rest's battery setting.
+- [ ] An upright Compact drops titles to the app's tile; a rotated, book-spine title could keep them (settled: keep current lead tile with hover peek).
+- [x] Fixed: An upright Rest follows battery presence (`geometry::UPRIGHT_REST_SHORT` 76px clock-only vs `UPRIGHT_REST_LENGTH` 116px with battery, `src/island/geometry.rs:120-132`), eliminating empty padding when the clock stands alone without a battery. Compact retains standard 160px bounds.
 - [x] Fixed: a body morphing through about square, between a wide and an upright form, overlaps its shadow's corners for a frame or two — clamped inner bounds and corner rects to half-dimensions in `src/shadow.rs`.
 
 ## Idle Island
