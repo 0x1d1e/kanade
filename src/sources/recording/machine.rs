@@ -51,6 +51,7 @@ pub enum Segment {
 pub enum Pick {
     Chosen,
     Left,
+    #[allow(dead_code)]
     Failed(String),
 }
 

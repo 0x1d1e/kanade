@@ -138,7 +138,6 @@ Kanade runs without these packages, but individual features require them:
 | Audio and device tracking | `libpulse pipewire systemd dbus util-linux` | Audio control (`pactl`), privacy dots (`pw-dump`), device detection (`udevadm`, `dbus-monitor`), and process isolation (`setpriv`). |
 | Clipboard history | `wl-clipboard` | Requires version 2.3 or later to detect sensitive password-manager selections. |
 | Screen recording (base) | `wf-recorder` | Records focused output or selected area. |
-| Region selection | `slurp` | Interactive bounding-box selection for screenshots and screen recording. |
 | Recording pause and join | `ffmpeg` | Allows pausing recordings and concatenates multi-part segments into a single file. |
 | GPU recording (VA-API) | `intel-media-driver` or `mesa` | Hardware-accelerated H.264 encoding for Intel (`intel-media-driver`) or AMD (`mesa`). Window recording also requires `gst-plugin-va`. |
 | GPU recording (NVENC) | `nvidia-utils` | Hardware-accelerated H.264 encoding on NVIDIA cards. Window recording also requires `gst-plugins-bad`. |

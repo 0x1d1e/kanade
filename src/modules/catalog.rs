@@ -1259,10 +1259,6 @@ notifications dnd on until <HH:MM>
                 without: "no screen recording",
             },
             Need {
-                on: Provider::Program(recording::PICKER),
-                without: "no choosing an area to record (give it as x,y WxH)",
-            },
-            Need {
                 on: Provider::Program(recording::JOINER),
                 without: "no pausing a screen recording, and no recording a window",
             },
@@ -1301,7 +1297,8 @@ notifications dnd on until <HH:MM>
             niri::on_windows(recording::heard);
             recording::reclaim();
             recording::prewarm();
-            app
+            recording::overlay::spawn();
+            app.window_per_monitor(recording::overlay::window)
         },
     },
     // screenshots and the screen recording from the island

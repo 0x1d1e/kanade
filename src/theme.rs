@@ -211,6 +211,13 @@ pub const GESTURE_GLOW: Color = Color::rgba(110, 170, 255, 70);
 pub const GESTURE_CORE: Color = Color::rgb(235, 245, 255);
 pub const GESTURE_TEXT: Color = Color::WHITE;
 
+// the region selection overlay: dimmed desktop mask, selection outline and dimension badge
+pub const REGION_SCRIM: Color = Color::rgba(0, 0, 0, 75);
+pub const REGION_BORDER: Color = Color::WHITE;
+pub const REGION_BADGE_BG: Color = Color::rgba(20, 20, 22, 230);
+pub const REGION_BADGE_BORDER: Color = Color::rgba(255, 255, 255, 50);
+pub const REGION_BADGE_TEXT: Color = Color::WHITE;
+
 // the OSD's capsule over an open Surface: darker, as it floats over the Island, not the desktop
 pub const SHADOW_HUD: Color = Color::rgba(0, 0, 0, 89);
 

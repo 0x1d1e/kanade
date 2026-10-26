@@ -249,7 +249,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - [ ] The same-second NOREPLACE collision for window recordings (`-n`) is not verified live.
   - [ ] A `kill -9` of Kanade during a real window recording leaves a playable fragmented mp4: verified on a synthetic pipeline only, not live.
 - [ ] A system and microphone mix (one source at a time now).
-- [ ] Kanade's own region overlay in place of `slurp`.
+- [x] Kanade's own region overlay in place of `slurp`.
 - [x] Live: `wf-recorder` takes `--audio=@DEFAULT_MONITOR@` and `--audio=@DEFAULT_SOURCE@` — both produced a real `aac 48000 2ch` track (7.79 s and 5.98 s). Their **content** is NOT RUN: this machine's system-audio and mic paths carry no signal (`-91.0 dB`, and a direct `pw-record` from the same source is equally silent), so nothing about audio levels is proven. Area geometry passes: `area "100,50 640x480"` gave exactly 640x480 / 5.01 s, and a screen recording on HDMI-A-5 gave 1280x1024.
 - [ ] Each resumed segment pays the recorder's first-frame delay (the file appears only at the first frame).
 - [x] Fixed: the start's reclaim sweeps leftover parts folders — `sweep` moves a lone segment back to the `.mp4` (or joins them), and a failed join puts the first segment back (`sources/recording.rs:2337`, `:2484`). The folder is `.<stem>.parts` beside the file now, not `.Screencast from <stamp>.parts` (`:866`); no test walks the leftover path.

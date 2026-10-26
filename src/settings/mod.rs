@@ -16,7 +16,7 @@ mod health;
 mod layout;
 mod login;
 mod niri;
-mod outputs;
+pub(crate) mod outputs;
 mod ring;
 mod view;
 

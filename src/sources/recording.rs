@@ -23,6 +23,7 @@
 
 mod encode;
 mod machine;
+pub mod overlay;
 mod plan;
 mod probe;
 mod window;
@@ -49,7 +50,7 @@ use rustix::io::Errno;
 
 use self::encode::QUIET;
 use self::machine::{Effect, Event, Machine, Phase, Pick, Segment};
-pub use self::plan::{Audio, ENCODER, JOINER, PICKER, RECORDER, Rect};
+pub use self::plan::{Audio, ENCODER, JOINER, RECORDER, Rect};
 use self::plan::{MUXER, Source};
 use super::capture::{self, COPY, SHOW, SHOWN};
 use super::json::Json;
@@ -99,9 +100,6 @@ struct Runtime {
 
     // what runs for the segment, reaped only once taken out, so while here its pids are its own
     child: Option<Held>,
-
-    // the area picker's pid while it runs, for the one who ends it; reaped by the worker
-    picker: Option<u32>,
 
     // the `kanade` calls waiting on something of the recording
     waiting: Vec<(Wait, Later)>,
@@ -202,7 +200,6 @@ struct Ended {
 
 // what the worker thread is asked
 enum Job {
-    Pick { serial: u64 },
     Spawn { serial: u64, segment: u32 },
     Join { segments: u32 },
 }
@@ -213,7 +210,6 @@ impl Runtime {
             machine: Machine::new(),
             take: None,
             child: None,
-            picker: None,
             waiting: Vec::new(),
             escalated: None,
             ended: None,
@@ -240,19 +236,8 @@ impl Runtime {
 
     fn perform(&mut self, effect: Effect) {
         match effect {
-            Effect::Pick(serial) => self.hand(Job::Pick { serial }, |why| Event::Picked {
-                serial,
-                pick: Pick::Failed(why),
-            }),
-            Effect::Cancel => {
-                if let Some(pid) = self.picker {
-                    // SIGTERM: the picker inherits Kanade's ignored SIGINT
-                    drop(clock::terminate_pid(pid));
-
-                    // a picker that ignores SIGTERM would hold the worker, and every later job
-                    escalate_picker(pid);
-                }
-            }
+            Effect::Pick(serial) => overlay::open(serial),
+            Effect::Cancel => overlay::close(),
             Effect::Spawn { serial, segment } => {
                 if let Some(take) = &self.take {
                     post(running(take, false));
@@ -787,15 +772,7 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
                 found.app,
             )?)
         }
-        Target::Area(None) => {
-            if !wake::found(PICKER) {
-                return Err(format!(
-                    "{PICKER} is not installed; it chooses the area, or give one as x,y WxH"
-                ));
-            }
-
-            None
-        }
+        Target::Area(None) => None,
     };
 
     let dir = capture::home(FOLDER).ok_or("no recording folder: HOME is not set")?;
@@ -1146,15 +1123,6 @@ fn work(job: Job) {
     let internal = || String::from("internal error");
 
     match job {
-        Job::Pick { serial } => survive(
-            || pick(serial),
-            || {
-                feed(Event::Picked {
-                    serial,
-                    pick: Pick::Failed(internal()),
-                })
-            },
-        ),
         Job::Spawn { serial, segment } => survive(
             || spawn(serial, segment),
             || {
@@ -1180,90 +1148,23 @@ fn feed(event: Event) {
     drop(RUNTIME.locked().feed(event));
 }
 
-// lets the user choose an area with the picker, then goes on recording it or does not
-fn pick(serial: u64) {
-    let started = wake::hold_stream(PICKER, &plan::picker());
-    let mut child = match started {
-        Ok(child) => child,
-        Err(error) => {
-            return feed(Event::Picked {
-                serial,
-                pick: Pick::Failed(format!("cannot run {PICKER}: {error}")),
-            });
-        }
-    };
-
-    {
-        let mut runtime = RUNTIME.locked();
-
-        // ended while it started
-        if runtime.machine.serial() != Some(serial) {
-            drop(child.kill());
-            drop(child.wait());
-            return;
-        }
-
-        runtime.picker = Some(child.id());
-    }
-
-    let mut chosen = String::new();
-    let mut said = String::new();
-
-    if let Some(mut out) = child.stdout.take() {
-        drop(out.read_to_string(&mut chosen));
-    }
-
-    if let Some(mut err) = child.stderr.take() {
-        drop(err.read_to_string(&mut said));
-    }
-
-    // let go before it is reaped, so nobody signals a pid that is no longer its own
-    {
-        let mut runtime = RUNTIME.locked();
-
-        if runtime.picker == Some(child.id()) {
-            runtime.picker = None;
-        }
-    }
-
-    let status = child.wait();
-    let picked = chosen_area(status, &chosen, &said);
+/// Receives the chosen region from the native overlay (or None if cancelled).
+pub fn picked(serial: u64, rect: Option<Rect>) {
     let mut runtime = RUNTIME.locked();
 
-    let pick = match picked {
-        Ok(Some(area)) if runtime.machine.serial() == Some(serial) => match runtime.take.as_mut() {
-            Some(take) => {
-                take.source = Some(Source::Area(area));
-                Pick::Chosen
-            }
-            None => Pick::Left,
-        },
-        Ok(Some(_) | None) => Pick::Left,
-        Err(why) => Pick::Failed(why),
+    if runtime.machine.serial() != Some(serial) {
+        return;
+    }
+
+    let pick = match (rect, runtime.take.as_mut()) {
+        (Some(rect), Some(take)) => {
+            take.source = Some(Source::Area(rect));
+            Pick::Chosen
+        }
+        _ => Pick::Left,
     };
 
     drop(runtime.feed(Event::Picked { serial, pick }));
-}
-
-/*
- * the area the picker printed, as the recorder takes it; none when the user left the picker (it
- * exits 1, printing nothing)
- */
-fn chosen_area(
-    status: io::Result<ExitStatus>,
-    chosen: &str,
-    said: &str,
-) -> Result<Option<Rect>, String> {
-    match status {
-        Ok(status) if status.success() => Rect::parse(chosen)
-            .ok_or_else(|| format!("{PICKER} chose an area that is no rectangle: {chosen:?}"))
-            .and_then(Rect::fitted)
-            .map(Some),
-        Ok(status) if status.code() == Some(NOT_FOUND) => Err(format!("{PICKER} not found")),
-        Ok(_) if chosen.trim().is_empty() && said.trim().is_empty() => Ok(None),
-        Ok(status) => Err(format!("{PICKER} ended ({status}): {}", said.trim())),
-        Err(error) => Err(format!("{PICKER}: {error}")),
-    }
 }
 
 // starts the recorder of `segment`, if the recording still waits for it
@@ -1656,29 +1557,6 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf, ran: Ran) {
 
 // how long an encoder told to stop has before it is killed, and then the writer after it
 const STOPPING: Duration = Duration::from_secs(5);
-
-/*
- * kills the picker `pid` after `STOPPING` if it is still the one running: a `slurp` that ignores
- * SIGTERM holds the worker thread, and with it every later recording job
- */
-fn escalate_picker(pid: u32) {
-    let watching = thread::Builder::new()
-        .name(String::from("capture-record watchdog"))
-        .spawn(move || {
-            thread::sleep(STOPPING);
-
-            if RUNTIME.locked().picker != Some(pid) {
-                return;
-            }
-
-            eprintln!("capture: the picker does not end; killing it");
-            drop(clock::kill_pid(pid));
-        });
-
-    if let Err(error) = watching {
-        eprintln!("capture: cannot watch the picker end: {error}");
-    }
-}
 
 /*
  * kills the encoder of the segment `serial` after `STOPPING` if it is still held, then the writer after
@@ -3148,25 +3026,17 @@ mod tests {
         drop(fs::remove_dir_all(&dir));
     }
 
-    // the picker prints nothing and exits 1 when the user leaves it, which is no failure
     #[test]
-    fn a_picker_the_user_leaves_is_no_area() {
-        let exited = |code: i32| Ok(ExitStatus::from_raw(code << 8));
-
-        assert_eq!(chosen_area(exited(1), "", ""), Ok(None));
-        assert_eq!(
-            chosen_area(exited(0), "10,20 301x200\n", ""),
-            Ok(Some(Rect {
-                x: 10,
-                y: 20,
-                width: 300,
-                height: 200
-            }))
+    fn picked_with_mismatched_serial_does_nothing() {
+        picked(
+            999_999,
+            Some(Rect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            }),
         );
-        assert!(chosen_area(exited(0), "", "").is_err());
-        assert!(chosen_area(exited(0), "10,20 1x200\n", "").is_err());
-        assert!(chosen_area(exited(1), "", "compositor does not support layer shell").is_err());
-        assert!(chosen_area(exited(127), "", "").is_err());
     }
 
     fn said(lines: &[&str]) -> VecDeque<String> {

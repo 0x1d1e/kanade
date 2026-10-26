@@ -529,6 +529,7 @@ pub fn interrupt(child: &Child) -> io::Result<()> {
  * sure it is not reaped, as `interrupt` says. SIGTERM, not SIGINT: a child started without
  * `default_sigint` inherits Kanade's ignored SIGINT, which this ends all the same
  */
+#[allow(dead_code)]
 pub fn terminate_pid(pid: u32) -> io::Result<()> {
     signal_process(pid, Signal::TERM)
 }
@@ -542,6 +543,7 @@ pub fn user_signal(pid: u32) -> io::Result<()> {
  * kills the process `pid` outright, for a child that does not end when told to and that another
  * thread waits on, so the caller makes sure it is not reaped, as `interrupt` says
  */
+#[allow(dead_code)]
 pub fn kill_pid(pid: u32) -> io::Result<()> {
     signal_process(pid, Signal::KILL)
 }

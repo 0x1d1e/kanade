@@ -1,14 +1,13 @@
 //! What a recording is told (ADR 0116, ADR 0117), as pure data and text: the rectangle of an area, the
-//! audio source, the arguments of `wf-recorder`, `slurp`, `gst-launch-1.0` and `ffmpeg`, and the list
+//! audio source, the arguments of `wf-recorder`, `gst-launch-1.0` and `ffmpeg`, and the list
 //! that joins the segments. Nothing here runs a program or reads a file.
 
 use std::fmt;
 
 use super::encode::Encoding;
 
-// the recorder, the area picker and the program that joins the segments of a paused recording
+// the recorder and the program that joins the segments of a paused recording
 pub const RECORDER: &str = "wf-recorder";
-pub const PICKER: &str = "slurp";
 pub const JOINER: &str = "ffmpeg";
 
 // a window is recorded by these two, the first encoding what niri casts of it and the second, the
@@ -21,9 +20,6 @@ const TAG: &str = "h264_metadata=colour_primaries=1:transfer_characteristics=1:m
 
 // the audio of a window, encoded by ffmpeg's own AAC; spelled so `boundary` does not read it as a color
 const AUDIO_CODEC: &str = concat!("a", "ac");
-
-// what `slurp` prints for the area picked: `x,y WxH`, which `Rect::parse` reads and the recorder takes
-pub const PICKED: &str = "%x,%y %wx%h";
 
 // the largest side of an area, far past any screen, so a mistyped one is caught
 const LARGEST: u32 = 16384;
@@ -347,11 +343,6 @@ pub fn muxer(audio: Audio, file: &str) -> Vec<String> {
         .map(String::from),
     );
     arguments
-}
-
-// the arguments of `slurp`: the area's dimensions shown as it is drawn, printed as `PICKED`
-pub fn picker() -> [&'static str; 3] {
-    ["-d", "-f", PICKED]
 }
 
 // the name of segment `number` (from 1): its file in the parts folder, when it is kept there
