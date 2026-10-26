@@ -415,7 +415,7 @@ fn stale(dir: &Path, own: u32, alive: impl Fn(u32) -> bool) -> Vec<PathBuf> {
  * whether the Kanade `pid` runs: a process of that number with the name this one has, so a number
  * another program took since is not taken for it
  */
-fn alive(pid: u32) -> bool {
+pub(super) fn alive(pid: u32) -> bool {
     let name = |pid: u32| fs::read_to_string(format!("/proc/{pid}/comm")).ok();
 
     match (name(pid), name(process::id())) {

@@ -433,19 +433,16 @@ pub fn denied(words: &[&str]) -> bool {
         return true;
     };
 
-    matches!(
-        call,
+    match call {
         Call::Ui(_)
-            | Call::Live(live::Request::Run { .. } | live::Request::Hook(_))
-            | Call::Session(Leave::Ending(_))
-            | Call::Dmenu(_)
-            | Call::Gesture(_)
-            | Call::PickColor
-            | Call::Record(recording::Request::Start(recording::Start {
-                audio: recording::Audio::Mic,
-                ..
-            }))
-    )
+        | Call::Live(live::Request::Run { .. } | live::Request::Hook(_))
+        | Call::Session(Leave::Ending(_))
+        | Call::Dmenu(_)
+        | Call::Gesture(_)
+        | Call::PickColor => true,
+        Call::Record(recording::Request::Start(start)) => start.audio.has_mic(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -500,6 +497,12 @@ mod tests {
             &["capture", "record", "start", "mic"],
             &["capture", "record", "start", "area", "mic"],
             &["capture", "record", "start", "window", "mic"],
+            &["capture", "record", "start", "both"],
+            &["capture", "record", "start", "area", "both"],
+            &["capture", "record", "start", "window", "both"],
+            &["capture", "record", "start", "mix"],
+            &["capture", "record", "start", "area", "mix"],
+            &["capture", "record", "start", "window", "mix"],
             &["not-a-verb"],
         ] {
             assert!(denied(words), "{words:?}");

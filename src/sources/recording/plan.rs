@@ -107,6 +107,8 @@ pub enum Audio {
     System,
 
     Mic,
+
+    Both,
 }
 
 impl Audio {
@@ -115,6 +117,7 @@ impl Audio {
             "none" => Some(Audio::None),
             "system" => Some(Audio::System),
             "mic" => Some(Audio::Mic),
+            "both" | "mix" => Some(Audio::Both),
             _ => None,
         }
     }
@@ -124,7 +127,8 @@ impl Audio {
         match self {
             Audio::None => Audio::System,
             Audio::System => Audio::Mic,
-            Audio::Mic => Audio::None,
+            Audio::Mic => Audio::Both,
+            Audio::Both => Audio::None,
         }
     }
 
@@ -134,6 +138,7 @@ impl Audio {
             Audio::None => "Audio: none",
             Audio::System => "Audio: system",
             Audio::Mic => "Audio: mic",
+            Audio::Both => "Audio: mix",
         }
     }
 
@@ -143,17 +148,23 @@ impl Audio {
             Audio::None => None,
             Audio::System => Some("system audio"),
             Audio::Mic => Some("microphone"),
+            Audio::Both => Some("system audio + microphone"),
         }
     }
 
     // the source the audio server is asked for; it resolves the default names, so a changed default
     // is followed
-    fn source(self) -> Option<&'static str> {
+    pub fn source(self) -> Option<&'static str> {
         match self {
             Audio::None => None,
             Audio::System => Some("@DEFAULT_MONITOR@"),
             Audio::Mic => Some("@DEFAULT_SOURCE@"),
+            Audio::Both => Some("kanade-record-mix.monitor"),
         }
+    }
+
+    pub fn has_mic(self) -> bool {
+        matches!(self, Audio::Mic | Audio::Both)
     }
 
     // the recorder's flag
@@ -581,6 +592,16 @@ mod tests {
             recorder(&screen, Audio::Mic, "/v/a.mp4", &encoding),
             with(&["-o", "DP-1", "--audio=@DEFAULT_SOURCE@", "-f", "/v/a.mp4"])
         );
+        assert_eq!(
+            recorder(&screen, Audio::Both, "/v/a.mp4", &encoding),
+            with(&[
+                "-o",
+                "DP-1",
+                "--audio=kanade-record-mix.monitor",
+                "-f",
+                "/v/a.mp4"
+            ])
+        );
 
         // no argument turns damage tracking off, which would hide the recording from niri's casts,
         // whatever encodes
@@ -593,7 +614,7 @@ mod tests {
                 ..vaapi()
             };
 
-            for audio in [Audio::None, Audio::System, Audio::Mic] {
+            for audio in [Audio::None, Audio::System, Audio::Mic, Audio::Both] {
                 assert!(
                     !recorder(&screen, audio, "f", &encoding)
                         .iter()
@@ -604,17 +625,27 @@ mod tests {
     }
 
     #[test]
-    fn the_audio_choice_cycles_through_all_three_and_defaults_to_none() {
+    fn the_audio_choice_cycles_through_all_four_and_defaults_to_none() {
         assert_eq!(Audio::default(), Audio::None);
         assert_eq!(Audio::None.next(), Audio::System);
         assert_eq!(Audio::System.next(), Audio::Mic);
-        assert_eq!(Audio::Mic.next(), Audio::None);
+        assert_eq!(Audio::Mic.next(), Audio::Both);
+        assert_eq!(Audio::Both.next(), Audio::None);
 
-        for audio in [Audio::None, Audio::System, Audio::Mic] {
+        assert!(Audio::Mic.has_mic());
+        assert!(Audio::Both.has_mic());
+        assert!(!Audio::None.has_mic());
+        assert!(!Audio::System.has_mic());
+
+        assert_eq!(Audio::parse("both"), Some(Audio::Both));
+        assert_eq!(Audio::parse("mix"), Some(Audio::Both));
+
+        for audio in [Audio::None, Audio::System, Audio::Mic, Audio::Both] {
             let word = match audio {
                 Audio::None => "none",
                 Audio::System => "system",
                 Audio::Mic => "mic",
+                Audio::Both => "both",
             };
 
             assert_eq!(Audio::parse(word), Some(audio));
@@ -671,7 +702,7 @@ mod tests {
     // leaves it playable, and one audio source is read
     #[test]
     fn a_window_is_written_without_replacing_and_hears_one_source() {
-        for audio in [Audio::None, Audio::System, Audio::Mic] {
+        for audio in [Audio::None, Audio::System, Audio::Mic, Audio::Both] {
             let muxer = muxer(audio, "/v/a.mp4");
 
             assert!(muxer.contains(&String::from("-n")));
@@ -683,7 +714,8 @@ mod tests {
             assert_eq!(
                 muxer
                     .iter()
-                    .filter(|word| word.starts_with("@DEFAULT_"))
+                    .filter(|word| word.starts_with("@DEFAULT_")
+                        || word.as_str() == "kanade-record-mix.monitor")
                     .count(),
                 usize::from(audio != Audio::None)
             );

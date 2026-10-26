@@ -23,6 +23,7 @@
 
 mod encode;
 mod machine;
+mod mix;
 pub mod overlay;
 mod plan;
 mod probe;
@@ -157,6 +158,7 @@ struct Take {
     // none until the area is chosen
     source: Option<Source>,
     audio: Audio,
+    _mix: Option<mix::MixSession>,
 
     // whether it can pause: the joiner is there
     pausable: bool,
@@ -793,6 +795,12 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
         });
     }
 
+    let mix = if audio == Audio::Both {
+        Some(mix::MixSession::create()?)
+    } else {
+        None
+    };
+
     let path = capture::free(
         &dir,
         &format!("Screencast from {}", clock::stamp()),
@@ -819,6 +827,7 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
         parts,
         source,
         audio,
+        _mix: mix,
         pausable,
         closed: false,
         software: None,
@@ -2314,6 +2323,7 @@ pub fn report(recording: &config::Recording) -> Report {
 // stops the window casts an earlier Kanade left, at start
 pub fn reclaim() {
     window::reclaim();
+    mix::reclaim();
 
     // a crash after a resume leaves the segments in a hidden folder, which nothing else joins
     let spawned = thread::Builder::new()
@@ -2839,6 +2849,22 @@ mod tests {
             Request::parse(&["start", "window", "mic"]),
             start(Target::Window(None), Audio::Mic)
         );
+        assert_eq!(
+            Request::parse(&["start", "screen", "both"]),
+            start(Target::Screen, Audio::Both)
+        );
+        assert_eq!(
+            Request::parse(&["start", "screen", "mix"]),
+            start(Target::Screen, Audio::Both)
+        );
+        assert_eq!(
+            Request::parse(&["start", "area", "both"]),
+            start(Target::Area(None), Audio::Both)
+        );
+        assert_eq!(
+            Request::parse(&["start", "window", "mix"]),
+            start(Target::Window(None), Audio::Both)
+        );
 
         for bad in [
             &["start", "window", "kitty"][..],
@@ -3247,6 +3273,7 @@ mod tests {
                 app: None,
             }),
             audio: Audio::None,
+            _mix: None,
             pausable: true,
             closed: false,
             software: None,

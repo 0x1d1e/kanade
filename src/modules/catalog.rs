@@ -1274,7 +1274,7 @@ notifications dnd on until <HH:MM>
             about: "Take a screenshot, pick a color or record the screen",
             usage: || {
                 String::from(
-                    "capture screenshot area|window|output\ncapture color\ncapture record start|pause|resume|stop|status\n  start [screen|area [<x,y WxH>]|window [<id>]] [none|system|mic]: none is the default; mic is recorded only when asked for; window is the focused one without an id\ncapture cast window [<id>]|monitor [<output>]|clear",
+                    "capture screenshot area|window|output\ncapture color\ncapture record start|pause|resume|stop|status\n  start [screen|area [<x,y WxH>]|window [<id>]] [none|system|mic|both|mix]: none is the default; mic is recorded only when asked for; window is the focused one without an id\ncapture cast window [<id>]|monitor [<output>]|clear",
                 )
             },
             parse: |arguments| match arguments {

@@ -248,7 +248,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - [ ] The clip's duration includes the first-frame latency (0.2-2 s).
   - [ ] The same-second NOREPLACE collision for window recordings (`-n`) is not verified live.
   - [ ] A `kill -9` of Kanade during a real window recording leaves a playable fragmented mp4: verified on a synthetic pipeline only, not live.
-- [ ] A system and microphone mix (one source at a time now).
+- [x] A system and microphone mix (one source at a time now).
 - [x] Kanade's own region overlay in place of `slurp`.
 - [x] Live: `wf-recorder` takes `--audio=@DEFAULT_MONITOR@` and `--audio=@DEFAULT_SOURCE@` — both produced a real `aac 48000 2ch` track (7.79 s and 5.98 s). Their **content** is NOT RUN: this machine's system-audio and mic paths carry no signal (`-91.0 dB`, and a direct `pw-record` from the same source is equally silent), so nothing about audio levels is proven. Area geometry passes: `area "100,50 640x480"` gave exactly 640x480 / 5.01 s, and a screen recording on HDMI-A-5 gave 1280x1024.
 - [ ] Each resumed segment pays the recorder's first-frame delay (the file appears only at the first frame).
