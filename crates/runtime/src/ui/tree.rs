@@ -34,12 +34,12 @@ pub(crate) fn nodes(targets: &[Target], pressed: Option<usize>, mode: Mode) -> V
 
         let parent = open.last().map(|&(node, _)| node);
 
-        let count = taken.entry((parent, semantics.name)).or_default();
+        let count = taken.entry((parent, semantics.name.as_ref())).or_default();
 
         *count += 1;
 
         let own = match *count {
-            1 => String::from(semantics.name),
+            1 => semantics.name.to_string(),
             number => format!("{}#{number}", semantics.name),
         };
 

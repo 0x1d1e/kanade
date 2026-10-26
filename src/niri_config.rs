@@ -46,7 +46,8 @@ use crate::atomic::{self, Mode};
 use crate::config;
 use crate::sources::binds;
 use backup::{Last, Ring};
-use edit::{Block, Hit, OutputBlock};
+pub use edit::OutputBlock;
+use edit::{Block, Hit};
 pub use edit::{Op, Value};
 #[allow(unused_imports)]
 pub use rules::{PRESETS, RuleInfo, RulePreset, RuleStatus, preset};
@@ -899,6 +900,13 @@ impl Editor<'_> {
     }
 
     // the same for the top-level `output` blocks
+    pub fn output_blocks(&self) -> Result<Vec<(PathBuf, OutputBlock)>, String> {
+        let text = fs::read_to_string(&self.file)
+            .map_err(|error| format!("{}: {error}", self.file.display()))?;
+
+        self.blocks(&text)
+    }
+
     fn blocks(&self, text: &str) -> Result<Vec<(PathBuf, OutputBlock)>, String> {
         let mut found = Vec::new();
 

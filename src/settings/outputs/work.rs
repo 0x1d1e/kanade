@@ -79,6 +79,22 @@ pub struct Monitor {
     pub config: Config,
 }
 
+/// A disconnected monitor block found in the config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Disconnected {
+    pub name: String,
+    pub config: Config,
+}
+
+/// Active drag state for a monitor in the layout canvas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasDrag {
+    pub output: String,
+    pub start_offset: (f32, f32),
+    pub original_logical: (i32, i32),
+    pub current_logical: (i32, i32),
+}
+
 /// The trial the controller has, as the page shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trial {
@@ -105,6 +121,9 @@ pub struct State {
     // why the config cannot be changed here; the outputs can still be tried
     pub blocked: Option<String>,
     pub monitors: Vec<Monitor>,
+    pub disconnected: Vec<Disconnected>,
+    pub selected: Option<String>,
+    pub drag: Option<CanvasDrag>,
     pub trial: Option<Trial>,
 
     // the last thing that happened, and whether it warns
@@ -161,12 +180,21 @@ impl State {
     pub fn reopen(&mut self) {
         self.notice = None;
         self.mode_open = None;
+        self.selected = None;
+        self.drag = None;
         self.generation += 1;
     }
 
-    fn publish(&mut self, monitors: Vec<Monitor>, blocked: Option<String>, error: Option<String>) {
+    fn publish(
+        &mut self,
+        monitors: Vec<Monitor>,
+        disconnected: Vec<Disconnected>,
+        blocked: Option<String>,
+        error: Option<String>,
+    ) {
         let changed = !self.loaded
             || self.monitors != monitors
+            || self.disconnected != disconnected
             || self.blocked != blocked
             || self.error != error;
 
@@ -174,6 +202,7 @@ impl State {
 
         if changed {
             self.monitors = monitors;
+            self.disconnected = disconnected;
             self.blocked = blocked;
             self.error = error;
             self.generation += 1;
@@ -482,6 +511,51 @@ pub fn revert() {
 /// Removes the keys Kanade sets from the monitor's block (and the block, if nothing else is in it).
 pub fn reset(output: &str) {
     post(Job::Reset(output.to_owned()));
+}
+
+/// Selects a monitor in the canvas and cards.
+pub fn select(name: &str) {
+    Settings::write().outputs.selected = Some(name.to_owned());
+}
+
+/// Starts dragging a monitor on the canvas.
+pub fn drag_start(name: &str, offset: (f32, f32), original: (i32, i32)) {
+    let mut settings = Settings::write();
+    settings.outputs.selected = Some(name.to_owned());
+    settings.outputs.drag = Some(CanvasDrag {
+        output: name.to_owned(),
+        start_offset: offset,
+        original_logical: original,
+        current_logical: original,
+    });
+}
+
+/// Updates the snapped logical position during a canvas drag.
+pub fn drag_update(name: &str, current: (i32, i32)) {
+    let mut settings = Settings::write();
+    if let Some(drag) = settings.outputs.drag.as_mut().filter(|d| d.output == name) {
+        drag.current_logical = current;
+    }
+}
+
+/// Ends a canvas drag, calling edit if the position changed.
+pub fn drag_end(name: &str) {
+    let mut settings = Settings::write();
+    if settings.outputs.drag.as_ref().map(|d| d.output.as_str()) != Some(name) {
+        return;
+    }
+    if let Some(drag) = settings
+        .outputs
+        .drag
+        .take()
+        .filter(|d| d.current_logical != d.original_logical)
+    {
+        drop(settings);
+        edit(
+            name,
+            Edit::Position(drag.current_logical.0, drag.current_logical.1),
+        );
+    }
 }
 
 const EXIT_REVERT_TIMEOUT: Duration = Duration::from_millis(4_000);
@@ -910,13 +984,11 @@ fn reset_block(name: &str) {
         return;
     }
 
-    let Some(id) = Settings::read()
+    let id = Settings::read()
         .outputs
         .monitor(name)
         .map(|monitor| monitor.output.id())
-    else {
-        return;
-    };
+        .unwrap_or_else(|| niri_config::OutputId::named(name));
     let result = niri_config::target(None).and_then(|file| {
         let editor = Editor {
             file,
@@ -967,24 +1039,31 @@ fn show_trial() {
 
 // asks niri for the outputs and the config what it says of each, and writes what changed
 fn publish() {
-    let (monitors, blocked, error) = match Real.outputs() {
+    let (monitors, disconnected, blocked, error) = match Real.outputs() {
         Ok(outputs) => {
-            let (monitors, blocked) = read_config(outputs);
+            let (monitors, disconnected, blocked) = read_config(outputs);
 
-            (monitors, blocked, None)
+            (monitors, disconnected, blocked, None)
         }
-        Err(why) => (Vec::new(), None, Some(why)),
+        Err(why) => (Vec::new(), Vec::new(), None, Some(why)),
     };
 
     show_trial();
-    Settings::write().outputs.publish(monitors, blocked, error);
+    Settings::write()
+        .outputs
+        .publish(monitors, disconnected, blocked, error);
 }
 
-pub(super) fn read_config(outputs: Vec<Output>) -> (Vec<Monitor>, Option<String>) {
+pub(super) fn read_config(
+    outputs: Vec<Output>,
+) -> (Vec<Monitor>, Vec<Disconnected>, Option<String>) {
     let setup = niri_config::target(None).and_then(|file| Ok((file, niri_config::state()?)));
     let (file, state) = match setup {
         Ok(setup) => setup,
-        Err(why) => return (without_config(outputs), Some(why)),
+        Err(why) => {
+            let (monitors, disconnected) = without_config(outputs);
+            return (monitors, disconnected, Some(why));
+        }
     };
     let editor = Editor {
         file,
@@ -997,75 +1076,107 @@ pub(super) fn read_config(outputs: Vec<Output>) -> (Vec<Monitor>, Option<String>
 
     for output in outputs {
         let id = output.id();
-        let mut config = Config {
-            block: id.block_name(),
-            ..Config::default()
-        };
-        let mut failed = None;
-
-        for &key in OUTPUT_KEYS {
-            match editor.read_output(&id, key) {
-                Ok(read) => {
-                    config.note = config.note.or(read.note);
-
-                    if let Some(owner) = &read.block_owner {
-                        config.owner = config.owner.or_else(|| Some(page::owner_text(owner)));
-                    }
-
-                    match &read.reading {
-                        Reading::Own(_) => config.set = true,
-                        Reading::Included(_, file) | Reading::Overridden(_, file) => {
-                            config.owner = config.owner.or_else(|| Some(page::owner_text(file)));
-                        }
-                        Reading::Unset => {}
-                    }
-
-                    if key == "variable-refresh-rate" {
-                        config.vrr = match &read.reading {
-                            Reading::Unset => None,
-                            Reading::Own(shown)
-                            | Reading::Included(shown, _)
-                            | Reading::Overridden(shown, _) => {
-                                Some(if shown.contains("on-demand=true") {
-                                    Vrr::OnDemand
-                                } else {
-                                    Vrr::On
-                                })
-                            }
-                        };
-                    }
-
-                    config.readings.insert(key, read.reading);
-                }
-                Err(why) => {
-                    failed = Some(why);
-                    break;
-                }
-            }
-        }
-
-        if let Some(why) = failed {
-            config.owner = Some(format!("niri's config cannot be read: {why}"));
-        }
-
+        let config = read_output_config(&editor, &id, id.block_name());
         monitors.push(Monitor { output, config });
     }
 
-    (monitors, blocked)
+    let mut disconnected = Vec::new();
+    if let Ok(blocks) = editor.output_blocks() {
+        for (_file, block) in blocks {
+            if block.name.is_empty() {
+                continue;
+            }
+            if monitors.iter().any(|m| m.output.id().matches(&block.name)) {
+                continue;
+            }
+            if disconnected
+                .iter()
+                .any(|d: &Disconnected| niri_config::OutputId::named(&d.name).matches(&block.name))
+            {
+                continue;
+            }
+            let id = niri_config::OutputId::named(&block.name);
+            let config = read_output_config(&editor, &id, block.name.clone());
+            disconnected.push(Disconnected {
+                name: block.name,
+                config,
+            });
+        }
+    }
+
+    (monitors, disconnected, blocked)
+}
+
+fn read_output_config(editor: &Editor, id: &niri_config::OutputId, block_name: String) -> Config {
+    let mut config = Config {
+        block: block_name,
+        ..Config::default()
+    };
+    let mut failed = None;
+
+    for &key in OUTPUT_KEYS {
+        match editor.read_output(id, key) {
+            Ok(read) => {
+                config.note = config.note.or(read.note);
+
+                if let Some(owner) = &read.block_owner {
+                    config.owner = config.owner.or_else(|| Some(page::owner_text(owner)));
+                }
+
+                match &read.reading {
+                    Reading::Own(_) => config.set = true,
+                    Reading::Included(_, file) | Reading::Overridden(_, file) => {
+                        config.owner = config.owner.or_else(|| Some(page::owner_text(file)));
+                    }
+                    Reading::Unset => {}
+                }
+
+                if key == "variable-refresh-rate" {
+                    config.vrr = match &read.reading {
+                        Reading::Unset => None,
+                        Reading::Own(shown)
+                        | Reading::Included(shown, _)
+                        | Reading::Overridden(shown, _) => {
+                            Some(if shown.contains("on-demand=true") {
+                                Vrr::OnDemand
+                            } else {
+                                Vrr::On
+                            })
+                        }
+                    };
+                }
+
+                config.readings.insert(key, read.reading);
+            }
+            Err(why) => {
+                failed = Some(why);
+                break;
+            }
+        }
+    }
+
+    if let Some(why) = failed {
+        config.owner = Some(format!("niri's config cannot be read: {why}"));
+    }
+
+    config
 }
 
 // outputs shown with no config reading, as when the config cannot be found: nothing is editable
-fn without_config(outputs: Vec<Output>) -> Vec<Monitor> {
-    outputs
-        .into_iter()
-        .map(|output| Monitor {
-            config: Config {
-                block: output.id().block_name(),
-                ..Config::default()
-            },
-            output,
-        })
-        .collect()
+fn without_config(outputs: Vec<Output>) -> (Vec<Monitor>, Vec<Disconnected>) {
+    (
+        outputs
+            .into_iter()
+            .map(|output| Monitor {
+                config: Config {
+                    block: output.id().block_name(),
+                    ..Config::default()
+                },
+                output,
+            })
+            .collect(),
+        Vec::new(),
+    )
 }
 
 // ---- the text inputs ----

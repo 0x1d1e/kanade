@@ -4,7 +4,13 @@
 
 use super::*;
 
-use crate::settings::outputs::{self, Edit, Monitor, SCALES, Transform, Vrr};
+use crate::settings::outputs::{
+    self, BoundingBox, CanvasFit, Disconnected, Edit, Monitor, Rect, SCALES, SNAP_THRESHOLD,
+    Transform, Vrr, snap,
+};
+
+const CANVAS_HEIGHT: f32 = 220.0;
+const CANVAS_PADDING: f32 = 20.0;
 
 // the section: a heading and a card for each monitor, or why there are none
 pub fn section(settings: &Settings, roles: &ThemeRoles) -> Column {
@@ -19,8 +25,25 @@ pub fn section(settings: &Settings, roles: &ThemeRoles) -> Column {
         items.push(plain("niri lists no outputs", roles));
     }
 
+    if !state.monitors.is_empty() {
+        items.push(canvas_view(settings, roles));
+    }
+
     for monitor in &state.monitors {
         items.push(monitor_view(monitor, settings, roles));
+    }
+
+    if !state.disconnected.is_empty() {
+        items.push(Box::new(
+            Text::new("Disconnected monitors")
+                .size(theme::text::TITLE)
+                .color(roles.on_surface)
+                .weight(theme::text::SEMIBOLD),
+        ));
+
+        for disc in &state.disconnected {
+            items.push(disconnected_view(disc, settings, roles));
+        }
     }
 
     Column::new(items).width(content()).gap(HEADING * 2.0)
@@ -228,10 +251,18 @@ fn monitor_view(monitor: &Monitor, settings: &Settings, roles: &ThemeRoles) -> B
         card.push(row);
     }
 
+    let selected = settings.outputs.selected.as_deref() == Some(&name);
+    let card_rect = card_of(card, roles);
+    let card_rect = if selected {
+        card_rect.border(1.5, roles.primary)
+    } else {
+        card_rect
+    };
+
     Box::new(
         Column::new(vec![
             Box::new(Column::new(head).width(content()).gap(2.0)),
-            Box::new(card_of(card, roles)),
+            Box::new(card_rect),
         ])
         .width(content())
         .gap(HEADING),
@@ -855,5 +886,347 @@ fn capsule(
         token,
         Some(roles.edge()),
         roles,
+    )
+}
+
+fn canvas_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
+    let state = &settings.outputs;
+    let canvas_w = content();
+    let canvas_h = CANVAS_HEIGHT;
+
+    let enabled: Vec<&Monitor> = state
+        .monitors
+        .iter()
+        .filter(|m| m.output.enabled())
+        .collect();
+
+    if enabled.is_empty() {
+        let empty_box = Rectangle::new()
+            .width(canvas_w)
+            .height(canvas_h)
+            .radius(radius::CARD)
+            .fill(roles.surface_container)
+            .border(1.0, roles.edge())
+            .semantics(|| Semantics::new(Role::Region, "outputs-canvas"))
+            .align_child(Center, Center)
+            .child(plain("All monitors are currently disabled", roles));
+        return Box::new(empty_box);
+    }
+
+    let rects: Vec<Rect> = enabled
+        .iter()
+        .map(|m| m.output.logical.unwrap().rect())
+        .collect();
+    let bbox = BoundingBox::of(&rects);
+    let fit = CanvasFit::new(bbox, canvas_w, canvas_h, CANVAS_PADDING);
+
+    let mut layers: Vec<Box<dyn Widget>> = Vec::new();
+
+    let dragged_output = state.drag.as_ref().map(|d| d.output.as_str());
+    let mut dragged_layer: Option<Box<dyn Widget>> = None;
+
+    for monitor in &enabled {
+        let name = monitor.output.name.clone();
+        let logical = monitor.output.logical.unwrap();
+        let selected = state.selected.as_deref() == Some(&name);
+        let is_dragged = dragged_output == Some(&name);
+        let (cx, cy, cw, ch) = fit.to_canvas(logical.x, logical.y, logical.width, logical.height);
+
+        let others: Vec<Rect> = enabled
+            .iter()
+            .filter(|m| m.output.name != name)
+            .map(|m| m.output.logical.unwrap().rect())
+            .collect();
+
+        let blocked = blocker(settings, monitor).is_some();
+
+        let mut box_rect = monitor_box(monitor, cw, ch, selected && !is_dragged, is_dragged, roles)
+            .identity(("canvas-monitor", &name))
+            .semantics(move || Semantics::new(Role::Button, format!("canvas-{name}")))
+            .translate(cx, cy);
+
+        let n_click = monitor.output.name.clone();
+        let n_drag = monitor.output.name.clone();
+        let n_end = monitor.output.name.clone();
+
+        if !blocked {
+            let snap_threshold = ((12.0 / fit.scale).round() as i32).max(SNAP_THRESHOLD);
+            box_rect = box_rect
+                .cursor(if is_dragged {
+                    Cursor::Grabbing
+                } else {
+                    Cursor::Grab
+                })
+                .on_drag_end(move || {
+                    outputs::drag_end(&n_end);
+                })
+                .on_drag(move |point| {
+                    let current_drag = Settings::read().outputs.drag.clone();
+                    if let Some(drag) = current_drag.filter(|d| d.output == n_drag) {
+                        let dx = point.x - drag.start_offset.0;
+                        let dy = point.y - drag.start_offset.1;
+                        let d_log_x = (dx / fit.scale).round() as i32;
+                        let d_log_y = (dy / fit.scale).round() as i32;
+                        let cand_x = drag.original_logical.0 + d_log_x;
+                        let cand_y = drag.original_logical.1 + d_log_y;
+                        let (sx, sy) = snap(
+                            cand_x,
+                            cand_y,
+                            logical.width,
+                            logical.height,
+                            &others,
+                            snap_threshold,
+                        );
+                        outputs::drag_update(&n_drag, (sx, sy));
+                        return;
+                    }
+                    outputs::drag_start(&n_drag, (point.x, point.y), (logical.x, logical.y));
+                })
+                .on_click(move |_| {
+                    outputs::select(&n_click);
+                });
+        } else {
+            box_rect = box_rect.on_click(move |_| {
+                outputs::select(&n_click);
+            });
+        }
+
+        layers.push(Box::new(box_rect));
+
+        if let Some(drag) = state.drag.as_ref().filter(|_| is_dragged) {
+            let (px, py, pw, ph) = fit.to_canvas(
+                drag.current_logical.0,
+                drag.current_logical.1,
+                logical.width,
+                logical.height,
+            );
+            let preview_box = monitor_box(monitor, pw, ph, true, false, roles)
+                .inert(true)
+                .translate(px, py);
+            dragged_layer = Some(Box::new(preview_box));
+        }
+    }
+
+    if let Some(dragged) = dragged_layer {
+        layers.push(dragged);
+    }
+
+    let container = Rectangle::new()
+        .width(canvas_w)
+        .height(canvas_h)
+        .radius(radius::CARD)
+        .fill(roles.surface_container)
+        .border(1.0, roles.edge())
+        .semantics(|| Semantics::new(Role::Region, "outputs-canvas"))
+        .clip()
+        .child(Stack::new(layers).width(canvas_w).height(canvas_h));
+
+    Box::new(container)
+}
+
+fn monitor_box(
+    monitor: &Monitor,
+    width: f32,
+    height: f32,
+    selected: bool,
+    ghost: bool,
+    roles: &ThemeRoles,
+) -> Rectangle {
+    let output = &monitor.output;
+    let logical = output.logical.unwrap();
+
+    let connector = &output.name;
+    let label = Text::new(connector.clone())
+        .size(theme::text::LABEL)
+        .weight(theme::text::SEMIBOLD)
+        .color(if ghost {
+            roles.on_surface_variant
+        } else if selected {
+            roles.primary
+        } else {
+            roles.on_surface
+        });
+
+    let res_scale = format!(
+        "{} \u{d7} {} \u{b7} {}x",
+        logical.width,
+        logical.height,
+        crate::settings::niri::format_number(logical.scale, 2)
+    );
+    let sub = Text::new(res_scale)
+        .size(theme::text::LABEL_SMALL)
+        .color(roles.on_surface_variant);
+
+    let items: Vec<Box<dyn Widget>> = if height >= 40.0 {
+        vec![Box::new(label), Box::new(sub)]
+    } else {
+        vec![Box::new(label)]
+    };
+    let content = Column::new(items).align(Center).gap(2.0);
+
+    let rect = Rectangle::new()
+        .width(width)
+        .height(height)
+        .radius(radius::ROW)
+        .align_child(Center, Center)
+        .child(content);
+
+    if ghost {
+        rect.fill(roles.surface_container_high)
+            .opacity(0.4)
+            .border(1.0, roles.edge())
+    } else if selected {
+        rect.fill(roles.surface_container_high)
+            .border(2.0, roles.primary)
+    } else {
+        rect.fill(roles.surface).border(1.0, roles.edge())
+    }
+}
+
+fn disconnected_view(
+    disconnected: &Disconnected,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    let name = disconnected.name.clone();
+    let state = &settings.outputs;
+    let blocked = state.blocked.is_some();
+    let acts = !blocked && state.trial.is_none();
+
+    let mut marks: Vec<Box<dyn Widget>> = vec![Box::new(
+        Text::new("Disconnected")
+            .size(theme::text::LABEL_SMALL)
+            .color(roles.on_surface_variant)
+            .weight(theme::text::MEDIUM),
+    )];
+
+    if acts && disconnected.config.set {
+        let reset_name = name.clone();
+        marks.push(link(
+            format!("reset disconnected output {name}"),
+            "reset",
+            "Reset",
+            settings,
+            roles,
+            move || outputs::reset(&reset_name),
+        ));
+    }
+
+    let heading = Row::new(
+        std::iter::once(Box::new(
+            Text::new(name.clone())
+                .size(theme::text::TITLE)
+                .color(roles.on_surface)
+                .weight(theme::text::SEMIBOLD),
+        ) as Box<dyn Widget>)
+        .chain(marks)
+        .collect(),
+    )
+    .gap(10.0)
+    .align(Center);
+
+    let block = format!(
+        "Saved in the block output \"{}\" of niri's config",
+        disconnected.config.block
+    );
+    let detail = [
+        state
+            .blocked
+            .clone()
+            .map(|w| format!("niri's config is read-only here: {w}")),
+        disconnected.config.owner.clone(),
+        disconnected.config.note.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(". ");
+
+    let head = vec![
+        Box::new(heading) as Box<dyn Widget>,
+        Box::new(wrapped(
+            Text::new(if detail.is_empty() { block } else { detail })
+                .size(theme::text::LABEL_SMALL)
+                .color(if state.blocked.is_some() {
+                    theme::window_signals().warning
+                } else {
+                    roles.on_surface_variant
+                })
+                .weight(theme::text::MEDIUM),
+            content(),
+        )),
+    ];
+
+    let mut rows: Vec<Box<dyn Widget>> = Vec::new();
+
+    let keys = [
+        (
+            "mode",
+            "Mode",
+            "The display mode configured for this monitor",
+        ),
+        ("scale", "Scale", "The UI scale configured for this monitor"),
+        (
+            "position",
+            "Position",
+            "The desktop position configured for this monitor",
+        ),
+        (
+            "transform",
+            "Transform",
+            "The rotation configured for this monitor",
+        ),
+        (
+            "variable-refresh-rate",
+            "Variable refresh rate",
+            "VRR setting configured for this monitor",
+        ),
+        (
+            "off",
+            "Off",
+            "Whether the monitor is configured to be disabled",
+        ),
+    ];
+
+    for (key, title, help) in keys {
+        if let Some(reading) = disconnected.config.readings.get(key) {
+            let val = match reading {
+                crate::niri_config::Reading::Own(v)
+                | crate::niri_config::Reading::Included(v, _)
+                | crate::niri_config::Reading::Overridden(v, _) => Some(v.clone()),
+                crate::niri_config::Reading::Unset => None,
+            };
+
+            if let Some(val) = val {
+                rows.push(labeled(
+                    row_label(&name, key, title, help, None),
+                    readonly(val, roles),
+                    false,
+                    settings,
+                    roles,
+                ));
+            }
+        }
+    }
+
+    if rows.is_empty() {
+        rows.push(plain("No managed properties set in this block", roles));
+    }
+
+    let mut card = Vec::new();
+    for row in rows {
+        if !card.is_empty() {
+            card.push(Box::new(hairline(inner(), roles)) as Box<dyn Widget>);
+        }
+        card.push(row);
+    }
+
+    Box::new(
+        Column::new(vec![
+            Box::new(Column::new(head).width(content()).gap(2.0)),
+            Box::new(card_of(card, roles)),
+        ])
+        .width(content())
+        .gap(HEADING),
     )
 }

@@ -1711,3 +1711,38 @@ fn rules_error_rejections() {
             .contains("unknown rule")
     );
 }
+
+#[test]
+fn output_blocks_lists_blocks_and_resets_disconnected_output() {
+    let dir = Dir::new(
+        "output-blocks-disconnected",
+        "output \"eDP-1\" {\n    scale 1.5\n}\noutput \"HDMI-A-1\" {\n    mode \"1920x1080@60\"\n    position x=1920 y=0\n}\noutput {\n    background-color \"#000\"\n}\n",
+    );
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    let blocks = editor.output_blocks().unwrap();
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[0].1.name, "eDP-1");
+    assert_eq!(blocks[1].1.name, "HDMI-A-1");
+    assert_eq!(blocks[2].1.name, "");
+
+    // filter unnamed blocks as read_config does for disconnected outputs
+    let named_blocks: Vec<_> = blocks
+        .into_iter()
+        .filter(|(_, b)| !b.name.is_empty())
+        .collect();
+    assert_eq!(named_blocks.len(), 2);
+
+    // reset the disconnected output HDMI-A-1
+    let id = OutputId::named("HDMI-A-1");
+    let result = editor.reset_output(&id, OUTPUT_KEYS);
+    assert!(result.is_ok());
+
+    let updated_blocks = editor.output_blocks().unwrap();
+    assert_eq!(updated_blocks.len(), 2);
+    assert_eq!(updated_blocks[0].1.name, "eDP-1");
+    assert_eq!(updated_blocks[1].1.name, "");
+    assert!(!dir.text().contains("HDMI-A-1"));
+}

@@ -18,6 +18,7 @@ pub type KeyHandler = Rc<dyn Fn(Key)>;
 // the keyboard focus left the window, for what only stands while it is there
 pub type LostHandler = Rc<dyn Fn()>;
 pub type PointHandler = Rc<dyn Fn(Point)>;
+pub type DragEndHandler = Rc<dyn Fn()>;
 pub type DropHandler = Rc<dyn Fn(Vec<PathBuf>)>;
 pub type HoldHandler = Rc<dyn Fn(bool)>;
 
@@ -27,6 +28,7 @@ pub struct Handlers {
     pub hover: Option<HoverHandler>,
     pub scroll: Option<ScrollHandler>,
     pub drag: Option<PointHandler>,
+    pub drag_end: Option<DragEndHandler>,
     pub motion: Option<PointHandler>,
     pub drop: Option<DropHandler>,
     pub hold: Option<HoldHandler>,

@@ -14,6 +14,7 @@
 mod act;
 mod tree;
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -106,7 +107,7 @@ pub struct Semantics {
     pub(crate) role: Role,
 
     // a node's name among its siblings and part of its id: fixed text of the source, never content
-    pub(crate) name: &'static str,
+    pub(crate) name: Cow<'static, str>,
 
     // what the shell or installed software calls it, like an app's name: said in every mode
     pub(crate) label: Option<String>,
@@ -133,10 +134,10 @@ pub struct Semantics {
 }
 
 impl Semantics {
-    pub fn new(role: Role, name: &'static str) -> Self {
+    pub fn new(role: Role, name: impl Into<Cow<'static, str>>) -> Self {
         Self {
             role,
-            name,
+            name: name.into(),
             label: None,
             content: None,
             level: None,

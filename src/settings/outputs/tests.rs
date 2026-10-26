@@ -127,6 +127,8 @@ impl Port for Fake {
                 output.logical.get_or_insert(Logical {
                     x: 0,
                     y: 0,
+                    width: 1920,
+                    height: 1080,
                     scale: 1.0,
                     transform: Transform::Normal,
                 });
@@ -209,6 +211,8 @@ fn panel() -> Output {
         logical: Some(Logical {
             x: 0,
             y: 0,
+            width: 1920,
+            height: 1080,
             scale: 1.0,
             transform: Transform::Normal,
         }),
@@ -231,6 +235,8 @@ fn dell() -> Output {
         logical: Some(Logical {
             x: 1920,
             y: 0,
+            width: 1280,
+            height: 1024,
             scale: 1.0,
             transform: Transform::Normal,
         }),
@@ -356,6 +362,8 @@ fn the_outputs_are_read_as_niri_prints_them() {
         Some(Logical {
             x: -5,
             y: 7,
+            width: 1,
+            height: 1,
             scale: 1.5,
             transform: Transform::Flipped270
         })
@@ -2031,4 +2039,91 @@ fn the_clock_thread_ends_a_trial_the_worker_never_ticks() {
     );
     assert!(!dir.file().exists());
     assert_eq!(fake.state("eDP-1"), before);
+}
+
+#[test]
+fn canvas_drag_lifecycle_and_safe_drag_end() {
+    use crate::settings::Settings;
+    use kanade_runtime::service::Service;
+
+    // start dragging DP-1
+    drag_start("DP-1", (10.0, 20.0), (0, 0));
+
+    let settings = Settings::read();
+    assert_eq!(settings.outputs.selected.as_deref(), Some("DP-1"));
+    let drag = settings.outputs.drag.as_ref().unwrap();
+    assert_eq!(drag.output, "DP-1");
+    assert_eq!(drag.start_offset, (10.0, 20.0));
+    assert_eq!(drag.original_logical, (0, 0));
+    assert_eq!(drag.current_logical, (0, 0));
+    drop(settings);
+
+    // update with non-matching output name does nothing
+    drag_update("HDMI-A-1", (500, 500));
+    assert_eq!(
+        Settings::read()
+            .outputs
+            .drag
+            .as_ref()
+            .unwrap()
+            .current_logical,
+        (0, 0)
+    );
+
+    // update with matching output name updates current_logical
+    drag_update("DP-1", (1920, 0));
+    assert_eq!(
+        Settings::read()
+            .outputs
+            .drag
+            .as_ref()
+            .unwrap()
+            .current_logical,
+        (1920, 0)
+    );
+
+    // drag_end with non-matching output name guards against stranding/clearing active drag
+    drag_end("HDMI-A-1");
+    assert!(Settings::read().outputs.drag.is_some());
+    assert_eq!(
+        Settings::read().outputs.drag.as_ref().unwrap().output,
+        "DP-1"
+    );
+
+    // drag_end when position changed back to original clears drag without edit
+    drag_update("DP-1", (0, 0));
+    drag_end("DP-1");
+    assert!(Settings::read().outputs.drag.is_none());
+}
+
+#[test]
+fn snap_calculation_across_display_dimensions() {
+    // 1080p monitor (1920x1080) at origin
+    let p1080 = Rect::new(0, 0, 1920, 1080);
+    // 4K monitor (3840x2160) placed to the right
+    let p4k = Rect::new(1920, 0, 3840, 2160);
+    let others = [p1080, p4k];
+
+    // Portrait 1440p (1440x2560) dragged near the left of 1080p
+    // Target X for adjacent-left: 0 - 1440 = -1440
+    let threshold = 24;
+    let (sx, sy) = snap(-1430, -10, 1440, 2560, &others, threshold);
+    assert_eq!(sx, -1440); // snapped to adjacent left
+    assert_eq!(sy, 0); // snapped to top alignment
+
+    // 1080p dragged near vertical center of 4K monitor
+    // 4K vertical center is (2160 - 1080) / 2 = 540
+    let (sx, sy) = snap(5750, 532, 1920, 1080, &others, threshold);
+    assert_eq!(sx, 5760); // adjacent right of 4K (1920 + 3840 = 5760)
+    assert_eq!(sy, 540); // centered vertically against 4K
+
+    // 1080p dragged near bottom of 4K monitor
+    // 4K bottom is 2160, so 1080p top is 2160 - 1080 = 1080
+    let (sx, sy) = snap(5755, 1070, 1920, 1080, &others, threshold);
+    assert_eq!(sx, 5760);
+    assert_eq!(sy, 1080); // bottom-aligned with 4K
+
+    // Candidate outside threshold maintains position without snapping
+    let (sx, sy) = snap(6000, 3000, 1920, 1080, &others, threshold);
+    assert_eq!((sx, sy), (6000, 3000));
 }

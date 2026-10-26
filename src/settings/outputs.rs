@@ -14,6 +14,7 @@
 //! Kanade exiting) puts `Previous` back from niri's side, never from the config, which may not hold
 //! what the output showed before.
 
+pub mod canvas;
 mod work;
 
 use std::collections::BTreeMap;
@@ -26,9 +27,11 @@ use crate::niri_config::{Op, OutputId, Value};
 use crate::sources::json::Json;
 use crate::sources::niri as ipc;
 
+pub use canvas::{BoundingBox, CanvasFit, Rect, SNAP_THRESHOLD, snap};
 pub use work::{
-    Monitor, State, edit, input, keep, recover_at_start, refresh, reset, revert, revert_on_exit,
-    sync_inputs, typed, typed_position,
+    Disconnected, Monitor, State, drag_end, drag_start, drag_update, edit, input, keep,
+    recover_at_start, refresh, reset, revert, revert_on_exit, select, sync_inputs, typed,
+    typed_position,
 };
 /// How long a trial waits for Keep before it reverts, and starts over at each further edit.
 pub const TRIAL_MS: u64 = 15_000;
@@ -211,8 +214,16 @@ impl Vrr {
 pub struct Logical {
     pub x: i32,
     pub y: i32,
+    pub width: u32,
+    pub height: u32,
     pub scale: f64,
     pub transform: Transform,
+}
+
+impl Logical {
+    pub fn rect(&self) -> canvas::Rect {
+        canvas::Rect::new(self.x, self.y, self.width, self.height)
+    }
 }
 
 /// A connected monitor as niri reports it.
@@ -309,6 +320,8 @@ fn parse_output(name: &str, output: &Json) -> Option<Output> {
             Some(Logical {
                 x: i32::try_from(logical.get("x")?.as_i64()?).ok()?,
                 y: i32::try_from(logical.get("y")?.as_i64()?).ok()?,
+                width: u32::try_from(logical.get("width")?.as_u64()?).ok()?,
+                height: u32::try_from(logical.get("height")?.as_u64()?).ok()?,
                 scale: logical.get("scale")?.as_f64()?,
                 transform: Transform::from_ipc(logical.get("transform")?.as_str()?)?,
             })

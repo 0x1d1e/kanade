@@ -4,13 +4,14 @@ use std::path::PathBuf;
 use crate::{Button, Cursor, Scroll};
 
 use super::Target;
-use super::target::{HoldHandler, HoverHandler};
+use super::target::{DragEndHandler, HoldHandler, HoverHandler};
 
 /*
  * a target across frames: its key and, among the targets of the frame that share it, its order.
  * A position in the list would point at another target once widgets before it come or go
  */
 type Id = (u64, u32);
+type Dragged = (Id, Option<DragEndHandler>);
 
 #[derive(Default)]
 pub struct Pointer {
@@ -28,7 +29,7 @@ pub struct Pointer {
     // went away still hears the pointer leave
     hovered: Vec<(Id, HoverHandler)>,
     pressed: Option<Id>,
-    dragged: Option<Id>,
+    dragged: Option<Dragged>,
 
     // the target a press is held on, with the handler it was told by, which a redraw may not have
     held: Option<(Id, HoldHandler)>,
@@ -59,6 +60,15 @@ impl Pointer {
             .is_some_and(|(id, _)| self.index(*id).is_none())
         {
             self.stop_hold();
+        }
+
+        // a target that went away mid-drag ends the drag
+        if self
+            .dragged
+            .as_ref()
+            .is_some_and(|(id, _)| self.index(*id).is_none())
+        {
+            self.stop_drag();
         }
 
         // the new frame's handler for each hovered target still there that has one
@@ -168,7 +178,7 @@ impl Pointer {
         self.inside = false;
 
         // the release will not reach this window, so the drag and the hold end here
-        self.dragged = None;
+        self.stop_drag();
         self.stop_hold();
 
         self.update_hovered(Vec::new())
@@ -271,18 +281,36 @@ impl Pointer {
     pub fn start_drag(&mut self) -> bool {
         self.dragged = self
             .find_topmost(|target| target.handlers.drag.is_some())
-            .map(|index| self.ids[index]);
+            .map(|index| {
+                let id = self.ids[index];
+                let drag_end = self.targets[index].handlers.drag_end.clone();
+
+                (id, drag_end)
+            });
 
         self.drag()
     }
 
-    pub fn stop_drag(&mut self) {
-        self.dragged = None;
+    pub fn stop_drag(&mut self) -> bool {
+        let Some((id, captured_end)) = self.dragged.take() else {
+            return false;
+        };
+
+        let handler = self
+            .index(id)
+            .and_then(|index| self.targets[index].handlers.drag_end.clone())
+            .or(captured_end);
+
+        if let Some(end) = handler {
+            end();
+        }
+
+        true
     }
 
     // keeps reporting to the target pressed on, even after the pointer leaves it
     pub fn drag(&self) -> bool {
-        let Some(id) = self.dragged else {
+        let Some((id, _)) = self.dragged else {
             return false;
         };
 

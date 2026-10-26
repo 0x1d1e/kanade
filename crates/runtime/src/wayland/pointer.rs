@@ -95,8 +95,8 @@ impl WaylandState {
                 let mut held = false;
 
                 if button == Button::Left {
-                    pointer.stop_drag();
-                    held = pointer.stop_hold();
+                    let stopped_drag = pointer.stop_drag();
+                    held = pointer.stop_hold() || stopped_drag;
                 }
 
                 pointer.release(button) || held
