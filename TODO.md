@@ -83,17 +83,17 @@ Not worth changing, by this review:
 
 ## Panes (Satellites as one liquid shape, ADR 0101)
 
-- [ ] Not seen: the neck as a Satellite comes out and tucks back (tinted, paper, blur; a dot bringing in a second one; a dot sliding to another slot). Tune `pane::blob::REACH` by eye: the neck lasts the last quarter of a dot's travel.
+- [x] Seen (blur, tinted, paper; over white and dark): the neck joins the body with no cut as a Satellite comes out and tucks back. `pane::blob::REACH` 32 kept. A faint tongue at low opacity during a fade-in is accepted.
 - [ ] Banners do not join the Island's body: they are a window of their own (ADR 0023).
 
 ## Panes (Blur finish, ADR 0057)
 
-- [ ] Not verified: windows behind a pane blurred (non-xray). It needs the niri layer rule `xray false` for `kanade`, `kanade-dock` and `kanade-banners` (`dist/niri/config.kdl`), which the E2E session's niri config lacks and an agent may not add. Without the rule, E2E on niri 26.04 showed the wallpaper blurred and a window's text under the Island hidden (xray), as niri's docs say. Check with the rule: text behind the Island, Dock and a Banner blurred, not hidden, and the fill's 78% (`pane::BLUR_FILL`) readable over a white window and a dark one.
-- [ ] Tune by eye once windows blur: `pane::BLUR_FILL`, and whether a flip to dark ink over a bright window (ADR 0054's) is wanted; none reads the page under Blur.
-- [ ] Not taken: the wakeup, frame-gap and memory baselines with Blur; the cost of non-xray blur in niri while a body morphs and a page animates behind it. Idle frames were 0 over 20 s at rest on the Island, with Blur and no rule, but not rechecked with it.
+- [x] Seen: windows behind a pane blur (non-xray) with the `xray false` layer rule present (`dist/niri/config.kdl`); the fill's 78% (`pane::BLUR_FILL`) reads over a white window and a dark one (~11:1 worst case). Not checked: the Dock.
+- [x] `pane::BLUR_FILL` kept at 78% by eye; a Banner's blur ramps smoothly. A flip to dark ink over a bright window (ADR 0054's) is not wanted.
+- [ ] Not taken: the wakeup, frame-gap and memory baselines with Blur; the cost of non-xray blur in niri while a body morphs and a page animates behind it. Idle frames: 0 at rest with the rule present (seen).
 - [ ] Not run: the fallback with a compositor that lacks the global or its blur capability (the opaque tinted solid, the doctor warning); and niri's `blur { off }`, where the capability may still say blur.
 - [ ] A Banner stops blurring the moment its fade out begins and starts when its fade in ends; the compositor's blur does not fade. A Dock fading aside for an open Surface (`aside`) likewise.
-- [ ] The shadow's corner pieces reach under a body's corners, so a translucent pane shows them faintly; cut them to the outline for Blur if seen.
+- [x] The shadow's corner pieces under a translucent pane: not seen.
 - [ ] Every size change of a body sends a new region (rows of rects, about the body's height in the worst case); coalescing or a cheaper cut is possible if a morph shows slow.
 
 ## Panes (glass removed, ADR 0049)
@@ -116,12 +116,6 @@ Not worth changing, by this review:
   - Not run: hidden-clock agenda expiry in the live session.
 - [x] The Tray Surface shrinks to its list as a menu goes back to it, under the pointer; Clipboard does the same on a query.
 
-## Privacy dots (ADR 0033)
-
-- [ ] A fullscreen window hides the dots by choice, and one `Fullscreen::covers` misses (no app id) hides them on the Top layer too; consider a niri-side hint if a capture under fullscreen proves a real gap.
-
-
-
 ## Acknowledgements features (review, low-level, unfixed)
 
 - [x] Keys and Wallpapers stat the files on each frame they draw (`binds()`, `wallpaper::images()`); cache by mtime if it shows: resolved (premise no longer holds) — both sites already cache scan results against filesystem metadata modification timestamps (`src/sources/binds.rs:94-118` via `READ`, `src/sources/wallpaper.rs:768-790` via `LISTED`); each frame checks mtimes with a stat to detect changes, while file reads, KDL parsing, and directory re-scans are fully short-circuited.
@@ -135,21 +129,19 @@ Not worth changing, by this review:
 - [x] The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim: resolved via Action::Undim in Schedule::lock_failed when dimmed and overlay::undim in idle::act.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
 
-- Calendar Surface: no undo for a removed event, and recurrence, place and a reminder cannot be typed (a file that holds them keeps them, ADR 0113); a change is read, checked and written in separate steps, so another writer between them wins.
 - [x] Calendar Surface: after "Changed elsewhere" the open field keeps its old baseline until Escape; the pointer hold on an event's Remove shows the key wording "Keep holding d to remove": resolved via `add::reread`, which the save's end calls to retake the event as its file now reads or drop what it cannot say (`src/surfaces/calendar.rs` `settled`), and `confirm::pointer`, which the footer asks so a pointer hold names no key (`src/surfaces/confirm.rs`).
 - Text fields: [x] an open Calendar edit field survives the Surface collapsing and reopening (pre-existing): resolved via `surfaces::calendar::start` watching `IslandService`, which drops the open field the moment the Surface is not showing (`src/surfaces/calendar.rs` `follow`). A `kanade ui press` is followed by the Surface collapsing after about 0.5 s (pre-existing).
 
 ## Design audit (not done)
 
-- No screen reader support (AT-SPI tree); an architecture change, see `docs/wiki/Limitations.md`.
 - No UI text scale setting; type sizes are fixed tokens.
 - The Session Surface treats Lock and the counted-down Restart, Power off and Log out alike in weight; the countdown with Cancel is the guard.
 - ADR numbers skip 0045.
 
-- Capture Surface: a failed screenshot is only logged to stderr, as the island is already closed; a failed recording start now shows a Failed Activity (ADR 0116).
+- [x] Capture Surface: a failed screenshot was only logged to stderr, as the island is already closed: it now shows a Failed Live Activity, "Screenshot failed" (`live::screenshot_failed`), as a failed recording start does (ADR 0116).
 
-- Settings: the header title sits at the window's left padding while the page column is centered; in a window maximized under the Island a long title runs under it.
-- Settings: stepper step sizes are fixed per kind, not adaptive to the range; its `-`/`+` buttons are pointer-only (Up/Down cover the keyboard).
+- [x] Settings: the header title now starts with the page column, and in a window maximized on a monitor a long title is elided before the Island (`title_room`).
+- Settings: stepper step sizes are fixed per kind, not adaptive to the range. [x] its `-`/`+` are Tab stops (Enter and Space step).
 
 ## External audit triage (a6f29f3)
 
@@ -191,7 +183,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [x] DDC: `monitors()` re-reads sysfs on each call and resolves each connector's `ddc` link through `canonicalize` to its `i2c-dev` node, so a replugged monitor's new bus number is found (`src/sources/ddc.rs:169`).
 - [x] Banners: `reply_field(monitor, pane)` interns one name per output and pane, so two outputs showing a reply-capable Banner at once keep separate drafts (`src/banners/mod.rs:570`).
   - The residual is small and different: each `(monitor, pane)` pair leaks a `&'static str` into a never-evicted map, bounded by outputs times panes.
-- [ ] E2E not reached: IME against a live fcitx5/ibus (none installed), the lock-screen layout label (needs two layouts), hold-to-confirm for Session, portal reduced-motion, `focus.auto` with a real cast. DDC/CI works on a Dell P1917S when the bus is given, and the NVIDIA fallback matching the connector's EDID to `/dev/i2c-*` buses was resolved in commit 75e2e07 (`edid_bus` in `src/sources/ddc.rs`).
+- [ ] E2E not reached: IME against a live fcitx5/ibus (none installed), the lock-screen layout label (needs two layouts), hold-to-confirm for Clipboard Clear and Calendar remove (Session asks a countdown with Cancel, not a hold), `focus.auto` with a real cast. DDC/CI works on a Dell P1917S when the bus is given, and the NVIDIA fallback matching the connector's EDID to `/dev/i2c-*` buses was resolved in commit 75e2e07 (`edid_bus` in `src/sources/ddc.rs`).
 
 ## appearance.sync and the GTK file chooser
 
@@ -219,7 +211,9 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - [x] Fixed: the trial encodes with the recorder's own rate control — `rate_control` feeds the trial and the recorder alike, so it proves CQP (`sources/recording/encode.rs:200`, test `a_trial_encodes_with_the_recorders_codec_and_filter`).
 - [x] Window recording (ADR 0117).
   - [x] Fixed: a window's own cast, which carries no pid, is left out of the privacy dots when the window-cast ledger holds its session, so Kanade's recording no longer shows beside the Recording Clip (`sources/niri.rs:383`, `sources/recording/window.rs:472`).
-  - [ ] Not verified live: niri's Stop sharing on a window cast (is the recording saved?), a lock during a window cast, `mic`, a HiDPI window, a window that resizes, A/V sync, the Capture Surface's Rec Window pill, the Launcher's Record Window row, the "Saved, window closed" Clip, the watchdog killing a stuck encoder.
+  - [x] Live (Iris, 2026-10): niri's Stop sharing on a window cast keeps the footage (a playable file); a window resized during a take is letterboxed; the Capture Surface's Rec Window pill; the Launcher's Record Window row; the "Saved, window closed" Clip; `-n` same-second collision (the next take is named "(2)"); a `kill -9` of Kanade mid-take leaves a playable 14.5 s file; the mic track is present (its content is not verified: the room was silent).
+  - [ ] Not verified live: a lock during a window cast, a HiDPI window, A/V sync, the watchdog killing a stuck encoder.
+  - [x] Fixed: niri's Stop sharing on a window cast said "failed to record ... target not found" though the footage was kept. A segment with a frame written whose encoder says `pipewiresrc ... target not found` while the window is still open is now saved, and the Clip says "Saved, sharing stopped" (`unshared`, `Cut::SharingStopped`, test `stop_sharing_saves_what_was_written`). Live: `niri msg action stop-cast --session-id N` left the file (6.14 s), `status` said `saved <path>` and the Clip read "Saved, sharing stopped".
   - [x] Live: a stop with no frame written. Screen path passes — a static screen held 12 s stopped in 0.025 s, the file surviving at 11.97 s / 165 frames, so the 5 s `LATER` limit is not hit. The window path fails: `start` returned exit 3 "no frame was written within 5s" yet a 433 KB / 130-frame file still appeared, so `Segment::Empty` and `discard_empty` never fired — see the broken-window-recordings item above.
   - [x] Fixed: a graceful exit ends a window cast it holds — `main.rs` calls `recording::shutdown`, which abandons the segment and stops the cast (`main.rs:84`, `sources/recording.rs:1693`).
   - [x] Fixed: ffmpeg concat joiner now passes `-fflags +genpts` (`sources/recording/plan.rs:393`) to regenerate monotonic packet timestamps across segment boundaries when joining paused recordings.
@@ -227,7 +221,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
     - The screen path is unaffected: it goes through `wf-recorder`, and its `kill -9` leaves a playable 8.04 s h264 1920x1080 file.
     - A crashed window recording leaves **nothing** — no file, no `.parts` folder — so there is no footage to recover.
     - Attribution is not settled. Measured: `pw-cat --record --target <cast node>` gets 1.1 MB from the same node, so niri does deliver frames; the identical gst chain by hand (`pipewiresrc path=<live node 89> … ! fdsink`) yields 0 bytes for 12 s; the same chain on `videotestsrc` streams 23 MB, so `vah264enc` is not the blocker. Two things to check first: `path=` is **deprecated** on `pipewiresrc` in favour of `target-object=` (`gst-inspect-1.0 pipewiresrc`), and the shell log shows only `capture: encoding with h264_vaapi` with no software-fallback line, so `falls_back` never fired — it only fires on `Segment::Lost` (`sources/recording.rs:1504`), and a chain that hangs without failing is never `Lost`.
-  - [ ] A window's frames reach `ffmpeg` in bursts (4 frames, then ~134 ms) with VA-API, an average of 30.8 fps: it stamps by arrival (`-use_wallclock_as_timestamps`), so the encoder's batching shows in the file's times. Predates the quality branch (ADR 0117). Stamp from `pipewiresrc`'s own times if the cast gives usable ones, or smooth the arrival.
+  - [x] Fixed (mostly): a window's frames reached `ffmpeg` in bursts (0-5 ms gaps, then 130+ ms, every ~145 frames, with a `non monotonically increasing dts` warning at each). Live probe on a cast of our own: `pipewiresrc` delivers a steady ~33 ms (340 of 340 gaps 28-40 ms, max 36.7), while the same chain with an `identity` after `vah264enc` shows the burst, so it is the encoder, not niri's delivery. Every keyframe stalls `vah264enc` (and `vah264lpenc`) for ~130 ms and four frames come out together; the stall does not show with `videotestsrc` or with `x264enc`, and no property but the GOP length changes it. `key-int-max=1024` (the most it takes) is now set (`sources/recording/encode.rs`): a 20 s animated take had 610 frames, 604 gaps of 28-40 ms (max 36.0), none over 40 ms, and its only sub-ms gaps are the last four frames that `-e` flushes at the stop. Still there: one such stall per 1024 frames (34 s at 30 fps, 7 s on a window that redraws at 144 Hz), and the keyframe interval is that long (a seek in a long take lands up to 34 s early).
+    - Before (Iris, 30 fps animated window): k.mp4 369 frames, 10 gaps of 0-5 ms, 354 of 28-36 ms, 2 over 100 ms (max 132.8); 3 dts warnings per 12 s. The cast's own pts are constant (niri stamps none that moves), so `pipewiresrc` times cannot replace the wall clock.
   - [x] **Fixed: `videorate` was what broke window recordings — removed from the chain, verified live.** `fae1e04` put `videorate ! video/x-raw(ANY),framerate=30/1` at `src/sources/recording/plan.rs:277` to pace a still window, and never amended ADR 0117. `pipewiresrc` offers no **fixed** input framerate (niri's cast carries none, and nothing fixated one before the element), and fed caps that fix none, `videorate` passes a single frame and then bursts the rest at `stop`. Lab, 10 s each: `videotestsrc is-live=true ! video/x-raw,framerate=0/1 ! videorate ! framerate=30/1 ! fdsink` gave 614 KB / **one frame**; the same source without `videorate`, 221 MB; a fixed `30/1` input into `videorate`, 184 MB. It was not the element but the caps it was given.
     - Live before: 729/1489/1460 frames in 2.45/5.02/5.02 s files, a file rate of **291-297 fps** against ~27 fps of real content, nothing on disk until `stop`, and `start` always hit its 5 s budget (exit 3).
     - Live after (Felix, `03ad9a2`, niri's own cast, VA-API): an animated window 20.01 s wall → **20.17 s / 609 frames / 30.2 fps**, playable, the file growing throughout (299 KB at 5 s, 1.2 MB at 20 s) and `start` answering in 0.96 s; a 25.18 s take → 25.10 s / 2916 frames; a still window 24.01 s wall → **24.28 s / 30 frames** and 23.7 s / 44 frames, i.e. few frames at a correct duration, which is VFR working as ADR 0117 decided. `kill -9` mid-recording now leaves 8.13 s of playable footage (before: nothing), and the next start reclaimed the leftover cast.
@@ -250,8 +245,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - [x] Fixed: "Saved, window closed" needs the window really gone — `take.closed` is set only where niri says the window is absent (`sources/recording.rs:1993`, `:2262`), so a cast that ends with the window still there cannot say it closed (`view/forms.rs:324`). No neutral wording was needed, since that path no longer ends as a saved clip; what it does end as needs a live run.
   - [x] Fixed: `default_sigint` unblocks SIGINT in its `pre_exec` as well as resetting its disposition, so an encoder started while Kanade's mask blocks SIGINT still takes the interrupt (`clock.rs:584`).
   - [ ] The clip's duration includes the first-frame latency (0.2-2 s).
-  - [ ] The same-second NOREPLACE collision for window recordings (`-n`) is not verified live.
-  - [ ] A `kill -9` of Kanade during a real window recording leaves a playable fragmented mp4: verified on a synthetic pipeline only, not live.
+  - [x] The same-second NOREPLACE collision for window recordings (`-n`): live, the next take is named with "(2)".
+  - [x] A `kill -9` of Kanade during a real window recording leaves a playable fragmented mp4: live (Iris), a 14.5 s playable file.
 - [x] A system and microphone mix (one source at a time now).
 - [x] Kanade's own region overlay in place of `slurp`.
 - [x] Live: `wf-recorder` takes `--audio=@DEFAULT_MONITOR@` and `--audio=@DEFAULT_SOURCE@` — both produced a real `aac 48000 2ch` track (7.79 s and 5.98 s). Their **content** is NOT RUN: this machine's system-audio and mic paths carry no signal (`-91.0 dB`, and a direct `pw-record` from the same source is equally silent), so nothing about audio levels is proven. Area geometry passes: `area "100,50 640x480"` gave exactly 640x480 / 5.01 s, and a screen recording on HDMI-A-5 gave 1280x1024.
@@ -259,7 +254,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [x] Fixed: the start's reclaim sweeps leftover parts folders — `sweep` moves a lone segment back to the `.mp4` (or joins them), and a failed join puts the first segment back (`sources/recording.rs:2337`, `:2484`). The folder is `.<stem>.parts` beside the file now, not `.Screencast from <stamp>.parts` (`:866`); no test walks the leftover path.
 - [x] Fixed: a `slurp` that ignores SIGTERM is escalated — `escalate_picker` kills it after `STOPPING` (5 s) if it is still the one running (`sources/recording.rs:1640`).
 - [ ] The Launcher's recording rows read the recording's standing (Rec) once per frame: they are recomputed on each fit, key, wheel and render, so a recording that ends while it is open shows at most one frame late.
-- [ ] Not verified live: that the Failed Activity (preempting, for a start that fails) is seen over the Capture Surface when `slurp` is missing; a failure from a join or a recorder that ends does not preempt.
+- [ ] Not verified live: that the Failed Activity (preempting, for a start that fails) is seen over the Capture Surface (the region overlay is Kanade's own now, no `slurp`); a failure from a join or a recorder that ends does not preempt.
 - [x] Live: `capture record stop` on a static screen does **not** wait past the CLI's 5 s reply — a still screen held 12 s stopped in 0.025 s, the file surviving at 11.97 s / 165 frames, so the damage-driven next frame arrives in time.
 - [x] Live: a paused window recording's join excludes the pause instead of splicing it in — 4 s record, 5 s pause, 4 s resume gave two segments in `.parts` joined to one 8.02 s file, 346 frames, clean decode.
 - [x] Fixed: a join no longer outlasts a waiting call — `Effect::Join` answers with the file before the join runs when there is more than one segment, and a failed join refuses only whoever waits after it (`sources/recording.rs:280`; the join itself is still bounded by `JOINING`, `:78`).
