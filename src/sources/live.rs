@@ -1175,6 +1175,32 @@ pub fn gesture(title: &str, detail: &str) {
     IslandService::write().post(activity(GESTURE, job, Vec::new()), Instant::now());
 }
 
+// the id of a failed screenshot; a space is outside a client's alphabet
+const SHOT: &str = "screenshot failed";
+
+/*
+ * a screenshot the Capture Surface asked for and niri did not take (`capture::screenshot`): the
+ * island is closed by then, so the failed form of a Live Activity says so a while on the focused
+ * output, as a failed recording start does. `why` is kept to a line
+ */
+pub fn screenshot_failed(why: &str) {
+    let job = Job {
+        title: String::from("Screenshot failed"),
+        detail: why
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect(),
+        progress: None,
+        ended: Some(Ended::Failed),
+        serial: 0,
+    };
+
+    IslandService::write().post(activity(SHOT, job, Vec::new()), Instant::now());
+}
+
 // the id of the first-start health notice; a space is outside a client's alphabet
 const HEALTH: &str = "health notice";
 

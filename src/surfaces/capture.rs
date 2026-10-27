@@ -19,6 +19,7 @@ use crate::icon::Icon;
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::capture::{self, Mode};
+use crate::sources::live;
 use crate::sources::recording::{self, Audio, Request, Standing, Start, Target};
 
 // the island's collapse and the compositor's frame after it, so a screenshot does not catch it
@@ -218,6 +219,7 @@ fn press(focus: Focus<At>, at: At) -> Focus<At> {
             spawn("capture-surface", move || {
                 if let Err(why) = capture::screenshot(mode) {
                     eprintln!("capture: {why}");
+                    live::screenshot_failed(&why);
                 }
             });
         }
