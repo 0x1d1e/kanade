@@ -105,13 +105,23 @@ pub trait LauncherProvider {
 pub fn ranked(providers: &[&dyn LauncherProvider], query: &str) -> Vec<Answer> {
     let query = query.trim();
 
-    let mut answers: Vec<Answer> = providers
-        .iter()
-        .flat_map(|provider| provider.find(query))
-        .collect();
+    ordered(
+        providers
+            .iter()
+            .flat_map(|provider| provider.find(query))
+            .collect(),
+        query,
+    )
+}
+
+// `answers` in Fit order, then each fit's best match of `query`; stable, so a provider's own order
+// breaks score ties. A single provider's answers sorted by itself: `?` lists the command table
+// alone this way (ADR 0135)
+pub fn ordered(mut answers: Vec<Answer>, query: &str) -> Vec<Answer> {
+    let query = query.trim();
 
     // Fit remains the outer ordering; scores sort only answers in the same tier. `sort_by`
-    // is stable, so providers' order and each provider's own order break score ties.
+    // is stable, so a provider's own order breaks score ties.
     answers.sort_by(|left, right| {
         left.fit.cmp(&right.fit).then_with(|| {
             let left_score = match_score(query, &left.title).unwrap_or(i32::MIN);

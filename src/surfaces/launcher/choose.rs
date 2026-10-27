@@ -157,6 +157,24 @@ pub(super) fn of(visit: u64) -> Option<(Option<String>, Arc<[Choice]>)> {
         .then(|| (choosing.prompt.clone(), choosing.choices.clone()))
 }
 
+// a dmenu's visit showing `lines`, as one opened for the user does (test support)
+#[cfg(test)]
+impl Choosing {
+    pub(super) fn showing(visit: u64, lines: &[&str]) -> Choosing {
+        Choosing {
+            visit,
+            prompt: None,
+            choices: lines
+                .iter()
+                .map(|line| Choice {
+                    shown: (*line).to_owned(),
+                    lower: (*line).to_owned(),
+                })
+                .collect(),
+        }
+    }
+}
+
 // the dmenu's lines, as a Launcher provider; pressing one answers it
 pub(super) struct Choices<'a>(pub &'a [Choice]);
 

@@ -292,8 +292,26 @@ impl LauncherProvider for Commands {
      * An empty query lists every command, each as a Prefix
      */
     fn find(&self, query: &str) -> Vec<Answer> {
-        // an empty query lists every command; a query of one letter lists the apps alone
-        if !query.is_empty() && query.chars().count() < FROM {
+        self.matching(query, FROM)
+    }
+}
+
+/*
+ * the commands `?` lists: every one that fits, from a single letter, since no other provider
+ * answers after the `?` (ADR 0135)
+ */
+impl Commands {
+    pub fn find_any(&self, query: &str) -> Vec<Answer> {
+        self.matching(query, 1)
+    }
+
+    /*
+     * the commands whose name fits `query`; nothing below `from` letters, and the empty query
+     * lists every command
+     */
+    fn matching(&self, query: &str, from: usize) -> Vec<Answer> {
+        // an empty query lists every command; a query shorter than `from` lists none
+        if !query.is_empty() && query.chars().count() < from {
             return Vec::new();
         }
 

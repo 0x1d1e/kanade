@@ -6,9 +6,8 @@
 //! never presses.
 //!
 //! One scrolling grid with the groups' titles in it, not tabs: the whole table is one scroll away,
-//! and a title is a heading rather than a mode to leave. The Launcher's `:` provider searches the
-//! same table (`emoji::data`) but is another interaction: it answers a query, this one shows
-//! everything.
+//! and a title is a heading rather than a mode to leave. `:` in the Launcher opens this Surface at
+//! once (ADR 0135), so the table has one interaction: it is browsed here, not answered from a query.
 //!
 //! A tile draws the emoji's picture, written once per tile drawn from its color font
 //! (`emoji::picture`), or the emoji as text where the font has no picture of it.

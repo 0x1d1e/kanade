@@ -1,8 +1,7 @@
 /*
- * every emoji Kanade offers, in Unicode's order, one table shared by the Launcher's `:` provider and
- * the Emoji Surface: what it is called, the shortcodes it answers, and the group it belongs to. The
- * name and the shortcodes are lowered once here, so a search compares them instead of building them
- * for every redraw
+ * every emoji Kanade offers, in Unicode's order, one table the Emoji Surface lists: what each is
+ * called, the shortcodes it answers, and the group it belongs to. The name and the shortcodes are
+ * lowered once here, so a search compares them instead of building them for every redraw
  */
 
 use std::ops::Range;

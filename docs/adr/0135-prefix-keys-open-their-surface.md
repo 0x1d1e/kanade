@@ -11,10 +11,10 @@ The command table (ADR 0112) had no way in of its own: a command was found by ty
 ## Decision
 
 - **Four prefix keys.** `@` opens Wallpapers, `:` opens Emoji, `>` opens Clipboard, and `?` lists every command.
-- **`@`, `:` and `>` hand off to the Surface of the same name at once.** The key is consumed: the Surface opens with an empty search and the next key reaches its field. The hand-off happens when the query is exactly the prefix, so a longer query like `:smile` is never built in the Launcher — the Surface opens on the first key. The Surface opens only while its Module is on; with the Module off the character stays an ordinary search, following the withheld-Surface invariant — a Surface that is withheld never opens this way.
+- **`@`, `:` and `>` hand off to the Surface of the same name at once.** The key is consumed: the Surface opens with an empty search and the next key reaches its field. The hand-off happens when a *typed* query is exactly the prefix, so a longer query like `:smile` is never built in the Launcher — the Surface opens on the first key. A prefix pasted with `Ctrl+V`, or one a deletion leaves as the whole query, stays an ordinary search: only the key that typed it hands off, so a lone prefix answers nothing and is never offered to the web (ADR 0130). The Surface opens only while its Module is on; with the Module off the character stays an ordinary search, following the withheld-Surface invariant — a Surface that is withheld never opens this way.
 - **`?` is a mode, not a Surface.** It ranks the closed command table (`commands::TABLE`, ADR 0112) alone, filtered by what follows it, with no other provider and no web fallback; `?` alone lists every command. It is not a Surface because the table is a list of verbs, not a grid to browse, and the Launcher is already the place a verb is pressed.
 - **The in-Launcher emoji provider and the clipboard-history provider are deleted**, since their Surfaces replace them. `Mark::Emoji`, `Action::Paste`, `emoji::PREFIX`, `history::PREFIX` and `destinations::WALLPAPER` go with them, and the providers no longer skip another's prefix.
-- **A hand-off from the detached Launcher collapses that window first** (ADR 0131), so exactly one window holds the keyboard. In the island host the Surface is switched in place, keeping the visit, its pin and its hold.
+- **A hand-off from the detached Launcher collapses that window first** (ADR 0131), so exactly one window holds the keyboard. In the island host the Surface is switched in place: the island expands on it, which starts a new visit and unpins it — exactly as pressing a destination row did before this change (ADR 0131). A hand-off from a pinned Launcher therefore unpins it; consistency with a pressed destination row is the point, not keeping the pin.
 
 ## Alternatives
 
@@ -25,5 +25,6 @@ The command table (ADR 0112) had no way in of its own: a command was found by ty
 ## Consequences
 
 - The Launcher no longer writes the clipboard itself: `Action::Paste` is gone, and the Clipboard Surface is what puts an entry back.
+- A pasted lone prefix, or one a deletion leaves as the whole query, is a plain search with no answers: only a typed prefix hands off.
 - `kanade ui describe` still names the Launcher's field, and the placeholder names the four keys, each gated on its Module.
 - `CONTEXT.md`'s LauncherProvider section loses emoji and clipboard history from the provider list and gains the four keys as invariants.

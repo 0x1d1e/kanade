@@ -347,11 +347,6 @@ fn cycle(all: &[Module], start: usize) -> Option<Vec<&'static str>> {
 
 static MODULES: OnceLock<Modules> = OnceLock::new();
 
-#[cfg(test)]
-pub fn init_test() {
-    let _ = MODULES.get_or_init(|| resolve(ALL, |_| false));
-}
-
 /*
  * resolves the Modules against the config, says on stderr what is not as asked, and starts every
  * Module that is on, in order; called once, before the shell runs

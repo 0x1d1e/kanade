@@ -1,15 +1,18 @@
-//! The Launcher Surface: a search over its providers, the apps `sources::apps`
-//! lists and their own actions, the open windows (`windows`), the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, each Surface, Settings and
-//! each setting), with `wallpaper-surface` on, the Wallpapers Surface for anything after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
+//! The Launcher Surface: a search over its providers, the apps `sources::apps` lists and their own
+//! actions, the open windows (`windows`), the calculator, where Kanade goes (Wi-Fi, Bluetooth, each
+//! Surface, Settings and each setting), and commands (`commands`, Kanade's own verbs), best answer
+//! first. A typed `@`, `:` or `>` opens the Surface of that name at once, and `?` lists the command
+//! table alone (ADR 0135).
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
-//! starts and the island closes; a value or an emoji is copied, and the island
-//! closes once it is, or says it was not; a command (`commands`, Kanade's own verbs) runs through the socket and closes the island once answered, or says `Not run`. It says when the apps are still being found and when
-//! nothing matches. With nothing typed it lists sections, a heading over each: the Recents (by
-//! frecency), then Kanade's Commands, the open Windows and the Apps. `Ctrl+K` opens the actions of the
-//! selected answer (`actions`) in the list's place, `Ctrl+1` through `Ctrl+9` press the nth answer, and
-//! `kanade dmenu` opens it on a script's lines alone (`choose`). A query nothing answers offers to
-//! search Google for it or open it in the browser (`web`, ADR 0130).
+//! starts and the island closes; a value is copied, and the island closes once it is, or says it was
+//! not; a command runs through the socket and closes the island once answered, or says `Not run`. It
+//! says when the apps are still being found and when nothing matches. With nothing typed it lists
+//! sections, a heading over each: the Recents (by frecency), then Kanade's Commands, the open Windows
+//! and the Apps. `Ctrl+K` opens the actions of the selected answer (`actions`) in the list's place,
+//! `Ctrl+1` through `Ctrl+9` press the nth answer, and `kanade dmenu` opens it on a script's lines
+//! alone (`choose`). A query nothing answers offers to search Google for it or open it in the
+//! browser (`web`, ADR 0130).
 
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
@@ -815,8 +818,14 @@ fn follow_style() {
     }
 }
 
-// whether a single prefix character hands off directly to its Surface (ADR 0135)
-fn handed(query: &str, offered: &Destinations) -> Option<Destination> {
+// whether `key` hands the Launcher off to a prefix's Surface (ADR 0135): only the key that typed
+// the character does, only while the Surface's Module is on, and never in a dmenu's visit, whose
+// stdin lines are the only provider (`CONTEXT.md`)
+fn hands_off(visit: u64, key: Key, query: &str, offered: &Destinations) -> Option<Destination> {
+    if !matches!(key, Key::Character(_)) || choose::of(visit).is_some() {
+        return None;
+    }
+
     match query {
         "@" if offered.wallpapers => Some(Destination::Wallpapers),
         ":" if offered.emoji => Some(Destination::Emoji),
@@ -1185,11 +1194,7 @@ fn rank(apps: &[App], query: &str, recording: Rec, read: bool, key: &Inputs) -> 
     if query.trim().starts_with('?') && key.launcher_commands {
         let rest = query.trim()[1..].trim();
         let provider = commands(true, recording);
-        let mut ranked = if rest.is_empty() {
-            provider::ranked(&[&provider], "")
-        } else {
-            provider::ranked(&[&provider], rest)
-        };
+        let mut ranked = provider::ordered(provider.find_any(rest), rest);
 
         // Learned queries order commands that fit alike (ADR 0127) without distorting the list:
         // all commands remain listed on `?`, with previously chosen commands prioritized within their fit tier.
@@ -2000,7 +2005,7 @@ fn typed(monitor: &str, visit: u64, rec: Rec, key: Key) -> bool {
 
     if intent == Intent::Idle {
         let destinations = destinations();
-        if let Some(destination) = handed(&query, &destinations) {
+        if let Some(destination) = hands_off(visit, key, &query, &destinations) {
             let _ = open(monitor, &destination);
             return true;
         }
@@ -3072,9 +3077,11 @@ mod tests {
         );
     }
 
-    // prefix characters hand off immediately only when their module is on and the query is exactly the prefix
+    // only the key that typed a lone prefix hands off, and only while its Module is on: a pasted
+    // prefix, or one a deletion leaves as the whole query, stays an ordinary search, and a dmenu's
+    // visit keeps its stdin lines the only provider (ADR 0135)
     #[test]
-    fn handed_hands_off_only_on_exact_prefix_with_module_on() {
+    fn only_a_typed_lone_prefix_hands_off() {
         let on = Destinations {
             wallpapers: true,
             emoji: true,
@@ -3083,46 +3090,59 @@ mod tests {
         };
         let off = Destinations::default();
 
-        assert_eq!(handed("@", &on), Some(Destination::Wallpapers));
-        assert_eq!(handed(":", &on), Some(Destination::Emoji));
-        assert_eq!(handed(">", &on), Some(Destination::Clipboard));
+        assert_eq!(
+            hands_off(0, Key::Character('@'), "@", &on),
+            Some(Destination::Wallpapers)
+        );
+        assert_eq!(
+            hands_off(0, Key::Character(':'), ":", &on),
+            Some(Destination::Emoji)
+        );
+        assert_eq!(
+            hands_off(0, Key::Character('>'), ">", &on),
+            Some(Destination::Clipboard)
+        );
 
-        assert_eq!(handed("@", &off), None);
-        assert_eq!(handed(":", &off), None);
-        assert_eq!(handed(">", &off), None);
+        // a key that types nothing leaves the same query without handing off
+        assert_eq!(hands_off(0, Key::Backspace, "@", &on), None);
+        assert_eq!(hands_off(0, Key::Home, ":", &on), None);
+        assert_eq!(hands_off(0, Key::Delete, ">", &on), None);
 
-        // a prefix typed as part of text is an ordinary search
-        assert_eq!(handed("@foo", &on), None);
-        assert_eq!(handed(":foo", &on), None);
-        assert_eq!(handed(">foo", &on), None);
+        // a longer query, or one the prefix was typed into, is an ordinary search
+        assert_eq!(hands_off(0, Key::Character('f'), "@f", &on), None);
+        assert_eq!(hands_off(0, Key::Character('@'), "@bar", &on), None);
 
-        // '?' is a mode handled in rank, not a handoff
-        assert_eq!(handed("?", &on), None);
+        // with the Module off the character stays an ordinary search
+        assert_eq!(hands_off(0, Key::Character('@'), "@", &off), None);
+        assert_eq!(hands_off(0, Key::Character(':'), ":", &off), None);
+
+        // a dmenu's visit answers from its stdin lines alone
+        store(Choosing::showing(7, &["one"]));
+        assert_eq!(hands_off(7, Key::Character('@'), "@", &on), None);
+        store(Choosing::default());
     }
 
-    // '?' queries reach the commands table directly without other providers or web fallback
+    // `?` lists commands from one letter, which an ordinary query never does (ADR 0135)
     #[test]
-    fn question_mark_query_reaches_the_commands_table() {
-        crate::modules::init_test();
-
-        let key = Inputs {
-            launcher_commands: true,
-            ..Inputs::default()
+    fn question_mark_lists_commands_from_one_letter() {
+        let commands = Commands {
+            caffeine: true,
+            ..Commands::default()
         };
-        let found = rank(&[], "?lock", Rec::Idle, true, &key);
-        let titles: Vec<&str> = found.answers.iter().map(|a| a.title.as_str()).collect();
-        assert!(titles.contains(&"Lock Screen"), "{titles:?}");
 
-        // '?' alone lists every offered command
-        let all_found = rank(&[], "?", Rec::Idle, true, &key);
-        assert!(!all_found.answers.is_empty());
+        assert!(
+            commands
+                .find_any("c")
+                .iter()
+                .any(|answer| answer.title == "Toggle Caffeine"),
+            "{:?}",
+            commands.find_any("c")
+        );
 
-        // with launcher.commands off, '?' is an ordinary search
-        let key_off = Inputs {
-            launcher_commands: false,
-            ..Inputs::default()
-        };
-        let off_found = rank(&[], "?lock", Rec::Idle, true, &key_off);
-        assert!(off_found.answers.is_empty());
+        // the same one-letter query finds nothing through `find`, which keeps FROM = 2
+        assert!(commands.find("c").is_empty());
+
+        // a command whose Module is off is never listed
+        assert!(commands.find_any("w").is_empty());
     }
 }
