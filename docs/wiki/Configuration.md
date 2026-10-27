@@ -52,8 +52,8 @@ sync = false
 accessibility = true
 # how the Island and Dock settle: "bouncy" like macOS, "smooth" with no overshoot, "snappy", or "playful"
 motion = "bouncy"
-# installed family for shell labels; unset uses Inter, then sans-serif. A family without a static SemiBold face renders regular weights, takes a restart
-# font = "Inter"
+# installed family for shell labels; unset uses Open Sauce One. A family without a static SemiBold face renders regular weights, takes a restart
+# font = "Open Sauce One"
 # the size of everything Kanade draws, on top of each output's own scale: 100% is unchanged, 125% a quarter larger. Windows already open keep their size; the lock screen is not scaled, % 80-200
 scale = 100
 

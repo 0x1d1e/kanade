@@ -1792,7 +1792,7 @@ fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
         let system = if chosen.is_some() {
             "Use the system default"
         } else {
-            "Using the system default: Inter, then sans-serif"
+            "Using the default: Open Sauce One"
         };
         if chosen.is_some() {
             items.push(font_choice(system, false, settings, roles, || {

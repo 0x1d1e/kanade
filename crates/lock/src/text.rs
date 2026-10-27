@@ -21,6 +21,9 @@ pub struct FontFile {
     // as fontconfig says it: a variable font's named instance above the face's own index
     pub index: u32,
     pub weight: f32,
+
+    // set when the shell embeds the face, so the lock does not read `path`
+    pub bytes: Option<&'static [u8]>,
 }
 
 impl FontFile {

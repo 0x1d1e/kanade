@@ -30,6 +30,46 @@ pub fn set_default(family: &str) {
     *default_family = String::from(family);
 }
 
+// faces of one family kept in the binary. An unset `appearance.font` installs them; a set family
+// does not, so it still resolves through fontconfig
+struct Installed {
+    family: String,
+    faces: HashMap<String, &'static [u8]>,
+}
+
+static INSTALLED: LazyLock<Mutex<Option<Installed>>> = LazyLock::new(|| Mutex::new(None));
+
+// `faces` are `(style, bytes)`, style as `Weight::style` names it (`"Regular"`, `"Medium"`, `"SemiBold"`)
+pub fn install(family: &str, faces: &[(&str, &'static [u8])]) {
+    let mut installed = INSTALLED.locked();
+    let slot = installed.get_or_insert_with(|| Installed {
+        family: String::from(family),
+        faces: HashMap::new(),
+    });
+
+    if !slot.family.eq_ignore_ascii_case(family) {
+        slot.family = String::from(family);
+        slot.faces.clear();
+    }
+
+    for (style, bytes) in faces {
+        slot.faces.insert(String::from(*style), *bytes);
+    }
+}
+
+// the installed face of `family` in `style`, none when that family was not installed or that
+// weight was not given
+pub fn installed(family: &str, style: &str) -> Option<&'static [u8]> {
+    let installed = INSTALLED.locked();
+    let installed = installed.as_ref()?;
+
+    if !installed.family.eq_ignore_ascii_case(family) {
+        return None;
+    }
+
+    installed.faces.get(style).copied()
+}
+
 pub fn load_weighted(family: Option<&str>, weight: Weight) -> &'static Face<'static> {
     let family = match family {
         Some(family) => String::from(family),
@@ -63,7 +103,12 @@ fn read(family: &str, weight: Weight) -> Face<'static> {
         other => Some(other.style()),
     };
 
-    // the family is the user's (`appearance.font`), so one that is not installed, or a broken
+    // an unset `appearance.font` is installed from the shell's bytes, ahead of fontconfig
+    if let Some(face) = open_installed(family, weight) {
+        return face;
+    }
+
+    // a set family, or a weight the install did not give: one that is not installed, or a broken
     // fontconfig, draws in a fallback rather than ending the shell
     if let Some(face) = open_family(family, style) {
         return face;
@@ -72,6 +117,13 @@ fn read(family: &str, weight: Weight) -> Face<'static> {
     eprintln!("kanade: no font for {family:?}, drawing with sans-serif");
 
     open_family("sans-serif", style).unwrap_or_else(built_in)
+}
+
+// the installed face of this weight, none when `family` was not installed or the weight was not given
+fn open_installed(family: &str, weight: Weight) -> Option<Face<'static>> {
+    let bytes = installed(family, weight.style())?;
+
+    Face::parse(bytes, 0).ok()
 }
 
 // the face fontconfig picks for a family, none when it cannot start or finds nothing it can open

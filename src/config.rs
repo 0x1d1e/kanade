@@ -283,7 +283,7 @@ pub struct Appearance {
     // share the tone with supported desktop, GTK, Qt and Zen appearance adapters
     pub sync: bool,
 
-    // the family every label is set in, else Inter, else the system's sans-serif
+    // the family every label is set in, else Open Sauce One
     pub font: Option<String>,
 
     // follow the desktop's reduced motion and higher contrast (ADR 0080)
@@ -1817,14 +1817,14 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.font",
         label: "Font",
-        help: "installed family for shell labels; unset uses Inter, then sans-serif. A family without a static SemiBold face renders regular weights",
+        help: "installed family for shell labels; unset uses Open Sauce One. A family without a static SemiBold face renders regular weights",
         kind: Kind::Text(Field {
             get: |config| config.appearance.font.clone(),
             set: |config, font| config.appearance.font = font,
         }),
         tail: Tail {
             hint: Some("Typeface for the shell's labels"),
-            example: Some("\"Inter\""),
+            example: Some("\"Open Sauce One\""),
             // the runtime takes the font as the app starts
             restart: true,
             ..Tail::DEFAULT

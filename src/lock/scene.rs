@@ -128,35 +128,54 @@ fn color(color: Color) -> kanade_lock::Color {
 }
 
 /*
- * the shell's family (`theme::font`) in the weights the lock screen sets, found once; the time in
- * Inter Display, as SF Pro sets large text in its display cut, when the family is Inter
+ * the shell's family (`theme::font`) in the weights the lock screen sets, found once. Unset uses
+ * the vendored Open Sauce One, the same bytes as the shell's labels. The time is in Inter Display,
+ * as SF Pro sets large text in its display cut, only when `appearance.font` is Inter
  */
 fn fonts() -> &'static Fonts {
     static FONTS: OnceLock<Fonts> = OnceLock::new();
 
     FONTS.get_or_init(|| {
+        let unset = config::get().appearance.font.is_none();
+        if unset {
+            crate::face::install();
+        }
+
         let family = family();
         let fontconfig = Fontconfig::new();
-        let font = |family: &str, weight| {
+        let matched = |family: &str, weight| {
             fontconfig
                 .as_ref()
                 .and_then(|fontconfig| font(fontconfig, family, weight))
         };
 
-        // fontconfig's weights, and the same as CSS's, which a variable font is set to
-        let regular = font(family, (80, 400.0)).unwrap_or_default();
-        let semibold = font(family, (180, 600.0)).unwrap_or_default();
+        // fontconfig's weights, and the same as CSS's, which a variable font is set to. Unset draws
+        // the vendored face; a weight it does not hold falls through rather than ending the lock
+        let weighted = |style: &str, weight: (i32, f32)| {
+            if unset && let Some(bytes) = crate::face::bytes(style) {
+                return FontFile {
+                    path: PathBuf::from(format!("embedded:{style}")),
+                    index: 0,
+                    weight: weight.1,
+                    bytes: Some(bytes),
+                };
+            }
 
-        // the time in Inter Display where Inter is the face and it is installed, else in the face
-        let display = family
-            .eq_ignore_ascii_case("Inter")
-            .then(|| font("Inter Display", (180, 600.0)))
+            matched(family, weight).unwrap_or_default()
+        };
+
+        let regular = weighted("Regular", (80, 400.0));
+        let semibold = weighted("SemiBold", (180, 600.0));
+
+        // Inter Display only for an explicit Inter, and only when that cut is installed
+        let display = (!unset && family.eq_ignore_ascii_case("Inter"))
+            .then(|| matched("Inter Display", (180, 600.0)))
             .flatten()
             .filter(|display| display.path != semibold.path || display.index != semibold.index)
             .unwrap_or_else(|| semibold.clone());
 
         Fonts {
-            medium: font(family, (100, 500.0)).unwrap_or_default(),
+            medium: weighted("Medium", (100, 500.0)),
             regular,
             semibold,
             display,
@@ -174,7 +193,7 @@ fn family() -> &'static str {
             .appearance
             .font
             .clone()
-            .unwrap_or_else(|| String::from("Inter"))
+            .unwrap_or_else(|| String::from(theme::FONT))
     })
 }
 
@@ -217,6 +236,7 @@ fn fonts_for(text: &str) -> Fonts {
             path: PathBuf::from(found.filename().ok()?),
             index: u32::try_from(found.face_index().ok()?).ok()?,
             weight: 0.0,
+            bytes: None,
         })
     });
 
@@ -250,6 +270,7 @@ fn font(fontconfig: &Fontconfig, family: &str, (weight, css): (i32, f32)) -> Opt
         path: PathBuf::from(found.filename().ok()?),
         index: u32::try_from(found.face_index().ok()?).ok()?,
         weight: css,
+        bytes: None,
     })
 }
 

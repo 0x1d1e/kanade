@@ -235,19 +235,17 @@ pub fn lock_shade(light: Option<f32>, dimmed: bool) -> Color {
     Color::rgba(0, 0, 0, (least.max(needed) * 255.0).round() as u8)
 }
 
+// the family drawn when `appearance.font` is unset: vendored, so it does not need to be installed
+pub const FONT: &str = "Open Sauce One";
+
 /*
- * the family the shell's text is set in: `appearance.font`, else Inter, the open face nearest
- * Apple's SF Pro, else fontconfig's sans-serif. The runtime sets weights only from static files, so a
- * family counts when fontconfig finds it in a SemiBold of its own, not a variable font's instance
+ * the family the shell's text is set in: `appearance.font`, else Open Sauce One. A set family still
+ * resolves through fontconfig. The runtime sets weights only from static files, so a family counts
+ * when fontconfig finds it in a SemiBold of its own, not a variable font's instance
  */
 pub fn font(app: App) -> App {
-    const NEAREST_SF: &str = "Inter";
-
     let chosen = crate::config::get().appearance.font.clone();
-    /*
-     * by its family, not its full name, which may add the style: Inter's static SemiBold is
-     * "Inter SemiBold"
-     */
+    // by its family, not its full name, which may add the style
     let static_face = |family: &str| {
         let semibold = || -> Option<(String, String)> {
             let fontconfig = Fontconfig::new()?;
@@ -282,13 +280,10 @@ pub fn font(app: App) -> App {
 
             app.font(&family)
         }
-        None if static_face(NEAREST_SF) => app.font(NEAREST_SF),
         None => {
-            eprintln!(
-                "kanade: Inter is not installed (Arch: inter-font), labels use the sans-serif"
-            );
+            crate::face::install();
 
-            app
+            app.font(FONT)
         }
     }
 }

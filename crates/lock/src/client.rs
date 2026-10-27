@@ -619,12 +619,16 @@ impl State {
 
     fn read_fonts(&mut self, fonts: &Fonts) {
         let mut read = |file: &crate::FontFile| {
-            let data = match self.font_files.get(&file.path) {
-                Some(data) => data.clone(),
-                None => {
-                    let data: Arc<[u8]> = std::fs::read(&file.path).ok()?.into();
-                    self.font_files.insert(file.path.clone(), data.clone());
-                    data
+            let data = if let Some(bytes) = file.bytes {
+                Arc::<[u8]>::from(bytes)
+            } else {
+                match self.font_files.get(&file.path) {
+                    Some(data) => data.clone(),
+                    None => {
+                        let data: Arc<[u8]> = std::fs::read(&file.path).ok()?.into();
+                        self.font_files.insert(file.path.clone(), data.clone());
+                        data
+                    }
                 }
             };
             Font::new(file, data)
