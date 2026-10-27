@@ -426,7 +426,7 @@ fn main(settings: &Settings, roles: &ThemeRoles) -> Column {
                 bottom: 0.0,
 
                 // a window wider than the column reads well at centers it
-                left: PAD + ((main_width() - 2.0 * PAD - GUTTER - content()) / 2.0).max(0.0),
+                left: column_left(),
             })
             .child(
                 ScrollArea::new(
@@ -485,23 +485,72 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         roles,
     );
 
+    let title = Text::new(title)
+        .size(PAGE_TITLE)
+        .color(roles.on_surface)
+        .weight(theme::text::SEMIBOLD);
+    // measured before eliding: elided text takes the width it is given
+    let natural = fixed(Widget::width(&title));
+    let room = title_room().map_or(natural, |room| room.min(natural));
+    let title = if room < natural { title.elide() } else { title };
+    let title = Rectangle::new()
+        .width(room)
+        .height(fixed(Widget::height(&title)))
+        .child(title);
+
+    // the title and Inspect span the page's column, so the title starts where the page does
     Rectangle::new()
         .width(Parent)
         .height(BAR)
-        .padding(sides(PAD))
+        .padding(Padding {
+            top: PAD,
+            right: 0.0,
+            bottom: PAD,
+            left: column_left(),
+        })
         .align_child(Start, Center)
         .child(
-            Row::new(children![
-                Text::new(title)
-                    .size(PAGE_TITLE)
-                    .color(roles.on_surface)
-                    .weight(theme::text::SEMIBOLD),
-                inspect_button,
-            ])
-            .width(Parent)
-            .justify(SpaceBetween)
-            .align(Center),
+            Row::new(children![title, inspect_button])
+                .width(content())
+                .justify(SpaceBetween)
+                .align(Center),
         )
+}
+
+// where the page's column starts in the main area; a window wider than the column centers it
+fn column_left() -> f32 {
+    PAD + ((main_width() - 2.0 * PAD - GUTTER - content()) / 2.0).max(0.0)
+}
+
+// a window within this of a monitor's width is maximized on it (niri's gaps leave a little)
+const MAXIMIZED_WITHIN: f32 = 80.0;
+
+// the Island's widest form that rests over the header (Compact) and a gap beside it
+const UNDER_ISLAND: f32 = crate::island::geometry::COMPACT.width + 24.0;
+
+/*
+ * how wide the header's title may be: in a window maximized on a monitor the Island sits over the
+ * middle of the window, so a long title ends before it instead of running under it; none otherwise
+ * (niri does not say where a tiled window is, so a narrower window is not placed under it)
+ */
+fn title_room() -> Option<f32> {
+    let (width, _) = kanade_runtime::window_size();
+    let maximized = kanade_runtime::Monitors::read()
+        .all()
+        .iter()
+        .any(|monitor| {
+            let monitor = monitor.width as f32;
+
+            width <= monitor && width >= monitor - MAXIMIZED_WITHIN
+        });
+
+    if !maximized {
+        return None;
+    }
+
+    let island_left = width / 2.0 - UNDER_ISLAND / 2.0 - SIDEBAR;
+
+    Some((island_left - column_left()).max(0.0))
 }
 
 // what the files say: a refusal, a problem, a restart waiting, else the last change or where changes go; and Undo
@@ -2813,7 +2862,7 @@ fn spring_preview(option: &str, roles: &ThemeRoles) -> Box<dyn Widget> {
     ]))
 }
 
-// a number: `-`, the number to type over and its unit, `+`, in one outlined capsule; Up and Down step it
+// a number: `-`, the number to type over and its unit, `+`, in one outlined capsule; Up and Down step it, and Tab reaches `-` and `+`
 fn stepper(
     setting: &'static Setting,
     value: u64,
@@ -2862,27 +2911,20 @@ fn stepper(
 
     let side = |node: &'static str, sign: &str, value: u64| {
         let side_id = format!("stepper {id} {node}");
-        let hovered = settings.is_hovered(&side_id);
-        let hover_id = side_id.clone();
-        let mut btn = Rectangle::new()
+        let btn = Rectangle::new()
             .width(SIDE)
             .height(inside)
             .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
-            .cursor(Cursor::Pointer)
-            .on_hover(move |inside| hover(hover_id.clone(), inside))
-            .on_click(left(to(value)));
+            .child(
+                Text::new(sign)
+                    .size(theme::text::BODY)
+                    .color(roles.on_surface)
+                    .weight(theme::text::SEMIBOLD),
+            );
 
-        if hovered {
-            btn = btn.fill(hover_wash(roles));
-        }
-
-        btn.child(
-            Text::new(sign)
-                .size(theme::text::BODY)
-                .color(roles.on_surface)
-                .weight(theme::text::SEMIBOLD),
-        )
+        // Tab reaches it and Enter or Space steps it, as a click does
+        button(btn, side_id, to(value), None, settings, roles)
     };
     let divider = || {
         Rectangle::new()
@@ -2891,6 +2933,7 @@ fn stepper(
             .fill(faint(roles.outline))
     };
 
+    let less = side("less", "\u{2212}", value.saturating_sub(step));
     let token = ring::register(
         Stop::new(format!("field {id}"))
             .input(id)
@@ -2913,7 +2956,7 @@ fn stepper(
             .align_child(Center, Center)
             .child(
                 Row::new(children![
-                    side("less", "\u{2212}", value.saturating_sub(step)),
+                    less,
                     divider(),
                     Rectangle::new()
                         .width(middle)
