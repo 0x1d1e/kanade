@@ -294,6 +294,11 @@ impl Encoding {
                 sized("(memory:VAMemory)", ""),
                 String::from("!"),
                 self.encoder.element(),
+                // every keyframe stalls this encoder for ~130 ms on a cast's frames (four of them
+                // come out together, then the keyframe), which the muxer's wall clock shows as a
+                // burst of equal times and a gap; the longest GOP it takes makes that once per
+                // 1024 frames, and `x264enc` has no such stall (ADR 0117, Update)
+                String::from("key-int-max=1024"),
                 String::from("rate-control=cqp"),
                 format!("qpi={qp}"),
                 format!("qpp={qp}"),
