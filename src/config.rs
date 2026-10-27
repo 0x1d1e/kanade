@@ -1000,7 +1000,7 @@ impl Location {
         Location::new(latitude, longitude).map(|location| location.value())
     }
 
-    fn new(latitude: f64, longitude: f64) -> Result<Location, String> {
+    pub fn new(latitude: f64, longitude: f64) -> Result<Location, String> {
         if !(-90.0..=90.0).contains(&latitude) {
             return Err(format!("latitude {latitude} is outside -90 to 90"));
         }
@@ -1014,7 +1014,7 @@ impl Location {
         })
     }
 
-    fn value(self) -> Value {
+    pub fn value(self) -> Value {
         Value::Array(vec![
             Value::Float(self.latitude),
             Value::Float(self.longitude),
@@ -2585,7 +2585,7 @@ pub const WEATHER: &[Setting] = &[
         key: "weather.location",
         label: "Location",
         help: "where the weather is for, as [latitude, longitude] in degrees, north and east \
-               positive; unset fetches nothing",
+               positive; unset fetches nothing. Settings finds it from a place name",
         kind: Kind::Location(Field {
             get: |config| config.location,
             set: |config, location| config.location = location,

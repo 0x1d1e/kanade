@@ -199,6 +199,12 @@ Small secondary indicator beside the primary island: timer, VPN, low battery, a 
 - **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops. Coming out or going, it is one liquid shape with the body: a neck stretches and snaps as it parts (ADR 0101), except under reduced motion.
 - While the island is Split, or a Peek out of one, the top Satellite is the trailing segment, not a dot; it counts toward `SATELLITES`. The other dots and the count take no pointer.
 
+## Weather location
+Where the Weather is for: `weather.location` (latitude, longitude) with `weather.place` as the name the Surface titles itself with. Settings sets both for you from a place name ("City, Country", searched by Open-Meteo's geocoding, several matches listed to pick from) or from the machine's IP address through ipwho.is (ADR 0136); the coordinates stay writable by hand.
+- **Invariant:** the weather location is never found by itself. The place search and the IP lookup run only on a user's press in Settings, never at start, on a reload or on a timer; the IP address leaves the machine only for the IP lookup, and neither what was typed nor what came back is logged.
+- **Invariant:** a name that matches several places is never settled silently: only a lone match, or "Name, Qualifier" fitting exactly one place, is set without a pick.
+- **Avoid:** geolocation (it reads as GeoClue or the browser's), auto-location
+
 ## Hold
 The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind open, so Escape reaches it without a press.
 - **Invariant:** only an island opened without a press holds. The hold ends when the island collapses.

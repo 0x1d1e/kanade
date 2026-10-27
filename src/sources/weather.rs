@@ -213,7 +213,7 @@ pub enum Offline {
 }
 
 impl Offline {
-    fn of(error: &ureq::Error) -> Offline {
+    pub fn of(error: &ureq::Error) -> Offline {
         match error {
             ureq::Error::Timeout(_) => Offline::Timeout,
             ureq::Error::HostNotFound => Offline::HostNotFound,
@@ -230,7 +230,7 @@ impl Offline {
         }
     }
 
-    fn why(self) -> &'static str {
+    pub fn why(self) -> &'static str {
         match self {
             Offline::Timeout => "the request timed out",
             Offline::HostNotFound => "Open-Meteo's host was not found",

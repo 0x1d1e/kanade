@@ -32,6 +32,7 @@ use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
 use super::login;
 use super::niri;
 use super::outputs;
+use super::place;
 use super::ring::{self, Stop};
 use super::{
     FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change as super_change,
@@ -74,6 +75,7 @@ pub(super) fn hover_container(roles: &ThemeRoles) -> Color {
 // the size it opens at, and the smallest it can be made
 mod niri_page;
 mod outputs_page;
+mod place_page;
 
 const WIDTH: f32 = 920.0;
 const HEIGHT: f32 = 640.0;
@@ -167,6 +169,7 @@ pub fn window() -> Window {
     // the niri page's inputs hold what the worker last read
     niri::sync_inputs(&settings.niri);
     outputs::sync_inputs(&settings.outputs);
+    place::sync_inputs(&settings);
 
     Window::new()
         .title("Kanade Settings")
@@ -740,6 +743,20 @@ fn matches(row: &Line, query: &str) -> bool {
         return niri_page::mentions_rule(id, query);
     }
 
+    if let Line::Place = row {
+        return [
+            "weather",
+            "place",
+            "city",
+            "location",
+            "find",
+            "ip address",
+            "geocod",
+        ]
+        .iter()
+        .any(|word| word.contains(query) || query.contains(word));
+    }
+
     row.keys().into_iter().any(|key| {
         if key == MODULES {
             return modules::ALL
@@ -961,6 +978,7 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
         }
         Line::Health => health_view(settings, roles),
         Line::Login => login_view(settings, roles),
+        Line::Place => place_page::row(settings, roles),
         Line::Niri(path) => niri_page::row(path, settings, roles),
         Line::Outputs => Box::new(outputs_page::section(settings, roles)),
         Line::NiriRule(id) => niri_page::rule_row(id, settings, roles),

@@ -1,7 +1,7 @@
 //! The Weather Surface (ADR 0017, docs/archived/design.md Weather): the weather now on the left and
 //! the days ahead on the right, from `sources::weather`. It opens only from IPC or a keybind and
 //! has no targets, so Escape or a typed character collapses it; without a location, Enter or the
-//! pill opens Settings. A forecast that is not the latest,
+//! pill opens Settings, whose Data page finds the place by name or from the IP address (ADR 0136). A forecast that is not the latest,
 //! after a failed fetch or a suspend, stays shown with the time it is from; without one it says
 //! why: no location set, the first fetch on its way, or the failure.
 
@@ -459,7 +459,7 @@ fn weekday(date: NaiveDate) -> &'static str {
  */
 fn missing(monitor: &str, state: &State) -> Rectangle {
     let (title, detail) = match state {
-        State::Unset => ("No location", "Choose where to show the weather"),
+        State::Unset => ("No location", "Search for your city in Settings"),
         State::Fetching | State::Fetched => ("Fetching the weather", "From Open-Meteo"),
         State::Failed(problem @ Problem::Offline(_)) => (problem.brief(), "Trying again soon"),
         State::Failed(problem @ Problem::Refused(_)) => {

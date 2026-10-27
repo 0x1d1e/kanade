@@ -1,6 +1,6 @@
 # 17. Weather from Open-Meteo
 
-Status: accepted (roadmap 10 Desktop/data, #152). Settles the provider, location and refresh of `docs/design.md` Weather.
+Status: accepted (roadmap 10 Desktop/data, #152). Amended by [ADR 0136](0136-weather-place-search-and-ip-lookup-on-request.md): the location may now be found by name or IP address in Settings, on request; the rest stands. Settles the provider, location and refresh of `docs/design.md` Weather.
 
 ## Context
 

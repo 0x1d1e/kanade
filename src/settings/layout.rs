@@ -51,6 +51,10 @@ pub enum Row {
 
     // a recommended layer rule from Installation.md
     NiriRule(&'static str),
+
+    // finds the Weather location from a place name or the IP address, and sets `weather.location`
+    // and `weather.place` (ADR 0136); it has no key of its own, those two keep their own rows
+    Place,
 }
 
 impl Row {
@@ -58,7 +62,12 @@ impl Row {
         match self {
             Row::Key(key) => vec![key],
             Row::Position { edge, align } => vec![edge, align],
-            Row::Health | Row::Login | Row::Niri(_) | Row::Outputs | Row::NiriRule(_) => Vec::new(),
+            Row::Health
+            | Row::Login
+            | Row::Niri(_)
+            | Row::Outputs
+            | Row::NiriRule(_)
+            | Row::Place => Vec::new(),
         }
     }
 }
@@ -432,6 +441,7 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "Weather",
                 rows: &[
+                    Row::Place,
                     Row::Key("weather.location"),
                     Row::Key("weather.place"),
                     Row::Key("weather.units"),

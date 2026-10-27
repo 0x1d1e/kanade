@@ -22,6 +22,7 @@ pub mod devices;
 pub mod dictation;
 pub mod focus;
 pub mod fullscreen;
+pub mod geocode;
 pub mod google;
 pub mod ical;
 pub mod icons;

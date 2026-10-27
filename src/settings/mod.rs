@@ -17,6 +17,7 @@ mod layout;
 mod login;
 mod niri;
 pub(crate) mod outputs;
+mod place;
 mod ring;
 mod view;
 
@@ -70,6 +71,9 @@ pub struct Settings {
     // the Login screen page's status, read off the draw thread when it shows (`login`)
     login: Option<Result<Status, String>>,
     login_loading: bool,
+
+    // the Weather place finder: what it is doing and found (`place`)
+    place: place::Finder,
 
     // what the Modules page's filter holds
     module_query: String,

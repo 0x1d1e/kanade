@@ -110,6 +110,11 @@ impl TextInput {
         fields::set(id, field);
     }
 
+    // what the input holds now; on the draw thread, which the inputs live on
+    pub fn text(id: &'static str) -> String {
+        fields::get(id).text
+    }
+
     // the input of this id takes the keyboard when it is next drawn
     pub fn focus(id: &'static str) {
         focus::want(id);
