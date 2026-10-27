@@ -16,6 +16,10 @@ static DEFAULT_FAMILY: LazyLock<Mutex<String>> =
 static LOADED: LazyLock<Mutex<HashMap<String, &'static Face<'static>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+// font files read from disk, cached forever so faces in the same file share the bytes
+static FILES: LazyLock<Mutex<HashMap<String, &'static [u8]>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 // the font found for each letter, none when no installed font has it
 static FALLBACKS: LazyLock<Mutex<HashMap<char, Option<&'static Face<'static>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -90,15 +94,27 @@ fn built_in() -> Face<'static> {
 }
 
 fn open(path: &str, index: u32) -> Option<Face<'static>> {
-    let bytes = std::fs::read(path).ok()?;
-
-    // the face borrows the bytes, so they have to live as long as it
-    let bytes = Vec::leak(bytes);
+    let bytes = read_file(path)?;
 
     // fontconfig keeps a variable font's named style in the upper half, the file only knows the lower
     let face_index = index & 0xffff;
 
     Face::parse(bytes, face_index).ok()
+}
+
+fn read_file(path: &str) -> Option<&'static [u8]> {
+    let mut files = FILES.locked();
+
+    if let Some(bytes) = files.get(path) {
+        return Some(*bytes);
+    }
+
+    let bytes = std::fs::read(path).ok()?;
+    let bytes: &'static [u8] = Vec::leak(bytes);
+
+    files.insert(String::from(path), bytes);
+
+    Some(bytes)
 }
 
 // the font that has this letter: the text's own font first, then a fallback
@@ -250,5 +266,28 @@ mod tests {
 
         assert!(face.units_per_em() > 0);
         assert!(face.glyph_index('a').is_some());
+    }
+
+    // font files are read once and cached, so multiple faces in one file share the slice
+    #[test]
+    fn opening_the_same_font_file_reuses_the_same_bytes() {
+        let fontconfig = Fontconfig::new().expect("fontconfig should be available");
+        let found = fontconfig
+            .find("sans-serif", None)
+            .expect("sans-serif font should exist");
+        let path = found.path.to_string_lossy();
+
+        let first = open(&path, 0).expect("first face should open");
+        let second = open(&path, 0).expect("second face should open");
+
+        assert!(std::ptr::eq(first.raw_face().data, second.raw_face().data));
+
+        let cached = read_file(&path).expect("cached bytes should exist");
+        assert!(std::ptr::eq(first.raw_face().data, cached));
+
+        if ttf_parser::fonts_in_collection(first.raw_face().data).unwrap_or(0) > 1 {
+            let other = open(&path, 1).expect("second face in collection should open");
+            assert!(std::ptr::eq(first.raw_face().data, other.raw_face().data));
+        }
     }
 }

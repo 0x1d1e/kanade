@@ -1,4 +1,5 @@
 use std::ffi::c_int;
+use std::sync::Once;
 use std::thread;
 use std::time::Duration;
 
@@ -13,6 +14,8 @@ const POOLS: c_int = 2;
 // how often freed memory inside the pools is handed back
 const TRIM: Duration = Duration::from_secs(10);
 
+static LIMIT: Once = Once::new();
+
 unsafe extern "C" {
     fn mallopt(param: c_int, value: c_int) -> c_int;
 
@@ -25,15 +28,17 @@ unsafe extern "C" {
  * thread leaving freed memory behind in a pool of its own.
  */
 pub fn limit() {
-    let mapped = unsafe { mallopt(M_MMAP_THRESHOLD, ONE_MEGABYTE) };
-    let pooled = unsafe { mallopt(M_ARENA_MAX, POOLS) };
+    LIMIT.call_once(|| {
+        let mapped = unsafe { mallopt(M_MMAP_THRESHOLD, ONE_MEGABYTE) };
+        let pooled = unsafe { mallopt(M_ARENA_MAX, POOLS) };
 
-    assert!(
-        mapped == 1 && pooled == 1,
-        "failed to set the allocator's limits"
-    );
+        assert!(
+            mapped == 1 && pooled == 1,
+            "failed to set the allocator's limits"
+        );
 
-    thread::spawn(trim);
+        thread::spawn(trim);
+    });
 }
 
 /*
@@ -52,4 +57,15 @@ fn trim() {
 
 pub(crate) fn trim_heap() {
     unsafe { malloc_trim(0) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_is_idempotent() {
+        limit();
+        limit();
+    }
 }
