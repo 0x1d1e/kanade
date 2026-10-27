@@ -85,7 +85,7 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     let dir = directory().ok_or("no screenshot folder: HOME is not set")?;
 
     std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("no screenshot folder {}: {error}", dir.display()))?;
+        .map_err(|error| format!("no screenshot folder ({error}): {}", dir.display()))?;
 
     let window = match mode {
         Mode::Window => Some(window().map_err(backend)?.ok_or("no window to capture")?),
@@ -95,7 +95,7 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     let path = name(&dir, clock::stamp());
     let path = path
         .to_str()
-        .ok_or_else(|| format!("{} is not UTF-8", path.display()))?;
+        .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
 
     match niri::act(&action(mode, path, window)).map_err(backend)? {
         Acted::Done => Ok(Asked::Taken(path.to_owned())),
