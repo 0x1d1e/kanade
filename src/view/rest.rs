@@ -54,6 +54,7 @@ pub(super) fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
         if config.rest.clock {
             items.push(Box::new(
                 Text::new(clock::now(config.clock))
+                    .tabular()
                     .size(theme::text::LABEL)
                     .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),
@@ -118,6 +119,7 @@ fn battery_readout(charge: Charge) -> Row {
 
     parts.push(Box::new(
         Text::new(format!("{}%", charge.percent))
+            .tabular()
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
@@ -164,6 +166,7 @@ pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
                     surfaces::weather::icon(current.condition, current.day)
                         .on(12.0, island.on_surface_variant),
                     Text::new(config.units.temperature(current.temperature))
+                        .tabular()
                         .size(theme::text::LABEL_SMALL)
                         .color(island.on_surface_variant)
                         .weight(theme::text::MEDIUM),
@@ -183,6 +186,7 @@ pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
 
     let mut head = children![
         Text::new(clock::now(config.clock))
+            .tabular()
             .size(theme::text::LABEL)
             .color(island.on_surface)
             .weight(theme::text::SEMIBOLD),

@@ -329,6 +329,7 @@ fn level(
         .align_child(End, Center)
         .child(
             Text::new(volume.to_string())
+                .tabular()
                 .size(theme::text::LABEL_SMALL)
                 .color(theme::island().on_surface_variant)
                 .weight(theme::text::SEMIBOLD),

@@ -72,6 +72,7 @@ pub(super) fn timer(countdown: &Countdown, now: Instant) -> Rectangle {
     for part in timer::clock(countdown, now).split(':') {
         clock.push(Box::new(
             Text::new(part)
+                .tabular()
                 .size(theme::text::LABEL)
                 .color(timer_tone(countdown))
                 .weight(theme::text::SEMIBOLD),
@@ -91,6 +92,7 @@ pub(super) fn battery(charge: &activity::Charge) -> Rectangle {
     stacked(children![
         battery_icon(22.0, charge.percent, tone),
         Text::new(format!("{}%", charge.percent))
+            .tabular()
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
@@ -159,6 +161,7 @@ pub(super) fn level(icon: Icon, percent: u8, tone: Color) -> Rectangle {
         icon.draw(20.0),
         rising(length, f32::from(percent) / 100.0, tone),
         Text::new(percent.to_string())
+            .tabular()
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
@@ -233,6 +236,7 @@ fn battery_stack(charge: Charge) -> Column {
     parts.push(Box::new(battery_icon(20.0, charge.percent, tone)));
     parts.push(Box::new(
         Text::new(format!("{}%", charge.percent))
+            .tabular()
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
@@ -249,6 +253,7 @@ fn stacked_time(monitor: &str, size: f32) -> Column {
         .map(|part| {
             Box::new(
                 Text::new(format!("{part:0>2}"))
+                    .tabular()
                     .size(size)
                     .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),

@@ -19,6 +19,9 @@ pub struct Text {
 
     // sized by the letters' own shapes instead of their advance, so an icon centers exactly
     tight: bool,
+
+    // every digit in a cell as wide as the widest, so a changing number does not shift its neighbours
+    tabular: bool,
 }
 
 impl Text {
@@ -31,6 +34,7 @@ impl Text {
             weight: Weight::Regular,
             rules: Rules::default(),
             tight: false,
+            tabular: false,
         }
     }
 
@@ -82,6 +86,54 @@ impl Text {
         self
     }
 
+    /*
+     * Digits take equal room, a clock or a level that counts does not jitter. Open Sauce One has
+     * `tnum` but the runtime shapes letter by letter, so the cells are laid here; for short,
+     * one-line numerals, not wrapped or elided text
+     */
+    pub fn tabular(mut self) -> Self {
+        self.tabular = true;
+
+        self
+    }
+
+    // the room one digit takes when digits are tabular
+    fn cell(&self) -> f32 {
+        let face = self.face();
+
+        ('0'..='9')
+            .map(|digit| lines::measure(digit.encode_utf8(&mut [0; 4]), face, self.size))
+            .fold(0.0, f32::max)
+    }
+
+    // the content as runs: each digit alone with its cell, anything between as one run
+    fn runs(&self) -> Vec<(String, f32)> {
+        let face = self.face();
+        let cell = self.cell();
+        let mut runs: Vec<(String, f32)> = Vec::new();
+        let mut other = String::new();
+
+        let flush = |other: &mut String, runs: &mut Vec<(String, f32)>| {
+            if !other.is_empty() {
+                let width = lines::measure(other, face, self.size);
+
+                runs.push((std::mem::take(other), width));
+            }
+        };
+
+        for letter in self.content.chars() {
+            if letter.is_ascii_digit() {
+                flush(&mut other, &mut runs);
+                runs.push((String::from(letter), cell));
+            } else {
+                other.push(letter);
+            }
+        }
+        flush(&mut other, &mut runs);
+
+        runs
+    }
+
     // how tall it is once laid out in this width, for wrapped text whose height depends on it
     pub fn height_in(&self, width: f32) -> f32 {
         let font = self.face();
@@ -107,6 +159,10 @@ impl Widget for Text {
             let (left, right) = lines::ink(&self.content, self.face(), self.size);
 
             return Size::Fixed(right - left);
+        }
+
+        if self.tabular {
+            return Size::Fixed(self.runs().iter().map(|(_, width)| width).sum());
         }
 
         Size::Fixed(lines::measure(&self.content, self.face(), self.size))
@@ -137,6 +193,33 @@ impl Widget for Text {
         } else {
             area
         };
+
+        if self.tabular {
+            let line_height = lines::height(font, self.size);
+            let mut left = area.x;
+
+            for (run, width) in self.runs() {
+                // a digit narrower than its cell sits in the middle of it
+                let own = lines::measure(&run, font, self.size);
+                let inset = if run.chars().all(|c| c.is_ascii_digit()) {
+                    (width - own) / 2.0
+                } else {
+                    0.0
+                };
+
+                renderer.text(
+                    &run,
+                    font,
+                    self.size,
+                    self.color,
+                    Area::new(left + inset, area.y, own.max(1.0), line_height),
+                );
+
+                left += width;
+            }
+
+            return;
+        }
 
         let arranged = lines::arrange(&self.content, font, self.size, area.width, self.rules);
 

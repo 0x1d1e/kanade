@@ -597,22 +597,33 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let shape = geometry::CALENDAR;
 
     // a Module that is off reads no Service
-    let account = modules::on("google-calendar")
-        .then(|| {
-            google::Account::read()
-                .problem()
-                .map(google::Problem::brief)
-                .map(str::to_owned)
-        })
+    let google = modules::on("google-calendar")
+        .then(|| google::Account::read().problem().cloned())
         .flatten();
+    // a grant that is gone is mended in Settings: the agenda offers the way there as a button
+    let reauth = matches!(
+        google,
+        Some(google::Problem::Revoked | google::Problem::SignIn(_))
+    );
+    let account = google
+        .as_ref()
+        .map(google::Problem::brief)
+        .map(str::to_owned);
     let feeds = modules::on("calendar-subscriptions")
         .then(|| Subscriptions::read().brief())
         .flatten();
+    let feeds_only = feeds.clone();
     let account = match (account, feeds) {
         (Some(account), Some(feeds)) => Some(format!("{account} \u{b7} {feeds}")),
         (account, feeds) => account.or(feeds),
     };
     let account = account.as_deref();
+    // the button says it, so the footer does not repeat it
+    let footer = if reauth && calendars.files != 0 {
+        feeds_only.as_deref()
+    } else {
+        account
+    };
 
     let agenda: Box<dyn Widget> = if let Some(text) = &adding.text {
         Box::new(entry(
@@ -636,7 +647,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             &month,
             pending,
             &browse,
-            (account, adding.problem.as_deref()),
+            (footer, adding.problem.as_deref(), reauth),
         ))
     };
 
@@ -825,7 +836,7 @@ fn agenda(
     month: &Month,
     pending: Option<Pending>,
     browse: &Browse,
-    (account, problem): (Option<&str>, Option<&str>),
+    (account, problem, reauth): (Option<&str>, Option<&str>, bool),
 ) -> Column {
     let events = month.on(day);
     let partial = month.events.partial;
@@ -836,25 +847,39 @@ fn agenda(
         .weight(theme::text::SEMIBOLD)
         .elide();
 
-    let header = Row::new(children![
+    let mut head: Vec<Box<dyn Widget>> = Vec::new();
+    let room = AGENDA - ADD_WIDTH - GAP;
+    let room = if reauth {
+        room - SIGN_IN_WIDTH - GAP
+    } else {
+        room
+    };
+
+    head.push(Box::new(
         Rectangle::new()
-            .width(AGENDA - ADD_WIDTH - GAP)
+            .width(room)
             .height(HEADER)
             .align_child(Start, Center)
             .child(title),
-        add_pill(monitor),
-    ])
-    .width(AGENDA)
-    .height(HEADER)
-    .align(Center);
+    ));
+    if reauth {
+        head.push(Box::new(sign_in_pill(monitor)));
+    }
+    head.push(Box::new(add_pill(monitor)));
+
+    let header = Row::new(head)
+        .width(AGENDA)
+        .height(HEADER)
+        .gap(GAP)
+        .align(Center);
 
     let list: Box<dyn Widget> = if events.is_empty() {
         let quiet = theme::island().on_surface_variant;
         let message = Text::new(match pending {
-            Some(Pending::Loading) => "Loading events",
-            Some(Pending::Failed) => "Events could not be read",
-            None if partial => "Some events not shown",
-            None => "No events",
+            Some(Pending::Loading) => format!("Loading {} events", day.format("%B")),
+            Some(Pending::Failed) => String::from("Events could not be read"),
+            None if partial => String::from("Some events not shown"),
+            None => String::from("No events"),
         })
         .size(theme::text::BODY)
         .color(quiet)
@@ -964,6 +989,40 @@ fn agenda(
     .width(AGENDA)
     .height(HEIGHT)
     .gap(GAP)
+}
+
+const SIGN_IN_WIDTH: f32 = 84.0;
+const SIGN_IN_ICON: f32 = 12.0;
+
+// the way to mend the Google grant: a button to the Settings page that signs in again
+fn sign_in_pill(monitor: &str) -> Rectangle {
+    let monitor = monitor.to_owned();
+    let ink = theme::signals().warning;
+
+    super::pill_face(
+        Rectangle::new()
+            .width(SIGN_IN_WIDTH)
+            .height(ADD_HEIGHT)
+            .radius(ADD_HEIGHT / 2.0),
+    )
+    .border(1.0, ink)
+    .align_child(Center, Center)
+    .cursor(Cursor::Pointer)
+    .semantics(|| Semantics::new(Role::Button, "sign-in"))
+    .on_click(super::on_left(move || {
+        search::open_settings(&monitor, search::DATA)
+    }))
+    .child(
+        Row::new(children![
+            Icon::Lock.on(SIGN_IN_ICON, ink),
+            Text::new("Sign in")
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        ])
+        .gap(5.0)
+        .align(Center),
+    )
 }
 
 const ADD_WIDTH: f32 = 60.0;

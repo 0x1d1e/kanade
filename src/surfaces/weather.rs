@@ -107,6 +107,7 @@ fn now(
 
     let temperature = Row::new(children![
         Text::new(units.temperature(current.temperature))
+            .tabular()
             .size(theme::text::DISPLAY)
             .color(theme::island().on_surface)
             .weight(theme::text::MEDIUM),
@@ -388,11 +389,13 @@ fn row(day: &Day, units: Units, today: NaiveDate, scale: (f64, f64)) -> Rectangl
     // the low, the span of the day on the week's scale, the high
     let range = Row::new(children![
         Text::new(units.temperature(day.low))
+            .tabular()
             .size(theme::text::LABEL)
             .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM),
         range_bar(BAR, BAR_HEIGHT, scale, day.low, day.high, None),
         Text::new(units.temperature(day.high))
+            .tabular()
             .size(theme::text::LABEL)
             .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),

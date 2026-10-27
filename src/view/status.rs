@@ -142,6 +142,7 @@ pub(super) fn timer(
             .align_child(End, Center)
             .child(
                 Text::new(timer::clock(countdown, now))
+                    .tabular()
                     .size(size)
                     .color(timer_tone(countdown))
                     .weight(theme::text::SEMIBOLD),
@@ -231,6 +232,7 @@ pub(super) fn battery(presentation: Presentation, charge: &Charge) -> Option<Rec
                             .align_child(End, Center)
                             .child(
                                 Text::new(format!("{}%", charge.percent))
+                                    .tabular()
                                     .size(size)
                                     .color(tone)
                                     .weight(theme::text::SEMIBOLD),
