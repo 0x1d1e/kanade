@@ -36,6 +36,18 @@ pub mod welcome;
 pub mod window;
 
 /*
+ * how much of a list's row shows, as the opacity it is drawn at: whole while it is inside the
+ * `room` the list scrolls in, fading as an edge cuts it, so a row never ends half drawn at full
+ * strength. `top` is the row's place in the list, `offset` how far the list scrolled
+ */
+fn edge_fade(top: f32, height: f32, offset: f32, room: f32) -> f32 {
+    let shown = (top + height).min(offset + room) - top.max(offset);
+    let part = (shown / height).clamp(0.0, 1.0);
+
+    if part >= 1.0 { 1.0 } else { part * part * 0.8 }
+}
+
+/*
  * held through a Surface's `fit`, which reads what it asks for and then posts it. Besides the
  * runtime's derive, `fit` is called by a handler or a start, so two at once would post out of
  * order, leaving the body at the older ask until the next change

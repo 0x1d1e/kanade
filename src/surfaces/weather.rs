@@ -10,7 +10,7 @@ use kanade_runtime::Key;
 use kanade_runtime::service::Service;
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Center, Column, Padding, Rectangle, Row, SpaceBetween, Start, Text, Widget, children,
+    Center, Column, Padding, Rectangle, Row, SpaceBetween, Stack, Start, Text, Widget, children,
 };
 
 use super::search;
@@ -30,17 +30,22 @@ const HEIGHT: f32 = geometry::CONTROLS.height - 2.0 * INSET;
 const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
 
 // the weather now, left of the days
-const NOW: f32 = 170.0;
-const SIDE_GAP: f32 = 20.0;
+const NOW: f32 = 160.0;
+const SIDE_GAP: f32 = 16.0;
 const DAYS: f32 = WIDTH - NOW - SIDE_GAP;
 
 // a row per day, as many as fill the height
 const ROWS: usize = 5;
 const ROW_GAP: f32 = 6.0;
 const ROW: f32 = (HEIGHT - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
-const ROW_INSET: f32 = 12.0;
-const WEEKDAY: f32 = 48.0;
-const CHANCE: f32 = 36.0;
+const ROW_INSET: f32 = 10.0;
+const WEEKDAY: f32 = 38.0;
+const CHANCE: f32 = 28.0;
+
+// a day's range bar between its low and high, and today's under the weather now
+const BAR: f32 = 34.0;
+const BAR_HEIGHT: f32 = 4.0;
+const TODAY_BAR_HEIGHT: f32 = 6.0;
 
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -65,7 +70,7 @@ pub fn surface(monitor: &str) -> Rectangle {
 
             Box::new(
                 Row::new(children![
-                    rise(0, now(forecast, &weather, &config, clock::today())),
+                    rise(0, now(forecast, &weather, &config, clock::today(), there)),
                     rise(1, days(forecast, config.units, there)),
                 ])
                 .gap(SIDE_GAP),
@@ -84,7 +89,13 @@ pub fn surface(monitor: &str) -> Rectangle {
 }
 
 // the place, the temperature and sky now, the rest of now, and when it is from
-fn now(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveDate) -> Column {
+fn now(
+    forecast: &Forecast,
+    weather: &Weather,
+    config: &Config,
+    today: NaiveDate,
+    there: NaiveDate,
+) -> Column {
     let current = &forecast.current;
     let units = config.units;
 
@@ -132,6 +143,9 @@ fn now(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveDate
         ) as Box<dyn Widget>
     }));
 
+    // today's span and where now stands in it, and the chance of rain, from the first day listed
+    let spent = forecast.days.iter().find(|day| day.date >= there);
+
     // Open-Meteo's terms ask its data be credited wherever it shows
     let said = Column::new(
         [
@@ -145,20 +159,127 @@ fn now(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveDate
                     .size(theme::text::LABEL_SMALL)
                     .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM)
-                    .elide(),
+                    .wrap(),
             ) as Box<dyn Widget>
         })
         .collect(),
     )
+    .width(NOW)
     .gap(2.0);
 
+    let mut group =
+        children![Column::new(children![place, temperature, Column::new(lines).gap(3.0)]).gap(4.0)];
+
+    if let Some(day) = spent {
+        group.push(Box::new(today_range(day, current.temperature, units)));
+    }
+
+    group.push(Box::new(said));
+
+    Column::new(group)
+        .width(NOW)
+        .height(HEIGHT)
+        .justify(SpaceBetween)
+}
+
+// today's low and high either side of a bar with now marked on it, and its chance of rain under
+fn today_range(day: &Day, now: f64, units: Units) -> Column {
+    let label = |text: String, ink| {
+        Text::new(text)
+            .size(theme::text::LABEL_SMALL)
+            .color(ink)
+            .weight(theme::text::MEDIUM)
+    };
+
+    let marker = TODAY_BAR_HEIGHT + 4.0;
+    let bar = range_bar(
+        NOW,
+        TODAY_BAR_HEIGHT,
+        (day.low, day.high),
+        day.low,
+        day.high,
+        Some(now),
+    );
+
+    let mut lines = children![
+        Rectangle::new()
+            .width(NOW)
+            .height(marker)
+            .align_child(Start, Center)
+            .child(bar),
+        Row::new(children![
+            label(
+                units.temperature(day.low),
+                theme::island().on_surface_variant
+            ),
+            label(units.temperature(day.high), theme::island().on_surface),
+        ])
+        .width(NOW)
+        .justify(SpaceBetween),
+    ];
+
+    if let Some(chance) = day.precipitation {
+        lines.push(Box::new(label(
+            format!("Rain {}% today", chance.round()),
+            theme::island().on_surface_variant,
+        )));
+    }
+
     Column::new(children![
-        Column::new(children![place, temperature, Column::new(lines).gap(3.0)]).gap(4.0),
-        said,
+        Rectangle::new().width(NOW).height(8.0),
+        Column::new(lines).gap(3.0)
     ])
-    .width(NOW)
-    .height(HEIGHT)
-    .justify(SpaceBetween)
+}
+
+/*
+ * a track `width` wide with the part between `low` and `high` filled, where the track spans `scale`
+ * (low, high) of the days shown; a dot where `marker` stands in it
+ */
+fn range_bar(
+    width: f32,
+    height: f32,
+    scale: (f64, f64),
+    low: f64,
+    high: f64,
+    marker: Option<f64>,
+) -> Stack {
+    let span = (scale.1 - scale.0).max(1.0);
+    let at = |value: f64| (((value - scale.0) / span).clamp(0.0, 1.0) as f32) * width;
+
+    let from = at(low);
+    let fill = (at(high) - from).max(height);
+    let from = from.min(width - fill);
+
+    let mut layers = children![
+        Rectangle::new()
+            .width(width)
+            .height(height)
+            .radius(height / 2.0)
+            .fill(theme::island().surface_container_high),
+        Rectangle::new()
+            .width(fill)
+            .height(height)
+            .radius(height / 2.0)
+            .fill(theme::island().on_surface_variant)
+            .translate(from, 0.0),
+    ];
+
+    if let Some(value) = marker {
+        let dot = height + 4.0;
+        let left = (at(value) - dot / 2.0).clamp(0.0, width - dot);
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(dot)
+                .height(dot)
+                .radius(dot / 2.0)
+                .fill(theme::island().on_surface)
+                .border(1.5, theme::island().surface)
+                .translate(left, -2.0),
+        ));
+    }
+
+    Stack::new(layers).width(width).height(height)
 }
 
 // when the forecast is from; a stale one says why, so old weather never reads as now
@@ -182,12 +303,28 @@ fn footer(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveD
 
 // the days from today, a row each
 fn days(forecast: &Forecast, units: Units, today: NaiveDate) -> Column {
-    let rows: Vec<Box<dyn Widget>> = forecast
+    let listed: Vec<&Day> = forecast
         .days
         .iter()
         .filter(|day| day.date >= today)
         .take(ROWS)
-        .map(|day| Box::new(row(day, units, today)) as Box<dyn Widget>)
+        .collect();
+
+    // every bar on the one scale, the lowest low to the highest high of the days shown
+    let scale = (
+        listed
+            .iter()
+            .map(|day| day.low)
+            .fold(f64::INFINITY, f64::min),
+        listed
+            .iter()
+            .map(|day| day.high)
+            .fold(f64::NEG_INFINITY, f64::max),
+    );
+
+    let rows: Vec<Box<dyn Widget>> = listed
+        .iter()
+        .map(|day| Box::new(row(day, units, today, scale)) as Box<dyn Widget>)
         .collect();
 
     if rows.is_empty() {
@@ -209,7 +346,7 @@ fn days(forecast: &Forecast, units: Units, today: NaiveDate) -> Column {
 }
 
 // the day's name and sky, its chance of rain or snow when there is much of one, its high and low
-fn row(day: &Day, units: Units, today: NaiveDate) -> Rectangle {
+fn row(day: &Day, units: Units, today: NaiveDate, scale: (f64, f64)) -> Rectangle {
     let name = if day.date == today {
         "Today"
     } else {
@@ -245,20 +382,22 @@ fn row(day: &Day, units: Units, today: NaiveDate) -> Rectangle {
                     .weight(theme::text::MEDIUM),
             ),
     ])
-    .gap(8.0)
+    .gap(6.0)
     .align(Center);
 
+    // the low, the span of the day on the week's scale, the high
     let range = Row::new(children![
-        Text::new(units.temperature(day.high))
-            .size(theme::text::LABEL)
-            .color(theme::island().on_surface)
-            .weight(theme::text::SEMIBOLD),
         Text::new(units.temperature(day.low))
             .size(theme::text::LABEL)
             .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM),
+        range_bar(BAR, BAR_HEIGHT, scale, day.low, day.high, None),
+        Text::new(units.temperature(day.high))
+            .size(theme::text::LABEL)
+            .color(theme::island().on_surface)
+            .weight(theme::text::SEMIBOLD),
     ])
-    .gap(8.0)
+    .gap(6.0)
     .align(Center);
 
     Rectangle::new()

@@ -1774,12 +1774,13 @@ fn list(monitor: &str, found: &Found, layout: &Layout, search: &Search) -> Stack
         .rows
         .iter()
         .filter(|(_, top, height)| top + height > search.offset && *top < end)
-        .map(|(line, top, _)| {
+        .map(|(line, top, height)| {
             let at = top - search.offset;
+            let shown = super::edge_fade(*top, *height, search.offset, room());
 
             match line {
                 Line::Heading(title) => {
-                    Box::new(heading(title).translate(0.0, at)) as Box<dyn Widget>
+                    Box::new(heading(title).opacity(shown).translate(0.0, at)) as Box<dyn Widget>
                 }
                 Line::Answer(index) => {
                     let answer = &found.answers[*index];
@@ -1788,6 +1789,7 @@ fn list(monitor: &str, found: &Found, layout: &Layout, search: &Search) -> Stack
 
                     Box::new(
                         row(monitor, search.visit, answer, selected, failed.as_deref())
+                            .opacity(shown)
                             .translate(0.0, at),
                     ) as Box<dyn Widget>
                 }
@@ -1936,12 +1938,15 @@ fn mark(mark: &Mark) -> Box<dyn Widget> {
                 .fill(Image::contain(path).thumbnail(pixels, pixels)),
         ),
         Mark::Tile(sign) => Box::new(view::tile(None, sign, ICON, radius::ICON, &theme::island())),
+        // on the plate a letter gets, so every mark without a picture shares one shape
         Mark::Icon(icon) => Box::new(
             Rectangle::new()
                 .width(ICON)
                 .height(ICON)
+                .radius(radius::ICON)
+                .fill(theme::island().surface_container_high)
                 .align_child(Center, Center)
-                .child(icon.draw(ICON * 0.8)),
+                .child(icon.on(ICON * 0.6, theme::island().on_surface)),
         ),
     }
 }

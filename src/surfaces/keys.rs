@@ -56,9 +56,10 @@ const HELP_INSET: f32 = 8.0;
 // what says the config could not be read
 const NOTICE: f32 = 52.0;
 
-// a keycap: its height, and the room either side of its label
-const CAP: f32 = 22.0;
-const CAP_INSET: f32 = 7.0;
+// a keycap: its height, the narrowest one, and the room either side of its label
+const CAP: f32 = 24.0;
+const CAP_LEAST: f32 = 30.0;
+const CAP_INSET: f32 = 8.0;
 const CAP_GAP: f32 = 4.0;
 
 // pixels per wheel line
@@ -427,8 +428,13 @@ fn list(laid: &Laid, lookup: &Lookup) -> Stack {
         .enumerate()
         .filter(|(_, (_, top, height))| top + height > from && *top < to)
         .map(|(at, (item, top, height))| {
-            Box::new(row(item, *height, ring == Some(at)).translate(0.0, top - lookup.offset))
-                as Box<dyn Widget>
+            let shown = super::edge_fade(*top, *height, lookup.offset, room());
+
+            Box::new(
+                row(item, *height, ring == Some(at))
+                    .opacity(shown)
+                    .translate(0.0, top - lookup.offset),
+            ) as Box<dyn Widget>
         })
         .collect();
 
@@ -573,8 +579,23 @@ fn help_width() -> f32 {
 
 // a key as a keycap: its name on a raised plate, as wide as the name
 fn cap(key: &str) -> Box<dyn Widget> {
+    // the keys a sign says shorter than a word, so every keycap is about as wide as the next
+    let key = match key {
+        "Comma" => ",",
+        "Period" => ".",
+        "Space" => "\u{2423}",
+        other => other,
+    };
+
+    // a sign reads small beside a word, so it is set larger
+    let size = if key.chars().count() == 1 && !key.chars().all(char::is_alphanumeric) {
+        theme::text::TITLE
+    } else {
+        theme::text::LABEL_SMALL
+    };
+
     let label = Text::new(key)
-        .size(theme::text::LABEL_SMALL)
+        .size(size)
         .color(theme::island().on_surface)
         .weight(theme::text::SEMIBOLD);
 
@@ -585,7 +606,7 @@ fn cap(key: &str) -> Box<dyn Widget> {
 
     Box::new(
         Rectangle::new()
-            .width((wide + 2.0 * CAP_INSET).max(CAP))
+            .width((wide + 2.0 * CAP_INSET).max(CAP_LEAST))
             .height(CAP)
             .radius(radius::ICON)
             .fill(theme::island().surface_container_high)
