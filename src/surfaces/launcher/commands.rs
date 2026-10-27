@@ -12,9 +12,7 @@ use crate::island::activity::Leave;
 use crate::lock;
 use crate::sources::{live, recents, recording};
 
-use super::destinations::WALLPAPER;
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{emoji, history};
 
 // the best a command fits: a name that is the query's is an app's or a destination's, which a
 // generic alias like `record` must not outrank
@@ -289,18 +287,11 @@ impl Commands {
 
 impl LauncherProvider for Commands {
     /*
-     * by name within a fit; nothing for a query of one letter or none, nor for `:`, `>` or `@`. A
+     * by name within a fit; nothing for a query of one letter or none. A
      * query that ran a verb before lifts it again while it is remembered, then the higher score.
      * An empty query lists every command, each as a Prefix
      */
     fn find(&self, query: &str) -> Vec<Answer> {
-        if query.starts_with(emoji::PREFIX)
-            || query.starts_with(history::PREFIX)
-            || query.starts_with(WALLPAPER)
-        {
-            return Vec::new();
-        }
-
         // an empty query lists every command; a query of one letter lists the apps alone
         if !query.is_empty() && query.chars().count() < FROM {
             return Vec::new();
@@ -551,13 +542,11 @@ mod tests {
         assert!(!titles(Rec::Paused).contains(&String::from("Start Recording")));
     }
 
-    // nothing for a prefix of `:`, `>`, `@` or `@`, a one-letter query or a short one, which the
+    // nothing for a one-letter query or a short one, which the
     // apps list; an empty query lists every command instead
     #[test]
-    fn no_row_for_a_prefix_a_short_or_no_query() {
-        for query in ["c", ":caffeine", ">caffeine", "@caffeine", "@"] {
-            assert!(all().find(query).is_empty(), "{query:?}");
-        }
+    fn no_row_for_a_short_query() {
+        assert!(all().find("c").is_empty());
 
         let empty = all().find("");
         assert!(!empty.is_empty());

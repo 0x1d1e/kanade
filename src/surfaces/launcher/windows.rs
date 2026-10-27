@@ -15,7 +15,6 @@ use crate::sources::niri;
 use crate::sources::windows::{App, Running, Windows};
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{emoji, history};
 
 // the fewest letters a window is searched by: one would list nearly every window
 const FROM: usize = 2;
@@ -139,10 +138,6 @@ pub struct Titles<'a>(pub &'a [Entry]);
 impl LauncherProvider for Titles<'_> {
     // by title and app name within a fit; an empty query lists every window
     fn find(&self, query: &str) -> Vec<Answer> {
-        if query.starts_with(emoji::PREFIX) || query.starts_with(history::PREFIX) {
-            return Vec::new();
-        }
-
         // an empty query lists every window; a query of one letter lists the apps alone
         if !query.is_empty() && query.chars().count() < FROM {
             return Vec::new();

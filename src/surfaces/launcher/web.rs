@@ -27,14 +27,11 @@ const MISSING: &str = "Needs xdg-open";
 const FROM: usize = 2;
 
 // whether `query` is one the web is offered for at all: a query of one letter is a stray keystroke,
-// and `:`, `>` and `@` search something else
+// and `?` enters commands mode (ADR 0135)
 pub fn asked(query: &str) -> bool {
     let query = query.trim();
 
-    query.chars().count() >= FROM
-        && !query.starts_with(super::emoji::PREFIX)
-        && !query.starts_with(super::history::PREFIX)
-        && !query.starts_with(super::destinations::WALLPAPER)
+    query.chars().count() >= FROM && !query.starts_with('?')
 }
 
 // whether the browser can be opened: without `xdg-open` neither row can act, so neither is offered
@@ -203,7 +200,7 @@ mod tests {
         assert_eq!(argv, ["https://; rm -rf / && echo"]);
     }
 
-    // a query of one letter, and the prefixes that search something else, send nothing anywhere
+    // a query of one letter, and a commands query starting with '?', send nothing anywhere
     #[test]
     fn only_a_real_query_is_offered() {
         assert!(!asked("x"));
@@ -214,7 +211,7 @@ mod tests {
             "nothing is refused for a query no row would act on"
         );
 
-        for query in [":smile", ">invoice", "@wall"] {
+        for query in ["?x", "?lock"] {
             assert!(!asked(query), "{query}");
         }
     }

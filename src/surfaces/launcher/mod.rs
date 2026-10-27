@@ -26,7 +26,7 @@ use kanade_runtime::{
 use crate::config;
 use crate::icon::Icon;
 use crate::island::geometry;
-use crate::island::presentation::{Presentation, Surface};
+use crate::island::presentation::{Input, Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::settings;
 use crate::sources::apps::{App, Apps};
@@ -35,7 +35,6 @@ use crate::sources::network::Connectivity;
 use crate::sources::niri::{self, Acted};
 use crate::sources::system::Radio;
 use crate::sources::{self, clipboard, live, recording};
-use crate::surfaces::emoji::picture;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::{modules, view};
@@ -50,8 +49,6 @@ pub mod choose;
 mod commands;
 mod destinations;
 pub mod detached;
-mod emoji;
-mod history;
 mod provider;
 mod units;
 pub mod web;
@@ -63,8 +60,6 @@ use calculator::Calculator;
 use choose::{Choices, Choosing};
 use commands::{Commands, Rec};
 use destinations::{Destination, Destinations};
-use emoji::Emoji;
-use history::History;
 use provider::{Action, Answer, Fit, LauncherProvider, Mark};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
@@ -207,7 +202,6 @@ impl Search {
 
         match action {
             Action::Copy(_) => Some(String::from("Not copied")),
-            Action::Paste(_) => Some(String::from("Not copied")),
             Action::Browse(_) => Some(format!("Not opened: {why}")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
             // `dispatch` worded it, as it knows whether the verb may have run
@@ -821,9 +815,14 @@ fn follow_style() {
     }
 }
 
-// whether the query searches the clipboard history, which it does only with its Module on
-fn history(query: &str) -> bool {
-    query.trim().starts_with(history::PREFIX) && modules::on("clipboard")
+// whether a single prefix character hands off directly to its Surface (ADR 0135)
+fn handed(query: &str, offered: &Destinations) -> Option<Destination> {
+    match query {
+        "@" if offered.wallpapers => Some(Destination::Wallpapers),
+        ":" if offered.emoji => Some(Destination::Emoji),
+        ">" if offered.clipboard => Some(Destination::Clipboard),
+        _ => None,
+    }
 }
 
 /*
@@ -963,7 +962,7 @@ impl Found {
 fn sections(apps: &[App], key: &Inputs, recording: Rec) -> Found {
     let destinations = destination(key.destinations);
     let commands = commands(key.launcher_commands, recording);
-    let apps = AppsProvider(apps, destinations.wallpapers);
+    let apps = AppsProvider(apps);
 
     let mut found_apps = apps.find("");
     let mut found_commands = commands.find("");
@@ -1101,9 +1100,6 @@ struct Inputs {
     radios: Radios,
     titles: Vec<windows::Entry>,
 
-    // the clipboard's entries the history search reads, by id
-    history: Option<Vec<u64>>,
-
     /*
      * the second the ranking was made in. A score decays with the clock, and the queries that
      * launched an app are remembered for a while, so the answer is worked out again once a second
@@ -1139,10 +1135,6 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
     let destinations = destinations();
     let radios = Radios::read();
     let titles = windows::titles();
-    let history = history(query).then(clipboard::Clipboard::read);
-    let entries = history
-        .as_deref()
-        .map_or(&[][..], clipboard::Clipboard::entries);
 
     let key = Inputs {
         visit,
@@ -1172,9 +1164,6 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
         ],
         radios: *radios,
         titles,
-        history: history
-            .as_deref()
-            .map(|held| held.entries().iter().map(|entry| entry.id).collect()),
         now: crate::clock::unix_seconds(),
     };
 
@@ -1182,7 +1171,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
     let same = memo.key.as_ref() == Some(&key) && memo.apps == apps;
 
     if !same {
-        memo.found = Arc::new(rank(apps, query, recording, read, &key, entries));
+        memo.found = Arc::new(rank(apps, query, recording, read, &key));
         memo.key = Some(key);
         memo.apps = apps.to_vec();
     }
@@ -1192,14 +1181,23 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
 }
 
 // what the providers find now, which `found` keeps until its inputs change
-fn rank(
-    apps: &[App],
-    query: &str,
-    recording: Rec,
-    read: bool,
-    key: &Inputs,
-    entries: &[clipboard::Entry],
-) -> Found {
+fn rank(apps: &[App], query: &str, recording: Rec, read: bool, key: &Inputs) -> Found {
+    if query.trim().starts_with('?') && key.launcher_commands {
+        let rest = query.trim()[1..].trim();
+        let provider = commands(true, recording);
+        let mut ranked = if rest.is_empty() {
+            provider::ranked(&[&provider], "")
+        } else {
+            provider::ranked(&[&provider], rest)
+        };
+
+        // Learned queries order commands that fit alike (ADR 0127) without distorting the list:
+        // all commands remain listed on `?`, with previously chosen commands prioritized within their fit tier.
+        sources::recents::with(|usage| learned_first(&mut ranked, query, key.now, usage));
+
+        return Found::ranked(ranked);
+    }
+
     grouped(
         query,
         || sections(apps, key, recording),
@@ -1207,13 +1205,11 @@ fn rank(
             let mut ranked = provider::ranked(
                 &[
                     &Calculator,
-                    &AppsProvider(apps, key.destinations[11]),
+                    &AppsProvider(apps),
                     &Actions(apps, key.actions),
                     &windows::Titles(&key.titles),
                     &destination(key.destinations),
                     &commands(key.launcher_commands, recording),
-                    &Emoji,
-                    &History { entries },
                 ],
                 query,
             );
@@ -1301,8 +1297,7 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     let choosing = choose::of(visit);
 
     let query = search.query.trim();
-    let emoji = query.starts_with(emoji::PREFIX);
-    let history = history(query);
+    let commands_mode = query.starts_with('?') && config::get().launcher_commands;
 
     let list: Box<dyn Widget> = if let Some(panel) = &search.panel {
         Box::new(panel_view(monitor, &search, panel))
@@ -1313,16 +1308,7 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
             "No matching choices",
             &format!("Nothing found for \u{201c}{query}\u{201d}"),
         ))
-    } else if history {
-        Box::new(state(
-            "Nothing copied",
-            &if query.len() > 1 {
-                format!("Nothing found for \u{201c}{}\u{201d}", query[1..].trim())
-            } else {
-                String::from("What you copy shows here")
-            },
-        ))
-    } else if !apps.found() && !emoji {
+    } else if !apps.found() && !commands_mode {
         // read once the Module starts, so only a Launcher opened at once waits
         Box::new(state("Finding apps", ""))
     } else if let Some((title, detail)) = web::refused(query, web::openable) {
@@ -1331,8 +1317,8 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
         Box::new(state(title, &detail))
     } else {
         Box::new(state(
-            if emoji {
-                "No matching emoji"
+            if commands_mode {
+                "No matching commands"
             } else {
                 "No matching apps"
             },
@@ -1341,6 +1327,7 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     };
 
     let shape = view::largest();
+    let placeholder = placeholder();
 
     Rectangle::new()
         .width(shape.width)
@@ -1358,7 +1345,7 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
                         match &choosing {
                             Some((Some(prompt), _)) => prompt,
                             Some((None, _)) => "Search choices",
-                            None => placeholder(),
+                            None => &placeholder,
                         },
                     ),
                 )) as Box<dyn Widget>,
@@ -1477,13 +1464,32 @@ fn field(query: &str, caret: usize, select_all: bool, placeholder: &str) -> Rect
         )
 }
 
-// what to type, `@` only with the Wallpapers Surface on
-fn placeholder() -> &'static str {
-    match (modules::on("wallpaper-surface"), modules::on("clipboard")) {
-        (true, true) => "Search apps, settings, 2+2, :emoji, @wallpaper or >clipboard",
-        (true, false) => "Search apps, settings, 2+2, :emoji or @wallpaper",
-        (false, true) => "Search apps, settings, 2+2, :emoji or >clipboard",
-        (false, false) => "Search apps, settings, 2+2 or :emoji",
+// what to type, the prefix keys gated on their Modules
+fn placeholder() -> String {
+    let mut prefixes = Vec::new();
+    if config::get().launcher_commands {
+        prefixes.push("?commands");
+    }
+    if modules::on("wallpaper-surface") {
+        prefixes.push("@wallpaper");
+    }
+    if modules::on("emoji-surface") {
+        prefixes.push(":emoji");
+    }
+    if modules::on("clipboard-surface") {
+        prefixes.push(">clipboard");
+    }
+
+    match prefixes.len() {
+        0 => String::from("Search apps, settings or 2+2"),
+        1 => format!("Search apps, settings, 2+2 or {}", prefixes[0]),
+        _ => {
+            let last = prefixes.pop().unwrap();
+            format!(
+                "Search apps, settings, 2+2, {} or {last}",
+                prefixes.join(", ")
+            )
+        }
     }
 }
 
@@ -1932,25 +1938,6 @@ fn mark(mark: &Mark) -> Box<dyn Widget> {
                 .align_child(Center, Center)
                 .child(icon.draw(ICON * 0.8)),
         ),
-        Mark::Emoji(emoji) => picture::picture(emoji).map_or_else(
-            || {
-                Box::new(
-                    Rectangle::new()
-                        .width(ICON)
-                        .height(ICON)
-                        .align_child(Center, Center)
-                        .child(Text::new(*emoji).size(ICON * 0.8)),
-                ) as Box<dyn Widget>
-            },
-            |path| {
-                Box::new(
-                    Rectangle::new()
-                        .width(ICON)
-                        .height(ICON)
-                        .fill(Image::contain(path).thumbnail(pixels, pixels)),
-                ) as Box<dyn Widget>
-            },
-        ),
     }
 }
 
@@ -2010,6 +1997,14 @@ fn typed(monitor: &str, visit: u64, rec: Rec, key: Key) -> bool {
     store(search);
 
     IslandService::write().attend(monitor, Instant::now());
+
+    if intent == Intent::Idle {
+        let destinations = destinations();
+        if let Some(destination) = handed(&query, &destinations) {
+            let _ = open(monitor, &destination);
+            return true;
+        }
+    }
 
     match intent {
         Intent::Idle => {}
@@ -2331,7 +2326,6 @@ fn press(monitor: &str, visit: u64, action: Action, query: &str) {
 
     let started = match &action {
         Action::Copy(text) => copy(text.clone(), done),
-        Action::Paste(id) => paste(*id, done),
         Action::Run(verb) => run(verb, done),
         Action::Browse(address) => browse(address.clone(), done),
         Action::Launch(..)
@@ -2349,6 +2343,12 @@ fn press(monitor: &str, visit: u64, action: Action, query: &str) {
 // the island shows another Surface, or Settings opens and the island closes; why not, as when the
 // radio went since the tile was drawn
 fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
+    let mut island = IslandService::write();
+    if island.detached_on().is_some() {
+        island.input(monitor, Input::Collapse, Instant::now());
+    }
+    drop(island);
+
     match destination {
         Destination::Wifi => controls::open_wifi(monitor)
             .then_some(())
@@ -2517,26 +2517,6 @@ fn run_cleared(monitor: &str, verb: &'static [&'static str]) {
     }
 }
 
-// puts the history's entry back on the clipboard; it is gone if the history dropped it since the row was drawn
-fn paste(id: u64, done: impl FnOnce(Result<(), String>) + Send + 'static) -> Result<(), String> {
-    let entry = clipboard::Clipboard::read()
-        .entries()
-        .iter()
-        .find(|entry| entry.id == id)
-        .cloned()
-        .ok_or_else(|| String::from("The entry is gone"))?;
-
-    clipboard::restore(&entry, move |put| {
-        done(if put {
-            Ok(())
-        } else {
-            Err(String::from("The clipboard did not take it"))
-        })
-    });
-
-    Ok(())
-}
-
 /*
  * how pressing `action` in `visit` went: closes the island, or says it failed. Nothing once that
  * visit is over, so it never closes another
@@ -2678,7 +2658,7 @@ mod tests {
         };
 
         // both fit `fx` alike, and `Fable X` answers it better by the score alone
-        let mut ranked = provider::ranked(&[&AppsProvider(&apps, false)], "fx");
+        let mut ranked = provider::ranked(&[&AppsProvider(&apps)], "fx");
 
         assert!(ranked.iter().all(|answer| answer.fit == Fit::Terms));
         assert_eq!(titles(&ranked), ["Fable X.desktop", "Firefox.desktop"]);
@@ -2693,7 +2673,7 @@ mod tests {
         // the same class never lifts an answer over a better Fit
         usage.start(&sources::recents::app("Fable X.desktop"), "fx", now);
         let nearer = [app("fx"), app("Fable X")];
-        let mut ranked = provider::ranked(&[&AppsProvider(&nearer, false)], "fx");
+        let mut ranked = provider::ranked(&[&AppsProvider(&nearer)], "fx");
         learned_first(&mut ranked, "fx", now, &usage);
 
         assert_eq!(titles(&ranked), ["fx.desktop", "Fable X.desktop"]);
@@ -3090,5 +3070,59 @@ mod tests {
             Vec::new(),
             "the web waits for the desktop scan"
         );
+    }
+
+    // prefix characters hand off immediately only when their module is on and the query is exactly the prefix
+    #[test]
+    fn handed_hands_off_only_on_exact_prefix_with_module_on() {
+        let on = Destinations {
+            wallpapers: true,
+            emoji: true,
+            clipboard: true,
+            ..Destinations::default()
+        };
+        let off = Destinations::default();
+
+        assert_eq!(handed("@", &on), Some(Destination::Wallpapers));
+        assert_eq!(handed(":", &on), Some(Destination::Emoji));
+        assert_eq!(handed(">", &on), Some(Destination::Clipboard));
+
+        assert_eq!(handed("@", &off), None);
+        assert_eq!(handed(":", &off), None);
+        assert_eq!(handed(">", &off), None);
+
+        // a prefix typed as part of text is an ordinary search
+        assert_eq!(handed("@foo", &on), None);
+        assert_eq!(handed(":foo", &on), None);
+        assert_eq!(handed(">foo", &on), None);
+
+        // '?' is a mode handled in rank, not a handoff
+        assert_eq!(handed("?", &on), None);
+    }
+
+    // '?' queries reach the commands table directly without other providers or web fallback
+    #[test]
+    fn question_mark_query_reaches_the_commands_table() {
+        crate::modules::init_test();
+
+        let key = Inputs {
+            launcher_commands: true,
+            ..Inputs::default()
+        };
+        let found = rank(&[], "?lock", Rec::Idle, true, &key);
+        let titles: Vec<&str> = found.answers.iter().map(|a| a.title.as_str()).collect();
+        assert!(titles.contains(&"Lock Screen"), "{titles:?}");
+
+        // '?' alone lists every offered command
+        let all_found = rank(&[], "?", Rec::Idle, true, &key);
+        assert!(!all_found.answers.is_empty());
+
+        // with launcher.commands off, '?' is an ordinary search
+        let key_off = Inputs {
+            launcher_commands: false,
+            ..Inputs::default()
+        };
+        let off_found = rank(&[], "?lock", Rec::Idle, true, &key_off);
+        assert!(off_found.answers.is_empty());
     }
 }

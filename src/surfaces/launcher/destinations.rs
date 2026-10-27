@@ -1,6 +1,6 @@
 /*
  * Launcher destinations open their matching Surface or Settings page; Wi-Fi and Bluetooth open
- * Controls, and `@` opens Wallpapers. They navigate only; actions happen in the opened Surface.
+ * Controls. They navigate only; actions happen in the opened Surface.
  */
 
 use crate::clock;
@@ -9,10 +9,6 @@ use crate::settings;
 use crate::sources::recents;
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{emoji, history};
-
-// what opens the Wallpapers Surface when typed first, whatever follows
-pub const WALLPAPER: &str = "@";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Destination {
@@ -98,15 +94,6 @@ impl LauncherProvider for Destinations {
      * Launcher's Recents resolve against; a single setting still takes a query
      */
     fn find(&self, query: &str) -> Vec<Answer> {
-        // `@` and whatever follows it opens the grid of wallpapers
-        if query.starts_with(WALLPAPER) {
-            return self.wallpapers.then(wallpapers).into_iter().collect();
-        }
-
-        if query.starts_with(emoji::PREFIX) || query.starts_with(history::PREFIX) {
-            return Vec::new();
-        }
-
         let empty = query.is_empty();
 
         if !empty && query.chars().count() < FROM {
@@ -290,17 +277,6 @@ impl LauncherProvider for Destinations {
         }
 
         answers
-    }
-}
-
-// the one answer of an `@` search
-fn wallpapers() -> Answer {
-    Answer {
-        fit: Fit::Exact,
-        title: String::from("Wallpapers"),
-        detail: String::from("Choose a wallpaper"),
-        mark: Mark::Icon(Icon::Picture),
-        action: Action::Open(Destination::Wallpapers),
     }
 }
 

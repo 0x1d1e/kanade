@@ -5,10 +5,9 @@ use crate::sources::apps::App;
 use crate::sources::recents::{self, Usage};
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{destinations, emoji, history};
 
-// the apps, and whether `@` opens Wallpapers instead
-pub struct Apps<'a>(pub &'a [App], pub bool);
+// the apps `sources::apps` lists
+pub struct Apps<'a>(pub &'a [App]);
 
 impl LauncherProvider for Apps<'_> {
     fn find(&self, query: &str) -> Vec<Answer> {
@@ -26,14 +25,6 @@ impl Apps<'_> {
      * lifts one over a better fit
      */
     fn found(&self, query: &str, usage: &Usage, now: i64) -> Vec<Answer> {
-        // an emoji search or the Wallpapers destination, which no app answers
-        if query.starts_with(emoji::PREFIX)
-            || query.starts_with(history::PREFIX)
-            || (self.1 && query.starts_with(destinations::WALLPAPER))
-        {
-            return Vec::new();
-        }
-
         let query = query.to_lowercase();
 
         // with nothing typed, the apps with the highest scores come first
@@ -141,11 +132,7 @@ impl Actions<'_> {
      * higher its app's score, the sooner within a fit
      */
     fn found(&self, query: &str, usage: &Usage, now: i64) -> Vec<Answer> {
-        if !self.1
-            || query.chars().count() < FROM
-            || query.starts_with(emoji::PREFIX)
-            || query.starts_with(history::PREFIX)
-        {
+        if !self.1 || query.chars().count() < FROM {
             return Vec::new();
         }
 
@@ -234,7 +221,7 @@ mod tests {
         usage.start(&recents::app("Filezilla.desktop"), "", now);
 
         let names = |usage: &Usage, query: &str, now: i64| {
-            let mut found = Apps(&apps, false).found(query, usage, now);
+            let mut found = Apps(&apps).found(query, usage, now);
 
             // as `provider::ranked` orders, stable
             found.sort_by_key(|answer| answer.fit);

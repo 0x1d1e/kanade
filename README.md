@@ -50,7 +50,7 @@ Expanding the Island opens one of thirteen dedicated Surfaces, navigable by keyb
 - **Media**: Track metadata, album artwork, timeline seeking for supported MPRIS players, and synchronized lyrics via LRCLIB or local LRC files.
 - **Notifications**: Notification center with application grouping, expandable history, Do Not Disturb toggles, and dismiss actions.
 - **Controls**: Quick toggles and sub-surfaces for Wi-Fi networks, Bluetooth pairing, per-app audio output routing, power profiles, night light, caffeine, battery charge limits, and active share termination.
-- **Launcher**: Fuzzy search across installed applications, open window switcher, desktop actions, unit and base conversions, mathematical calculator, emoji picker, and built-in shell commands.
+- **Launcher**: Fuzzy search across installed applications, open window switcher, desktop actions, unit and base conversions, mathematical calculator, and built-in shell commands; `:`, `>`, `@` and `?` open Emoji, Clipboard, Wallpapers or the command list.
 - **Clipboard**: Searchable clipboard history for text and images, persistent pinned entries that survive restarts, and automatic exclusion of sensitive password-manager selections.
 - **Calendar**: Agenda view supporting local iCalendar files, Google Calendar synchronization, read-only webcal subscriptions, and one-click Join actions for video meeting links.
 - **Weather**: Current conditions alongside hourly and multi-day forecasts retrieved from Open-Meteo.

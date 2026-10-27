@@ -25,5 +25,5 @@ Two things had to be decided: where the emoji table lives, and what the Surface 
 ## Consequences
 
 - `CONTEXT.md`'s Surface list gains `Emoji`; the Module is `emoji-surface`; CLI gains `kanade emoji open|close|toggle`; the Launcher gains an Emoji destination gated on that Module.
-- The Launcher's `:` provider keeps its behavior and loses its own table; `src/surfaces/launcher/emoji/mod.rs` becomes a reader of `surfaces::emoji::data`.
+- The Launcher's `:` provider is removed, not kept: `:` now opens the Emoji Surface itself (ADR 0135), which reads the same table.
 - One unit test covers the table's shape and the matching rule, since a table of outside data and the rule that reads it are data integrity; the grid's layout and look are not tested.

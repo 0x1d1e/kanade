@@ -51,9 +51,6 @@ pub enum Mark {
 
     // a letter or sign on the quiet tile
     Tile(String),
-
-    // an emoji whose color picture is loaded when its row is drawn
-    Emoji(&'static str),
 }
 
 // what pressing an answer does; each closes the island once done
@@ -70,9 +67,6 @@ pub enum Action {
 
     // puts the text on the clipboard
     Copy(String),
-
-    // puts the clipboard history's entry of this id back on the clipboard
-    Paste(u64),
 
     // opens another Surface or Settings, as the island does
     Open(Destination),

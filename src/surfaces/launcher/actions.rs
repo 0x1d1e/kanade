@@ -83,7 +83,6 @@ fn pressing(answer: &Answer) -> Offer {
         Action::Open(_) => "Open",
         Action::Run(_) => "Run",
         Action::Copy(_) => "Copy",
-        Action::Paste(_) => "Paste",
         Action::Choose(_) => "Choose",
         Action::Browse(_) => "Open in the browser",
     };
@@ -114,7 +113,6 @@ fn copied(action: &Action) -> Offer {
         Action::Run(verb) => copies("Copy command", verb.join(" ")),
         Action::Open(destination) => copies("Copy id", destination.name().to_owned()),
         Action::Copy(text) => copies("Copy", text.clone()),
-        Action::Paste(_) => cannot("A copied entry has no path or id"),
         Action::Choose(_) => cannot("A choice has no path or id"),
         // the address is what a web row sends, and it is the query itself, so there is nothing of
         // the machine to copy out of it
@@ -272,7 +270,7 @@ mod tests {
     #[test]
     fn a_row_that_cannot_act_says_why() {
         let panel = of(
-            &answer(Action::Paste(7)),
+            &answer(Action::Choose(7)),
             &[app()],
             &[String::from("firefox.desktop")],
         );
