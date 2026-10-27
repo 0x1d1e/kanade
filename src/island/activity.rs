@@ -467,6 +467,20 @@ pub struct Toast {
     pub image: Option<String>,
 }
 
+// what ended a recording that was saved
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cut {
+    // a stop, or the recording ran its course
+    #[default]
+    Stopped,
+
+    // the window it recorded closed
+    WindowClosed,
+
+    // niri's "Stop sharing" ended the window's cast while the window stayed open
+    SharingStopped,
+}
+
 // a screen recording Kanade started, at its file's absolute path
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Clip {
@@ -487,12 +501,12 @@ pub enum Clip {
         path: String,
     },
 
-    // finished; `copied` once its path is on the clipboard, by the Activity's action; `closed` when
-    // the window it recorded closed, which ended it
+    // finished; `copied` once its path is on the clipboard, by the Activity's action; `cut` is
+    // what ended it when that was not a stop
     Saved {
         path: String,
         copied: bool,
-        closed: bool,
+        cut: Cut,
     },
 
     // ended without saving anything, for why

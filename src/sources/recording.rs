@@ -60,7 +60,7 @@ use super::wake::{self, Failed, NOT_FOUND};
 use crate::clock;
 use crate::config;
 use crate::island::activity::{
-    Action, Activity, Clip, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
+    Action, Activity, Clip, Cut, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
@@ -163,8 +163,8 @@ struct Take {
     // whether it can pause: the joiner is there
     pausable: bool,
 
-    // the window it records closed, which ended it
-    closed: bool,
+    // what ended it when it was not a stop: the window it records closed, or niri stopped sharing it
+    cut: Cut,
 
     // why it records with the software encoder when the one chosen did not start (ADR 0116); none
     // while it has not had to
@@ -193,8 +193,8 @@ impl Take {
 struct Ended {
     path: String,
 
-    // the window it recorded closed
-    closed: bool,
+    // what ended it when it was not a stop
+    cut: Cut,
 
     // none once saved, else why nothing was
     lost: Option<String>,
@@ -302,7 +302,10 @@ impl Runtime {
                 eprintln!("capture: cannot resume the recording: {why}");
 
                 // the window closed while paused: what there is of it is saved, not left paused
-                let closed = self.take.as_ref().is_some_and(|take| take.closed);
+                let closed = self
+                    .take
+                    .as_ref()
+                    .is_some_and(|take| take.cut == Cut::WindowClosed);
 
                 if let Some(take) = &self.take
                     && !closed
@@ -390,7 +393,7 @@ impl Runtime {
 
         self.ended = Some(Ended {
             path: String::new(),
-            closed: false,
+            cut: Cut::Stopped,
             lost: Some(why.clone()),
         });
         post(ended(
@@ -431,7 +434,7 @@ impl Runtime {
             None => Clip::Saved {
                 path: take.path.clone(),
                 copied: false,
-                closed: take.closed,
+                cut: take.cut,
             },
             Some(why) => Clip::Failed {
                 path: take.path.clone(),
@@ -441,7 +444,7 @@ impl Runtime {
 
         self.ended = Some(Ended {
             path: take.path,
-            closed: take.closed,
+            cut: take.cut,
             lost,
         });
         post(ended(clip, false));
@@ -829,7 +832,7 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
         audio,
         _mix: mix,
         pausable,
-        closed: false,
+        cut: Cut::Stopped,
         software: None,
         no_va: false,
         recording: config::get().recording.clone(),
@@ -1048,20 +1051,20 @@ pub fn copied(path: &str) {
     let last = match &runtime.ended {
         Some(Ended {
             path: saved,
-            closed,
+            cut,
             lost: None,
-        }) if saved == path => Some(*closed),
+        }) if saved == path => Some(*cut),
         _ => None,
     };
 
     if !runtime.machine.busy()
-        && let Some(closed) = last
+        && let Some(cut) = last
     {
         post(ended(
             Clip::Saved {
                 path: path.to_owned(),
                 copied: true,
-                closed,
+                cut,
             },
             false,
         ));
@@ -1786,7 +1789,7 @@ fn spawn_window(
                 && window::open(id) == Some(false)
                 && let Some(take) = RUNTIME.locked().take.as_mut()
             {
-                take.closed = true;
+                take.cut = Cut::WindowClosed;
             }
 
             return failed(why);
@@ -1963,6 +1966,7 @@ fn follow_window(writer_said: Option<ChildStderr>, serial: u64, file: PathBuf, i
             // own verdict, so a join that ran out of time cannot lose it. A window that closed ends
             // the cast and trips the guard too, which is a recording saved, not a stall
             let quiet = !gone && held.said.as_ref().is_some_and(|said| said.stalled());
+            let stopped = !gone && written && unshared(&encoder, &encoder_said);
             let segment = classify_window(
                 [writer, encoder],
                 [writer_said, encoder_said],
@@ -1976,7 +1980,15 @@ fn follow_window(writer_said: Option<ChildStderr>, serial: u64, file: PathBuf, i
                 && segment == Segment::Written
                 && let Some(take) = runtime.take.as_mut()
             {
-                take.closed = true;
+                take.cut = Cut::WindowClosed;
+            }
+
+            if stopped
+                && segment == Segment::Written
+                && let Some(take) = runtime.take.as_mut()
+            {
+                eprintln!("capture: niri stopped sharing the window; what was recorded is saved");
+                take.cut = Cut::SharingStopped;
             }
 
             let fault = fault_of(&segment, quiet, blamed);
@@ -2138,6 +2150,21 @@ fn vanished(why: &str) -> bool {
 }
 
 /*
+ * whether the encoder ended because its cast did: niri's "Stop sharing" removes the cast under
+ * `pipewiresrc`, which then fails with `target not found`. Called only for a window that is still
+ * open with a frame written; a window that closed is read before it, and no frame is a start that
+ * failed
+ */
+fn unshared(encoder: &io::Result<ExitStatus>, said: &VecDeque<String>) -> bool {
+    encoder
+        .as_ref()
+        .is_ok_and(|status| status.code() == Some(1))
+        && said
+            .iter()
+            .any(|line| line.contains("pipewiresrc") && line.contains("target not found"))
+}
+
+/*
  * what the writer and the encoder (in that order) left behind. A window closing ends the encoder,
  * then the writer, with the file whole: that is a segment written, and if no frame was, nothing of
  * this segment (`closed` holds its number when the window closed). `escalated` is whether a stop
@@ -2171,6 +2198,8 @@ fn classify_window(
 
     match (writer_ok && written, closed) {
         (true, Some(_)) => return Segment::Written,
+        // niri ended the cast of a window that is still open: what was written is the recording
+        (true, None) if unshared(&encoder, &encoder_said) => return Segment::Written,
         // a stop that killed an encoder which did write frames is a stop, not a failure
         (true, None) if encoder_ok(&encoder) || (escalated && written) => return Segment::Written,
         _ => {}
@@ -2254,7 +2283,7 @@ pub fn heard(heard: Heard) {
 
     if gone {
         if let Some(take) = runtime.take.as_mut() {
-            take.closed = true;
+            take.cut = Cut::WindowClosed;
         }
 
         drop(runtime.feed(Event::Stop));
@@ -3081,6 +3110,31 @@ mod tests {
     }
 
     /*
+     * niri's Stop sharing ends the cast of a window that stays open: `pipewiresrc` says `target not
+     * found` and the encoder exits 1 with the file whole. That is a recording saved, as a closed
+     * window is, not the raw GStreamer error as a failure (live, `stop-cast`)
+     */
+    #[test]
+    fn stop_sharing_saves_what_was_written() {
+        let target = &[
+            "ERROR: from element /GstPipeline:pipeline0/GstPipeWireSrc:pipewiresrc0: stream error: target not found",
+        ];
+        let ended =
+            |written| segment_said(exited(0), exited(1), &["writer"], target, written, None);
+
+        assert_eq!(ended(true), Segment::Written);
+        // before a frame it is a start that failed, and says what
+        assert!(matches!(ended(false), Segment::Lost(why) if why.contains("target not found")));
+        // any other encoder failure with the window open is still a failure
+        assert!(matches!(
+            segment(exited(0), exited(1), true, None),
+            Segment::Lost(_)
+        ));
+        assert!(unshared(&exited(1), &said(target)));
+        assert!(!unshared(&exited(1), &said(&["encoder"])));
+    }
+
+    /*
      * a window that closes ends the encoder, then the writer with its file whole: the recording is
      * saved, as a stop would; one that ends with nothing written has nothing to save
      */
@@ -3259,7 +3313,7 @@ mod tests {
             audio: Audio::None,
             _mix: None,
             pausable: true,
-            closed: false,
+            cut: Cut::Stopped,
             software: None,
             no_va: false,
             recording: config::get().recording.clone(),

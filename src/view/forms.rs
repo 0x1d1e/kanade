@@ -11,8 +11,8 @@ use kanade_runtime::{
 
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Awake, Cause, Clip, Detail, Dictation, Hardware, Leave, Leaving, Reminder,
-    Track,
+    Action, Activity, Awake, Cause, Clip, Cut, Detail, Dictation, Hardware, Leave, Leaving,
+    Reminder, Track,
 };
 use crate::island::fade::Dissolve;
 use crate::island::geometry::{self, Rect};
@@ -329,15 +329,12 @@ pub(super) fn recording(
             },
         ),
         Clip::Saving { path } => ("Saving", file_name(path).to_owned()),
-        Clip::Saved {
-            path,
-            copied,
-            closed,
-        } => (
-            match (copied, closed) {
+        Clip::Saved { path, copied, cut } => (
+            match (copied, cut) {
                 (true, _) => "Path copied",
-                (false, true) => "Saved, window closed",
-                (false, false) => "Saved",
+                (false, Cut::WindowClosed) => "Saved, window closed",
+                (false, Cut::SharingStopped) => "Saved, sharing stopped",
+                (false, Cut::Stopped) => "Saved",
             },
             file_name(path).to_owned(),
         ),
