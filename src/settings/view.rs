@@ -2909,11 +2909,18 @@ fn stepper(
     let middle = NUMBER + 4.0 + fixed(Widget::width(&unit)) + 2.0 * 8.0;
     let inside = FIELD - 2.0;
 
+    // a side button's outer corners follow the capsule's, so its ring does not poke out of them
+    let corner = radius::ROW - 3.0;
     let side = |node: &'static str, sign: &str, value: u64| {
         let side_id = format!("stepper {id} {node}");
+        let outer = node == "less";
         let btn = Rectangle::new()
             .width(SIDE)
             .height(inside)
+            .radius_top_left(if outer { corner } else { 0.0 })
+            .radius_bottom_left(if outer { corner } else { 0.0 })
+            .radius_top_right(if outer { 0.0 } else { corner })
+            .radius_bottom_right(if outer { 0.0 } else { corner })
             .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .child(
