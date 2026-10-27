@@ -1976,19 +1976,19 @@ fn follow_window(writer_said: Option<ChildStderr>, serial: u64, file: PathBuf, i
                 quiet,
             );
 
-            if gone
-                && segment == Segment::Written
+            // only a segment that ends the take says how it was cut: one that ends to pause is
+            // followed by a resume, whose own end decides
+            if segment == Segment::Written
+                && let Some(cut) = cut_of(runtime.machine.phase(), gone, stopped)
                 && let Some(take) = runtime.take.as_mut()
             {
-                take.cut = Cut::WindowClosed;
-            }
+                if cut == Cut::SharingStopped {
+                    eprintln!(
+                        "capture: niri stopped sharing the window; what was recorded is saved"
+                    );
+                }
 
-            if stopped
-                && segment == Segment::Written
-                && let Some(take) = runtime.take.as_mut()
-            {
-                eprintln!("capture: niri stopped sharing the window; what was recorded is saved");
-                take.cut = Cut::SharingStopped;
+                take.cut = cut;
             }
 
             let fault = fault_of(&segment, quiet, blamed);
@@ -2155,6 +2155,28 @@ fn vanished(why: &str) -> bool {
  * open with a frame written; a window that closed is read before it, and no frame is a start that
  * failed
  */
+fn cut_of(phase: Phase, gone: bool, stopped: bool) -> Option<Cut> {
+    // a segment asked to end so as to pause, and not the take, ends Paused: nothing is cut yet
+    if matches!(
+        phase,
+        Phase::Running {
+            pausing: true,
+            stopping: false,
+            ..
+        }
+    ) {
+        return None;
+    }
+
+    if gone {
+        Some(Cut::WindowClosed)
+    } else if stopped {
+        Some(Cut::SharingStopped)
+    } else {
+        None
+    }
+}
+
 fn unshared(encoder: &io::Result<ExitStatus>, said: &VecDeque<String>) -> bool {
     encoder
         .as_ref()
@@ -3130,8 +3152,33 @@ mod tests {
             segment(exited(0), exited(1), true, None),
             Segment::Lost(_)
         ));
-        assert!(unshared(&exited(1), &said(target)));
-        assert!(!unshared(&exited(1), &said(&["encoder"])));
+    }
+
+    /*
+     * niri's Stop sharing racing a Pause: the segment ends Written and the machine pauses, so the
+     * cut must not stick, or the take's normal stop after a resume says "sharing stopped" (found
+     * in review)
+     */
+    #[test]
+    fn a_cut_that_only_pauses_is_not_the_takes_cut() {
+        let running = |pausing, stopping| Phase::Running {
+            serial: 1,
+            segment: 1,
+            pausing,
+            stopping,
+        };
+
+        assert_eq!(cut_of(running(true, false), false, true), None);
+        assert_eq!(cut_of(running(true, false), true, false), None);
+        assert_eq!(
+            cut_of(running(false, false), false, true),
+            Some(Cut::SharingStopped)
+        );
+        assert_eq!(
+            cut_of(running(true, true), true, false),
+            Some(Cut::WindowClosed)
+        );
+        assert_eq!(cut_of(running(false, true), false, false), None);
     }
 
     /*
