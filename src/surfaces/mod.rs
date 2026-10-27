@@ -52,7 +52,7 @@ fn pill_face(pill: Rectangle) -> Rectangle {
  */
 fn edge_fade(top: f32, height: f32, offset: f32, room: f32) -> f32 {
     let shown = (top + height).min(offset + room) - top.max(offset);
-    let part = (shown / height).clamp(0.0, 1.0);
+    let part = (shown / height.max(1.0)).clamp(0.0, 1.0);
 
     if part >= 1.0 { 1.0 } else { part * part * 0.8 }
 }

@@ -155,12 +155,19 @@ fn now(
         ]
         .into_iter()
         .map(|line| {
+            let text = Text::new(line)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface_variant)
+                .weight(theme::text::MEDIUM)
+                .wrap();
+
+            // a wrapped text's height is the parent's; fixed to its lines, the column keeps its
+            // place at the bottom
             Box::new(
-                Text::new(line)
-                    .size(theme::text::LABEL_SMALL)
-                    .color(theme::island().on_surface_variant)
-                    .weight(theme::text::MEDIUM)
-                    .wrap(),
+                Rectangle::new()
+                    .width(NOW)
+                    .height(text.height_in(NOW))
+                    .child(text),
             ) as Box<dyn Widget>
         })
         .collect(),

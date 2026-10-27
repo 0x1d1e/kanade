@@ -991,8 +991,9 @@ fn agenda(
     .gap(GAP)
 }
 
-const SIGN_IN_WIDTH: f32 = 84.0;
-const SIGN_IN_ICON: f32 = 12.0;
+// icon only, so the day's title keeps its room; it is named "sign-in" for `kanade ui`
+const SIGN_IN_WIDTH: f32 = 28.0;
+const SIGN_IN_ICON: f32 = 14.0;
 
 // the way to mend the Google grant: a button to the Settings page that signs in again
 fn sign_in_pill(monitor: &str) -> Rectangle {
@@ -1008,21 +1009,11 @@ fn sign_in_pill(monitor: &str) -> Rectangle {
     .border(1.0, ink)
     .align_child(Center, Center)
     .cursor(Cursor::Pointer)
-    .semantics(|| Semantics::new(Role::Button, "sign-in"))
+    .semantics(|| Semantics::new(Role::Button, "sign-in").label("Sign in to Google Calendar"))
     .on_click(super::on_left(move || {
         search::open_settings(&monitor, search::DATA)
     }))
-    .child(
-        Row::new(children![
-            Icon::Lock.on(SIGN_IN_ICON, ink),
-            Text::new("Sign in")
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface)
-                .weight(theme::text::SEMIBOLD),
-        ])
-        .gap(5.0)
-        .align(Center),
-    )
+    .child(Icon::Lock.on(SIGN_IN_ICON, ink))
 }
 
 const ADD_WIDTH: f32 = 60.0;

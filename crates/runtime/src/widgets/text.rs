@@ -92,6 +92,10 @@ impl Text {
      * one-line numerals, not wrapped or elided text
      */
     pub fn tabular(mut self) -> Self {
+        debug_assert!(
+            !(self.rules.wrap || self.rules.elide || self.tight),
+            "tabular text is one line of numerals, not wrapped, elided or tight"
+        );
         self.tabular = true;
 
         self

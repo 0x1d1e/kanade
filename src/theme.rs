@@ -164,7 +164,7 @@ pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
 
 /*
  * the pane's shadows: an ambient one lifting it off what is under it, and a contact one along its
- * edge. Faint, so they reinforce its elevation over a bright desktop and all but vanish on a dark one
+ * edge (alpha 72 and 44). Faint, so they reinforce its elevation over a bright desktop and all but vanish on a dark one
  */
 pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 72);
 pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 44);

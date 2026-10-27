@@ -82,7 +82,8 @@ impl Slider {
         }
 
         let track: Box<dyn Widget> = if ring || held {
-            let at = (width * fraction.clamp(0.0, 1.0) - THUMB / 2.0).clamp(0.0, width - THUMB);
+            let at = (width * fraction.clamp(0.0, 1.0) - THUMB / 2.0)
+                .clamp(0.0, (width - THUMB).max(0.0));
 
             Box::new(
                 Stack::new(children![
