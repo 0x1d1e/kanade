@@ -50,9 +50,9 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let from_body = body(p);
     var d = from_body;
 
-    // the nearest dot and how far it is, and the dots drawn as they are
+    // how far the nearest dot is, the opacity of the neck, and the dots drawn as they are
     var nearest = 1.0e5;
-    var nearest_opacity = 0.0;
+    var neck_opacity = 0.0;
     var dots = 0.0;
 
     for (var i = 0; i < count; i++) {
@@ -70,19 +70,20 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         }
 
         // the neck is wide while the dot is within the body and thins as it parts, to none at the snap
-        let reach = values[1].y * (1.0 - clamp((apart - bud.z) / max(values[1].z, 1e-4), 0.0, 1.0));
+        // and as faint as the dot is, so one fading in pulls a small neck, not a wide faint one
+        let reach = values[1].y * (1.0 - clamp((apart - bud.z) / max(values[1].z, 1e-4), 0.0, 1.0)) * bud.w;
 
         d = united(d, own, reach);
         dots = max(dots, cover(own) * bud.w);
 
-        if own < nearest {
-            nearest = own;
-            nearest_opacity = bud.w;
-        }
+        // a neck is as opaque as the dots near it, each fading out over a reach from its edge, so it
+        // never changes at once where one dot's nearness passes to another's
+        neck_opacity = max(neck_opacity, bud.w * (1.0 - smoothstep(0.0, values[1].y, own)));
+        nearest = min(nearest, own);
     }
 
     // the neck lies outside the body, which draws its own fill
-    let neck = cover(d) * (1.0 - cover(from_body)) * nearest_opacity;
+    let neck = cover(d) * (1.0 - cover(from_body)) * neck_opacity;
     let alpha = max(dots, neck);
 
     // the body's color where the shape leaves the body, the dot's where it reaches the dot

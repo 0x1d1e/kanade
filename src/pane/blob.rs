@@ -36,9 +36,10 @@ pub fn blob(body: Body, gap: f32, dots: &[Dot]) -> Option<Rectangle> {
         return None;
     }
 
-    // out to where a neck reaches
-    let (mut left, mut top) = (f32::MAX, f32::MAX);
-    let (mut right, mut bottom) = (f32::MIN, f32::MIN);
+    // out to where a neck reaches, and the body's own box, which a neck is drawn up to: a rect
+    // that ended short of it would cut the neck, and the dot, in a flat edge
+    let (mut left, mut top) = (body.x, body.y);
+    let (mut right, mut bottom) = (body.x + body.width, body.y + body.height);
 
     for dot in dots {
         left = left.min(dot.x - REACH);
