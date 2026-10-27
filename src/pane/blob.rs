@@ -5,10 +5,9 @@
 use kanade_runtime::Rectangle;
 
 use super::shader::blob_shader;
-use super::{Body, blur, rgba};
+use super::{Body, rgba};
 use crate::config;
 use crate::island::motion::Mode;
-use crate::theme;
 
 // how many dots the shader takes
 const MOST: usize = 6;
@@ -48,15 +47,9 @@ pub fn blob(body: Body, gap: f32, dots: &[Dot]) -> Option<Rectangle> {
         bottom = bottom.max(dot.y + dot.diameter + REACH);
     }
 
-    let island = theme::island();
-    let dot = rgba(island.surface_container_high);
-
-    // the neck takes the body's color where it leaves it, but a translucent body shows no step
-    let near = if blur::on() {
-        dot
-    } else {
-        rgba(island.surface)
-    };
+    // the body's own fill, so the dots and the body are one pane (ADR 0101)
+    let dot = rgba(super::body_fill());
+    let near = dot;
 
     let mut values = vec![[0.0; 4]; 4 + MOST];
 

@@ -17,7 +17,7 @@ ADR 0049 made the Island a black pill, which reads on any wallpaper and any wind
 
 ## Amendment: more material at 1x
 
-A critique of the Rest pill (148 by 30) at scale 1 found its edge and hue barely readable on a dark wallpaper. The values above were raised: surface chroma 0.032 to 0.05, a grey wallpaper keeping two fifths of the tint (was a quarter) and a source at chroma 0.05 taking all of it (was 0.06); the top light edge white at 20% (was 10%) and the rim at 14% (was 6%); the ambient shadow at 28% black (was 15%) and the contact one at 17% (was 10%). Lightness is unchanged, so the text contrast of the ramp is too. A detached Satellite's dot takes the body's fill and rim, not the container step.
+A critique of the Rest pill (148 by 30) at scale 1 found its edge and hue barely readable on a dark wallpaper. The values above were raised: surface chroma 0.032 to 0.05, a grey wallpaper keeping two fifths of the tint (was a quarter) and a source at chroma 0.05 taking all of it (was 0.06); the top light edge white at 20% (was 10%) and the rim at 14% (was 6%); the ambient shadow at 28% black (was 15%) and the contact one at 17% (was 10%). Lightness is unchanged, so the text contrast of the ramp is too. A detached Satellite's dot takes the body's fill and rim, not the container step. The top Satellite grown into the body (the Split segment) is a tile inside the body, and stays the raised container step; the dots are the translucent body fill as the pane is, whether drawn as the liquid shape or alone.
 
 ## Consequences
 

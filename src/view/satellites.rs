@@ -151,7 +151,7 @@ pub(super) fn dot(at: Rect, mark: Box<dyn Widget>, filled: bool) -> Rectangle {
 
     let dot = if filled {
         // the body's own fill and rim, so a dot standing apart is the same pane
-        dot.fill(theme::island().surface)
+        dot.fill(crate::pane::body_fill())
             .border(1.0, theme::pane_rim())
     } else {
         dot

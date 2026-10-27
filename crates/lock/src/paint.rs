@@ -184,14 +184,14 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
         palette.text,
     );
 
-    // the time's capitals start a little under the date, as macOS sets them
+    // the time's capitals start one `GAP` under the date's descenders, air to match the column below
     text(
         &mut pixmap,
         |faces| &faces.display,
         &look.scene.time,
         TIME,
         true,
-        &|time| date_baseline + descender + 8.0 + time.cap / scale,
+        &|time| date_baseline + descender + GAP + time.cap / scale,
         palette.text,
     );
 

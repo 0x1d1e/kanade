@@ -117,6 +117,20 @@ pub fn layer(pane: Pane) -> Rectangle {
         .shader_values(values)
 }
 
+/*
+ * the body's own fill, translucent over the blur as the pane is: what a Satellite standing apart
+ * is filled with, so a dot and the body are one pane (ADR 0101)
+ */
+pub fn body_fill() -> Color {
+    let surface = theme::island().surface;
+
+    if blur::on() {
+        theme::faded(surface, blur::FILL)
+    } else {
+        surface
+    }
+}
+
 fn rgba(color: Color) -> [f32; 4] {
     [
         f32::from(color.red()) / 255.0,
