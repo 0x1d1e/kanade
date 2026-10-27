@@ -3116,9 +3116,12 @@ mod tests {
         assert_eq!(hands_off(0, Key::Character('@'), "@", &off), None);
         assert_eq!(hands_off(0, Key::Character(':'), ":", &off), None);
 
-        // a dmenu's visit answers from its stdin lines alone
-        store(Choosing::showing(7, &["one"]));
-        assert_eq!(hands_off(7, Key::Character('@'), "@", &on), None);
+        // a dmenu's visit answers from its stdin lines alone. This test writes the global
+        // `Choosing`, and `found` branches on `choose::of(visit)`, so the visit must not collide
+        // with any other test's `found`/`surface` visit (`the_ranking_follows_its_inputs` uses 7);
+        // `u64::MAX` is taken by nothing, so a leftover global cannot rerank another test's visit.
+        store(Choosing::showing(u64::MAX, &["one"]));
+        assert_eq!(hands_off(u64::MAX, Key::Character('@'), "@", &on), None);
         store(Choosing::default());
     }
 
