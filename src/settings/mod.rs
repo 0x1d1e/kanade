@@ -372,6 +372,9 @@ fn undo() {
 
     let refusal = file::set_all(back, &expected).err();
 
+    // what the place finder said it set is no longer so
+    Settings::write().place.said = None;
+
     // dropped on success too; the file has it back
     if refusal.as_ref().is_none_or(|refusal| refusal.stale) {
         Settings::write().history.pop();

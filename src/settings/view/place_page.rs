@@ -97,6 +97,7 @@ pub fn row(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
     };
 
     if let Some(line) = line {
+        items.push(Box::new(space(6.0)));
         items.push(Box::new(wrapped(
             Text::new(line)
                 .size(theme::text::LABEL)
@@ -107,6 +108,7 @@ pub fn row(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
     }
 
     if !finder.results.is_empty() {
+        items.push(Box::new(space(6.0)));
         items.push(secondary(String::from("Several places match. Pick one:")));
 
         for (index, found) in finder.results.iter().enumerate() {

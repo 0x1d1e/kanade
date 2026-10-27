@@ -70,6 +70,14 @@ pub fn spawn() {
     });
 }
 
+/*
+ * whether the Modules read again what lives outside the config: one turned on or off, or the weather
+ * moved to another place, which its thread learns only from this (ADR 0017)
+ */
+fn rereads(running: &Config, next: &Config) -> bool {
+    next.off != running.off || next.location != running.location
+}
+
 // reads every layer again and applies them if they hold no problem; says on stderr what came of it
 pub fn reload() -> Outcome {
     let mut state = STATE.locked();
@@ -118,7 +126,7 @@ pub fn reload() -> Outcome {
             }
 
             // only when a module was turned on or off; a reload that changed nothing else is a no-op
-            if next.off != running.off {
+            if rereads(&running, &next) {
                 modules::reread();
             }
 
@@ -383,6 +391,17 @@ fn relevant(watches: &HashMap<WatchDescriptor, Vec<Want>>, event: &inotify::Even
 
 #[cfg(test)]
 mod tests {
+    // the weather thread learns of a new place only from this: it read the old one back otherwise
+    #[test]
+    fn a_new_weather_location_makes_the_modules_read_again() {
+        let running = Config::default();
+        let mut next = running.clone();
+        assert!(!rereads(&running, &next));
+
+        next.location = Some(config::Location::new(11.56, 104.92).unwrap());
+        assert!(rereads(&running, &next));
+    }
+
     use std::fs;
     use std::sync::mpsc;
 
