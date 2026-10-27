@@ -26,8 +26,14 @@ fn largest_on(monitor: &Monitor) -> Shape {
 
 // the output whose Island is drawn (`On`), else where a Surface is open
 fn drawn(monitors: &Monitors) -> Option<&Monitor> {
-    let island = IslandService::read();
+    /*
+     * `On` while a view draws, and the Island read only when there is none: the view holds a read
+     * of it for its whole body, so a second one would wait for that read as soon as the Service's
+     * listener queues a write, which the morph under way makes it do
+     */
     let on = ON.with_borrow(Clone::clone).or_else(|| {
+        let island = IslandService::read();
+
         island
             .expanded_on()
             .map(str::to_owned)

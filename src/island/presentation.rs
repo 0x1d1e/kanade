@@ -53,6 +53,9 @@ pub enum Surface {
 
     // the niri strip minimap across workspaces on the focused monitor
     Strip,
+
+    // every emoji as a grid, with the ones used lately first
+    Emoji,
 }
 
 /*

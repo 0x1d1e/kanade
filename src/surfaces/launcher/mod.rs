@@ -35,6 +35,7 @@ use crate::sources::network::Connectivity;
 use crate::sources::niri::{self, Acted};
 use crate::sources::system::Radio;
 use crate::sources::{self, clipboard, live, recording};
+use crate::surfaces::emoji::picture;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::{modules, view};
@@ -882,6 +883,7 @@ fn destinations() -> Destinations {
         keys: modules::on("keys-surface"),
         window: modules::on("window-surface"),
         strip: modules::on("strip-surface"),
+        emoji: modules::on("emoji-surface"),
         settings: modules::on("settings"),
     }
 }
@@ -1098,7 +1100,7 @@ struct Inputs {
 
     // which destinations exist, as the flags they are: `Destinations` is not compared, its file
     // not this one's
-    destinations: [bool; 16],
+    destinations: [bool; 17],
 
     // what the ranking read off the services, so a change to any of them ranks again
     radios: Radios,
@@ -1174,6 +1176,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
             destinations.keys,
             destinations.window,
             destinations.strip,
+            destinations.emoji,
             destinations.settings,
         ],
         radios: *radios,
@@ -1232,7 +1235,7 @@ fn rank(
 }
 
 // the destinations the flags in a ranking's inputs name
-fn destination(flags: [bool; 16]) -> Destinations {
+fn destination(flags: [bool; 17]) -> Destinations {
     let [
         wifi,
         bluetooth,
@@ -1243,7 +1246,7 @@ fn destination(flags: [bool; 16]) -> Destinations {
         session,
         timer,
         capture,
-    ] = flags[..9].try_into().expect("nine of sixteen");
+    ] = flags[..9].try_into().expect("nine of seventeen");
 
     Destinations {
         wifi,
@@ -1261,7 +1264,8 @@ fn destination(flags: [bool; 16]) -> Destinations {
         keys: flags[12],
         window: flags[13],
         strip: flags[14],
-        settings: flags[15],
+        emoji: flags[15],
+        settings: flags[16],
     }
 }
 
@@ -1937,12 +1941,24 @@ fn mark(mark: &Mark) -> Box<dyn Widget> {
                 .align_child(Center, Center)
                 .child(icon.draw(ICON * 0.8)),
         ),
-        Mark::Glyph(glyph) => Box::new(
-            Rectangle::new()
-                .width(ICON)
-                .height(ICON)
-                .align_child(Center, Center)
-                .child(Text::new(*glyph).size(ICON * 0.8)),
+        Mark::Emoji(emoji) => picture::picture(emoji).map_or_else(
+            || {
+                Box::new(
+                    Rectangle::new()
+                        .width(ICON)
+                        .height(ICON)
+                        .align_child(Center, Center)
+                        .child(Text::new(*emoji).size(ICON * 0.8)),
+                ) as Box<dyn Widget>
+            },
+            |path| {
+                Box::new(
+                    Rectangle::new()
+                        .width(ICON)
+                        .height(ICON)
+                        .fill(Image::contain(path).thumbnail(pixels, pixels)),
+                ) as Box<dyn Widget>
+            },
         ),
     }
 }
@@ -2401,6 +2417,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
         }
         Destination::Strip => {
             IslandService::write().open(monitor, Surface::Strip, Instant::now());
+            Ok(())
+        }
+        Destination::Emoji => {
+            IslandService::write().open(monitor, Surface::Emoji, Instant::now());
             Ok(())
         }
         Destination::Settings(page) => {

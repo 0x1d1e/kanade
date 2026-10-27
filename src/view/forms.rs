@@ -112,6 +112,7 @@ pub(super) fn surface(
             island.visit(),
             island.held(monitor),
         )),
+        Surface::Emoji => Some(surfaces::emoji::surface(monitor, island.visit())),
     }
 }
 

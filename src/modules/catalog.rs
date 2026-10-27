@@ -1382,6 +1382,34 @@ notifications dnd on until <HH:MM>
             app
         },
     },
+    // every emoji as a grid, with the ones used lately in a row above them
+    Module {
+        name: "emoji-surface",
+        about: "The emoji grid, with recents",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[Need {
+            on: Provider::Program(clipboard::COPY),
+            without: "no copying an emoji",
+        }],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "emoji",
+            about: "Open the emoji grid Surface",
+            usage: || String::from("emoji open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Emoji, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            surfaces::emoji::start();
+            app
+        },
+    },
     /*
      * a stroke drawn with the pointer runs a verb of Kanade (ADR 0105 to 0109): the overlay opens
      * only on `kanade gesture`, which the user binds, so Kanade grabs no key. Inert until a

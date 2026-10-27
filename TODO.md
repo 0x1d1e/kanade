@@ -305,7 +305,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - Done: `Surface::Window` on `geometry::PAD` (440×236), tracking focused window layout and workspaces from niri IPC, column actions (consume right, expel bottom, ⅓, ½, ⅔, preset width, maximize, float) and workspace transfer pills, keyboard ring navigation, module `window-surface`, verb `kanade window`, Launcher destination (commits `0662f77`, `34bb2d1`).
 - [x] Per-app volume mixer in Controls: each playing app gets its own level (`Line::Stream`/`Line::Route` in `src/surfaces/controls/audio.rs`, from `Stream` in `src/sources/audio.rs:101`), and a stream can be moved to another output.
   - Premise no longer holds: the mixer exists.
-- [ ] Emoji grid picker with recents, as a Surface (optional; `:emoji` search in the Launcher already exists).
+- [x] Emoji grid picker with recents, as a Surface (optional; `:emoji` search in the Launcher already exists).
+  - Done (ADR 0134): `Surface::Emoji` on the largest body, one scrolling grid with a title per Unicode group and up to 24 recents in rows above them, searched as it is typed, a press copying the emoji through `wl-copy` and closing the island once it is on the clipboard, recents in `$XDG_STATE_HOME/kanade/emoji-recents`, module `emoji-surface`, verb `kanade emoji`, Launcher destination; the table moved to `surfaces/emoji/data.rs` and the Launcher's `:` provider now reads it too. Emoji pictures rasterize on demand on workers for visible tiles; the image loader draws them when ready. Run on the session: the grid, its tiles, the search narrowing the body, the ring and a copy end to end.
 - [ ] Desktop widgets on the desktop layer (clock, weather, calendar, media); scope to be decided.
 
 ## SDDM theme and `kanade sddm` (feat/sddm-theme, low-level, unfixed)

@@ -34,6 +34,7 @@ pub enum Destination {
     Keys,
     Window,
     Strip,
+    Emoji,
 
     // Settings, on the page of this name
     Settings(&'static str),
@@ -58,6 +59,7 @@ impl Destination {
             Destination::Keys => "keys",
             Destination::Window => "window",
             Destination::Strip => "strip",
+            Destination::Emoji => "emoji",
             Destination::Settings(page) => page,
         }
     }
@@ -81,6 +83,7 @@ pub struct Destinations {
     pub keys: bool,
     pub window: bool,
     pub strip: bool,
+    pub emoji: bool,
     pub settings: bool,
 }
 
@@ -237,6 +240,14 @@ impl LauncherProvider for Destinations {
                 "Niri strip minimap",
                 &["strip", "minimap", "overview", "windows"][..],
                 Destination::Strip,
+            ),
+            (
+                self.emoji,
+                Icon::Grid,
+                "Emoji",
+                "Every emoji, with recents",
+                &["emoji", "emojis", "emoticon", "smiley", "reaction"][..],
+                Destination::Emoji,
             ),
         ];
 

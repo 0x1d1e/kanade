@@ -1110,6 +1110,7 @@ mod tests {
             (&["power-profile", "cycle"], "power"),
             (&["strip", "open"], "strip-surface"),
             (&["minimap", "open"], "strip-surface"),
+            (&["emoji", "open"], "emoji-surface"),
         ] {
             let (module, _) = parse(words).expect("parses");
             assert_eq!(module.name, owner, "{words:?}");

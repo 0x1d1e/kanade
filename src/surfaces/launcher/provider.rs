@@ -52,8 +52,8 @@ pub enum Mark {
     // a letter or sign on the quiet tile
     Tile(String),
 
-    // a glyph drawn as it is, like an emoji
-    Glyph(&'static str),
+    // an emoji whose color picture is loaded when its row is drawn
+    Emoji(&'static str),
 }
 
 // what pressing an answer does; each closes the island once done

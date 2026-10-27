@@ -15,6 +15,7 @@ pub mod capture;
 pub mod clipboard;
 pub mod confirm;
 pub mod controls;
+pub mod emoji;
 mod grid;
 pub mod keys;
 pub mod launcher;
