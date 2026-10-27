@@ -87,6 +87,14 @@ impl Timings {
 const HOLD: Duration = Duration::from_secs(5);
 
 /*
+ * niri drops toplevel focus when the layer takes the keyboard, and does not put it back when the
+ * layer lets go. The restore waits past the next frame, so the keyboard commit has landed, and
+ * tries once more in case the first request raced that commit
+ */
+const RESTORE_AFTER: Duration = Duration::from_millis(80);
+const RESTORE_TRIES: u8 = 2;
+
+/*
  * a deadline change nudges listen(), which otherwise sleeps until the next deadline;
  * one pending nudge is enough, since listen() reads every deadline again when it wakes
  */
@@ -143,6 +151,15 @@ struct Island {
     // since niri drops the focus on any switch to OnDemand, even right after a press
     held: bool,
 
+    // the toplevel focused when the pointer entered, before OnDemand dropped it; none if nothing was
+    hover_focus: Option<Option<u64>>,
+
+    // the toplevel focused when this Surface took the keyboard; the outer Option is whether it took one
+    stolen: Option<Option<u64>>,
+
+    // focus this once the layer has let the keyboard go, if the user has not focused another toplevel
+    restore: Option<Restore>,
+
     // the pointer is in the input region
     inside: bool,
 
@@ -182,6 +199,14 @@ struct Island {
 
     // what the pointer started: a Peek after the hover delay, or a collapse after the grace
     due: Option<Due>,
+}
+
+// a toplevel to focus again after a Surface that took the keyboard collapses
+#[derive(Debug, Clone, Copy)]
+struct Restore {
+    at: Instant,
+    id: u64,
+    left: u8,
 }
 
 // an input the island gives itself at `at`, unless something else happens first
@@ -432,9 +457,15 @@ impl IslandService {
             nudge();
         }
 
+        let was = self.expanded_on().map(str::to_owned);
+
         self.focused_output = focused_output;
         self.presentations.set_overview(overview);
         self.sync(now);
+
+        if overview {
+            self.settle_focus(was.as_deref(), now);
+        }
 
         true
     }
@@ -623,7 +654,13 @@ impl IslandService {
         self.deadline()
             .into_iter()
             .chain(self.untouched.release_at)
+            .chain(self.untouched.restore.map(|restore| restore.at))
             .chain(self.islands.values().filter_map(|island| island.release_at))
+            .chain(
+                self.islands
+                    .values()
+                    .filter_map(|island| island.restore.map(|restore| restore.at)),
+            )
             .min()
     }
 
@@ -757,6 +794,7 @@ impl IslandService {
 
         self.island(&monitor);
 
+        let was = self.expanded_on().map(str::to_owned);
         let Some(prior) = self.presentations.auto_expand(&monitor, surface) else {
             return;
         };
@@ -786,6 +824,7 @@ impl IslandService {
         nudge();
 
         self.sync(now);
+        self.settle_focus(was.as_deref(), now);
     }
 
     /*
@@ -793,6 +832,7 @@ impl IslandService {
      * as it would have, holding the keyboard again or collapsing after the grace with nobody on it
      */
     fn restore(&mut self, now: Instant) {
+        let was = self.expanded_on().map(str::to_owned);
         let Some(auto) = self.auto.take() else {
             return;
         };
@@ -825,6 +865,7 @@ impl IslandService {
 
         nudge();
         self.sync(now);
+        self.settle_focus(was.as_deref(), now);
     }
 
     /*
@@ -1080,6 +1121,7 @@ impl IslandService {
             nudge();
         }
 
+        let was = self.expanded_on().map(str::to_owned);
         self.presentations.input(monitor, input);
 
         /*
@@ -1096,6 +1138,7 @@ impl IslandService {
         }
 
         self.sync(now);
+        self.settle_focus(was.as_deref(), now);
     }
 
     /*
@@ -1225,6 +1268,11 @@ impl IslandService {
             return;
         }
 
+        // before OnDemand, so a later Surface still knows who had the keyboard
+        if inside {
+            island.hover_focus = Some(focused_toplevel());
+        }
+
         // on before any press, since OnDemand focuses only on one
         island.inside = inside;
         island.armed = inside;
@@ -1250,6 +1298,11 @@ impl IslandService {
             nudge();
         }
 
+        // a hover that never opened a Surface must not keep a stale toplevel for a later open
+        if !inside && !matches!(presentation, Presentation::Expanded(_)) {
+            island.hover_focus = None;
+        }
+
         // in case sizes changed while the pointer was on the body
         if !inside {
             self.retarget(now);
@@ -1272,6 +1325,8 @@ impl IslandService {
         for (monitor, input) in due {
             self.give(&monitor, input, now);
         }
+
+        self.restore_focus(now);
 
         // the pointer still on its Surface keeps it open, as on one the user opened
         let ended = self.auto.as_ref().filter(|auto| auto.until <= now);
@@ -1485,6 +1540,171 @@ fn nudge() {
     NUDGE.nudge();
 }
 
+/*
+ * the toplevel to focus when a Surface that took the keyboard collapses. `previous` is who had it
+ * when the keyboard was taken, `at_collapse` who has it now. Nothing was focused then, the user
+ * focused a different toplevel since, or any Surface is still open, so collapse focuses nothing
+ */
+pub(crate) fn focus_to_restore(
+    took_keyboard: bool,
+    any_expanded: bool,
+    previous: Option<u64>,
+    at_collapse: Option<u64>,
+) -> Option<u64> {
+    if !took_keyboard || any_expanded {
+        return None;
+    }
+
+    let previous = previous?;
+
+    match at_collapse {
+        Some(now) if now != previous => None,
+        _ => Some(previous),
+    }
+}
+
+// the toplevel niri says is focused now, not the last one held across a layer-surface focus
+fn focused_toplevel() -> Option<u64> {
+    #[cfg(test)]
+    {
+        None
+    }
+
+    #[cfg(not(test))]
+    {
+        crate::sources::niri::Niri::read()
+            .seen
+            .windows
+            .iter()
+            .find(|window| window.is_focused)
+            .map(|window| window.id)
+    }
+}
+
+fn focus_toplevel(id: u64) {
+    #[cfg(not(test))]
+    {
+        let _ = crate::sources::niri::focus_window(id);
+    }
+
+    #[cfg(test)]
+    {
+        let _ = id;
+    }
+}
+
+impl IslandService {
+    // a Surface opened or closed: remember who had the keyboard, and give it back on collapse
+    fn settle_focus(&mut self, was: Option<&str>, now: Instant) {
+        if let Some(monitor) = was.filter(|monitor| !self.expanded(monitor)) {
+            self.release_focus(monitor, now);
+        }
+
+        // opening on this monitor or another drops every waiting restore, not only the opener's
+        if self.expanded_on().is_some() {
+            self.clear_restores();
+        }
+
+        if let Some(monitor) = self.expanded_on().map(str::to_owned) {
+            self.remember_focus(&monitor);
+        }
+    }
+
+    fn clear_restores(&mut self) {
+        for island in self.islands.values_mut() {
+            island.restore = None;
+        }
+    }
+
+    fn remember_focus(&mut self, monitor: &str) {
+        if self.keyboard(monitor) == Keyboard::None {
+            return;
+        }
+
+        // every island, not only this one: another monitor's retry must not fire under this Surface
+        self.clear_restores();
+
+        let island = self.island(monitor);
+
+        if island.stolen.is_some() {
+            return;
+        }
+
+        let current = focused_toplevel();
+        let previous = match (current, island.hover_focus) {
+            (Some(id), _) => Some(id),
+            (None, Some(saved)) => saved,
+            (None, None) => None,
+        };
+
+        island.stolen = Some(previous);
+    }
+
+    fn release_focus(&mut self, monitor: &str, now: Instant) {
+        let any_expanded = self.expanded_on().is_some();
+        let island = self.island(monitor);
+        let Some(previous) = island.stolen.take() else {
+            return;
+        };
+
+        island.hover_focus = None;
+
+        let Some(id) = focus_to_restore(true, any_expanded, previous, focused_toplevel()) else {
+            return;
+        };
+
+        island.restore = Some(Restore {
+            at: now + RESTORE_AFTER,
+            id,
+            left: RESTORE_TRIES,
+        });
+        nudge();
+    }
+
+    fn restore_focus(&mut self, now: Instant) {
+        // a Surface on any monitor holds the keyboard; a retry for one that collapsed must not fire
+        if self.expanded_on().is_some() {
+            self.clear_restores();
+            return;
+        }
+
+        let due: Vec<(String, u64, u8)> = self
+            .islands
+            .iter_mut()
+            .filter_map(|(monitor, island)| {
+                let restore = island.restore?;
+
+                (restore.at <= now).then(|| {
+                    island.restore = None;
+                    (monitor.clone(), restore.id, restore.left)
+                })
+            })
+            .collect();
+
+        for (monitor, id, left) in due {
+            let Some(id) = focus_to_restore(
+                true,
+                self.expanded_on().is_some(),
+                Some(id),
+                focused_toplevel(),
+            ) else {
+                continue;
+            };
+
+            focus_toplevel(id);
+
+            if left > 1 {
+                self.island(&monitor).restore = Some(Restore {
+                    at: now + RESTORE_AFTER,
+                    id,
+                    left: left - 1,
+                });
+                nudge();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1493,6 +1713,18 @@ mod tests {
     use crate::island::geometry::{DEFAULT_LARGEST, REST};
 
     const MONITOR: &str = "eDP-1";
+
+    #[test]
+    fn collapse_restores_the_toplevel_the_surface_took_unless_the_user_moved_on() {
+        assert_eq!(focus_to_restore(true, false, Some(5), None), Some(5));
+        assert_eq!(focus_to_restore(true, false, Some(5), Some(5)), Some(5));
+        assert_eq!(focus_to_restore(true, false, Some(5), Some(9)), None);
+        assert_eq!(focus_to_restore(true, false, None, None), None);
+        assert_eq!(focus_to_restore(true, false, None, Some(9)), None);
+        assert_eq!(focus_to_restore(false, false, Some(5), None), None);
+        assert_eq!(focus_to_restore(true, true, Some(5), None), None);
+        assert_eq!(focus_to_restore(true, true, Some(5), Some(5)), None);
+    }
 
     #[test]
     fn untouched_island_takes_no_keyboard() {
