@@ -22,13 +22,13 @@ pub const NEUTRAL: Source = Source {
 };
 
 // the source chroma at and above which the ramp takes its full tint
-const FULL: f32 = 0.06;
+const FULL: f32 = 0.05;
 
 // the share of the tint a grey wallpaper keeps, so the pane never reads as pure grey or black
-const LEAST: f32 = 0.25;
+const LEAST: f32 = 0.4;
 
 // L and C of the surface, and the lightness of each step above it
-const SURFACE: (f32, f32) = (0.16, 0.032);
+const SURFACE: (f32, f32) = (0.16, 0.05);
 const CONTAINER: f32 = 0.05;
 const HIGH: f32 = 0.10;
 
@@ -42,7 +42,7 @@ impl Source {
         }
     }
 
-    // how much of the tint the ramp takes, 0.25 to 1
+    // how much of the tint the ramp takes, 0.4 to 1
     fn share(self) -> f32 {
         (self.chroma / FULL).clamp(LEAST, 1.0)
     }

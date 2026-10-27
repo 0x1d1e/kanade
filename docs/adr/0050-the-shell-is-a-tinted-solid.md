@@ -8,12 +8,16 @@ ADR 0049 made the Island a black pill, which reads on any wallpaper and any wind
 
 ## Decision
 
-- The Island, Dock and Banners are opaque, tinted toward the wallpaper's hue. The ramp is built in OKLCH from the source color Matugen reports (`src/theme/tint.rs`): surface (L 0.16), container (+0.05), container-high (+0.10), near-white text (L 0.96), secondary text (L 0.82) and one accent, `primary` (L 0.84). Each step is opaque, since a pane is solid.
-- Chroma scales with the source's own, from a quarter of the tint for a grey wallpaper to all of it, so a grey wallpaper still tints a little and a vivid one does not run away into a color. With no wallpaper known the ramp is a cool slate.
+- The Island, Dock and Banners are opaque, tinted toward the wallpaper's hue. The ramp is built in OKLCH from the source color Matugen reports (`src/theme/tint.rs`): surface (L 0.16, chroma 0.05), container (+0.05), container-high (+0.10), near-white text (L 0.96), secondary text (L 0.82) and one accent, `primary` (L 0.84). Each step is opaque, since a pane is solid.
+- Chroma scales with the source's own, from two fifths of the tint for a grey wallpaper to all of it, so a grey wallpaper still tints a little and a vivid one does not run away into a color. With no wallpaper known the ramp is a cool slate.
 - The ramp is the same whatever `appearance.tone` says. `theme::island()` returns it; Settings and the app adapters keep Matugen's M3 roles (`theme::roles`).
-- A pane is its fill, a hair lighter at the top, a top light edge (white at 10%, a 1 px line along the top of the outline, curving with the corners) and a rim (white at 6%, 1 px inside the whole outline), then the two shadows ADR 0049 already casts. All drawn by `src/pane.wgsl`, which still never reads the clock; a merged Island and Dock (ADR 0031) keep one outline, so edge and rim follow it.
+- A pane is its fill, a hair lighter at the top, a top light edge (white at 20%, a 1 px line along the top of the outline, curving with the corners) and a rim (white at 14%, 1 px inside the whole outline), then the two shadows ADR 0049 already casts. All drawn by `src/pane.wgsl`, which still never reads the clock; a merged Island and Dock (ADR 0031) keep one outline, so edge and rim follow it.
 - Signal colors (privacy, capture, warning, critical) keep their fixed hues; the tint never reaches them.
 - The lock screen keeps its black pill and disc (`SemanticColors::island_surface`, now only theirs). `lock.backdrop = solid` takes the tinted surface.
+
+## Amendment: more material at 1x
+
+A critique of the Rest pill (148 by 30) at scale 1 found its edge and hue barely readable on a dark wallpaper. The values above were raised: surface chroma 0.032 to 0.05, a grey wallpaper keeping two fifths of the tint (was a quarter) and a source at chroma 0.05 taking all of it (was 0.06); the top light edge white at 20% (was 10%) and the rim at 14% (was 6%); the ambient shadow at 28% black (was 15%) and the contact one at 17% (was 10%). Lightness is unchanged, so the text contrast of the ramp is too. A detached Satellite's dot takes the body's fill and rim, not the container step.
 
 ## Consequences
 

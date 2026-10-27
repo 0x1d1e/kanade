@@ -166,8 +166,8 @@ pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
  * the pane's shadows: an ambient one lifting it off what is under it, and a contact one along its
  * edge. Faint, so they reinforce its elevation over a bright desktop and all but vanish on a dark one
  */
-pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 38);
-pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
+pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 72);
+pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 44);
 
 // the ring of a pinned Island on the tinted ramp: white, so it reads on every hue (ADR 0050)
 pub const TINT_OUTLINE: Color = Color::rgba(255, 255, 255, 71);
@@ -176,8 +176,8 @@ pub const TINT_OUTLINE: Color = Color::rgba(255, 255, 255, 71);
  * a pane's top light edge and its rim, white over the fill: the edge a 1 px line along the top,
  * following the corners, the rim a 1 px line all round, inside the outline
  */
-const PANE_EDGE: Color = Color::rgba(255, 255, 255, 26);
-const PANE_RIM: Color = Color::rgba(255, 255, 255, 15);
+const PANE_EDGE: Color = Color::rgba(255, 255, 255, 51);
+const PANE_RIM: Color = Color::rgba(255, 255, 255, 36);
 
 // paper's: a white edge catching the light, a faint ink rim, the outline of a pinned Island in ink
 const PAPER_EDGE: Color = Color::rgba(255, 255, 255, 230);
