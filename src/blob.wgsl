@@ -52,6 +52,7 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     // how far the nearest dot is, the opacity of the neck, and the dots drawn as they are
     var nearest = 1.0e5;
+    var nearest_opacity = 0.0;
     var neck_opacity = 0.0;
     var dots = 0.0;
 
@@ -79,8 +80,16 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         // a neck is as opaque as the dots near it, each fading out over a reach from its edge, so it
         // never changes at once where one dot's nearness passes to another's
         neck_opacity = max(neck_opacity, bud.w * (1.0 - smoothstep(0.0, values[1].y, own)));
-        nearest = min(nearest, own);
+
+        if own < nearest {
+            nearest = own;
+            nearest_opacity = bud.w;
+        }
     }
+
+    // inside a dot, and at its edge, only that dot's own opacity counts, so a faint dot is not drawn
+    // at its neighbour's; the neck's shared opacity takes over over a reach from its edge
+    neck_opacity = mix(nearest_opacity, neck_opacity, clamp(nearest / max(values[1].y, 1e-4), 0.0, 1.0));
 
     // the neck lies outside the body, which draws its own fill
     let neck = cover(d) * (1.0 - cover(from_body)) * neck_opacity;
