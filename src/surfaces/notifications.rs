@@ -1272,10 +1272,11 @@ fn pill(
         .align_child(Center, Center)
         .child(child);
 
+    let pill = super::pill_face(pill);
     let pill = if ring {
         pill.border(RING, theme::island().on_surface)
     } else {
-        pill.border(1.0, theme::island().surface_container_high)
+        pill
     };
 
     let monitor = monitor.to_owned();

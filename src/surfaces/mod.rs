@@ -36,6 +36,16 @@ pub mod welcome;
 pub mod window;
 
 /*
+ * the face every pill-shaped control shares, the Notifications footer's, the Calendar's Add and
+ * an empty state's Open Settings: one lifted fill and one outline, so no pill reads as another's
+ * kind
+ */
+fn pill_face(pill: Rectangle) -> Rectangle {
+    pill.fill(theme::island().surface_container)
+        .border(1.0, theme::island().outline)
+}
+
+/*
  * how much of a list's row shows, as the opacity it is drawn at: whole while it is inside the
  * `room` the list scrolls in, fading as an edge cuts it, so a row never ends half drawn at full
  * strength. `top` is the row's place in the list, `offset` how far the list scrolled

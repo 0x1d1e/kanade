@@ -649,9 +649,16 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .child(
             Row::new(vec![
                 Box::new(rise(0, grid(monitor, day, today, &month, &browse))) as Box<dyn Widget>,
+                // a hairline in the gap, so the month and the agenda read as two panes
+                Box::new(
+                    Rectangle::new()
+                        .width(1.0)
+                        .height(shape.height - 2.0 * INSET)
+                        .fill(theme::island().surface_container_high),
+                ),
                 Box::new(rise(1, agenda)),
             ])
-            .gap(SIDE_GAP),
+            .gap((SIDE_GAP - 1.0) / 2.0),
         )
 }
 
@@ -959,28 +966,29 @@ fn agenda(
     .gap(GAP)
 }
 
-const ADD_WIDTH: f32 = 56.0;
-const ADD_HEIGHT: f32 = 24.0;
+const ADD_WIDTH: f32 = 60.0;
+const ADD_HEIGHT: f32 = 28.0;
 
 // starts an event, as `a` does
 fn add_pill(monitor: &str) -> Rectangle {
     let monitor = monitor.to_owned();
 
-    Rectangle::new()
-        .width(ADD_WIDTH)
-        .height(ADD_HEIGHT)
-        .radius(ADD_HEIGHT / 2.0)
-        .border(1.0, theme::island().outline)
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .semantics(|| Semantics::new(Role::Button, "new"))
-        .on_click(super::on_left(move || add_event(&monitor)))
-        .child(
-            Text::new("+ Add")
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface)
-                .weight(theme::text::SEMIBOLD),
-        )
+    super::pill_face(
+        Rectangle::new()
+            .width(ADD_WIDTH)
+            .height(ADD_HEIGHT)
+            .radius(ADD_HEIGHT / 2.0),
+    )
+    .align_child(Center, Center)
+    .cursor(Cursor::Pointer)
+    .semantics(|| Semantics::new(Role::Button, "new"))
+    .on_click(super::on_left(move || add_event(&monitor)))
+    .child(
+        Text::new("+ Add")
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::island().on_surface)
+            .weight(theme::text::SEMIBOLD),
+    )
 }
 
 /*

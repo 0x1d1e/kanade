@@ -183,21 +183,22 @@ const PILL_HEIGHT: f32 = 28.0;
 pub fn settings_pill(monitor: &str, page: &'static str) -> Rectangle {
     let monitor = monitor.to_owned();
 
-    Rectangle::new()
-        .width(PILL_WIDTH)
-        .height(PILL_HEIGHT)
-        .radius(PILL_HEIGHT / 2.0)
-        .border(1.0, theme::island().outline)
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .semantics(|| Semantics::new(Role::Button, "settings"))
-        .on_click(super::on_left(move || open_settings(&monitor, page)))
-        .child(
-            Text::new("Open Settings")
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface)
-                .weight(theme::text::SEMIBOLD),
-        )
+    super::pill_face(
+        Rectangle::new()
+            .width(PILL_WIDTH)
+            .height(PILL_HEIGHT)
+            .radius(PILL_HEIGHT / 2.0),
+    )
+    .align_child(Center, Center)
+    .cursor(Cursor::Pointer)
+    .semantics(|| Semantics::new(Role::Button, "settings"))
+    .on_click(super::on_left(move || open_settings(&monitor, page)))
+    .child(
+        Text::new("Open Settings")
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::island().on_surface)
+            .weight(theme::text::SEMIBOLD),
+    )
 }
 
 pub fn open_settings(monitor: &str, page: &'static str) {

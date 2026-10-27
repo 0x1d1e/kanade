@@ -651,7 +651,7 @@ fn round(item: Switch, ring: bool) -> Rectangle {
     } else {
         (
             theme::island().surface_container,
-            theme::island().on_surface,
+            theme::island().on_surface_variant,
         )
     };
 
@@ -774,7 +774,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
     } else {
         (
             theme::island().surface_container_high,
-            theme::island().on_surface,
+            theme::island().on_surface_variant,
         )
     };
 
@@ -800,10 +800,17 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
     } else {
         0.0
     };
+    // off is quiet all through: a dim glyph, a dim name, a body with no lift; on is lit
+    let name = if item.on {
+        theme::island().on_surface
+    } else {
+        theme::island().on_surface_variant
+    };
+
     let words = Column::new(children![
         Text::new(item.name)
             .size(theme::text::LABEL)
-            .color(theme::island().on_surface)
+            .color(name)
             .weight(theme::text::SEMIBOLD)
             .elide(),
         Text::new(&item.status)
@@ -843,7 +850,14 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
         .width(width)
         .height(SWITCH)
         .radius(SWITCH / 2.0)
-        .fill(theme::island().surface_container)
+        .fill(if item.on {
+            theme::over(
+                theme::faded(theme::island().primary, 0.2),
+                theme::island().surface_container,
+            )
+        } else {
+            theme::island().surface_container
+        })
         .padding(Padding {
             top: 0.0,
             right,
@@ -1029,7 +1043,7 @@ fn level(
     let fraction = f32::from(percent.unwrap_or(0)) / 100.0;
 
     let bar = match slider {
-        Some(slider) => slider.bar(width, fraction, tone),
+        Some(slider) => slider.bar_ringed(width, fraction, tone, ring),
         None => Rectangle::new()
             .width(width)
             .height(TARGET)

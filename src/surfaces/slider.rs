@@ -8,16 +8,21 @@ use std::time::{Duration, Instant};
 use crate::sources::brightness::Brightness;
 use crate::sources::pulse::Audio;
 use kanade_runtime::ui::{Role, Semantics};
-use kanade_runtime::{Center, Color, Cursor, Rectangle, Start};
-use kanade_runtime::{MutexExt, service::Service};
+use kanade_runtime::{Center, Color, Cursor, Rectangle, Stack, Start, children, request_frame};
+use kanade_runtime::{MutexExt, Widget, service::Service};
 
 use crate::modules;
 use crate::sources::audio::{self, Mixer, Node};
+use crate::theme;
 use crate::theme::space::TARGET;
 use crate::view::bar;
 
 // percent per wheel line
 const WHEEL: f32 = 5.0;
+
+// the thumb's width, and how long it stays after the last drag or wheel line
+const THUMB: f32 = 14.0;
+const THUMB_STAYS: Duration = Duration::from_millis(700);
 
 // how long an asked level stands for the device's own
 const ASKED_FOR: Duration = Duration::from_millis(300);
@@ -57,6 +62,50 @@ impl Slider {
 
     // its bar `width` wide and `fraction` filled, pressed or dragged along to set it
     pub fn bar(self, width: f32, fraction: f32, tone: Color) -> Rectangle {
+        self.bar_ringed(width, fraction, tone, false)
+    }
+
+    /*
+     * the same, with a thumb at the end of the fill while the ring is on it or it was just set by
+     * a drag or the wheel, so the handle shows when it is being used and the track is quiet when
+     * it is not
+     */
+    pub fn bar_ringed(self, width: f32, fraction: f32, tone: Color, ring: bool) -> Rectangle {
+        let held = ASKED
+            .locked()
+            .as_ref()
+            .is_some_and(|asked| asked.slider == self && asked.at.elapsed() < THUMB_STAYS);
+
+        // the thumb goes a moment after the last move, so one more frame draws it away
+        if held {
+            request_frame();
+        }
+
+        let track: Box<dyn Widget> = if ring || held {
+            let at = (width * fraction.clamp(0.0, 1.0) - THUMB / 2.0).clamp(0.0, width - THUMB);
+
+            Box::new(
+                Stack::new(children![
+                    Rectangle::new()
+                        .width(width)
+                        .height(TARGET)
+                        .align_child(Start, Center)
+                        .child(bar(width, fraction, tone)),
+                    Rectangle::new()
+                        .width(THUMB)
+                        .height(THUMB)
+                        .radius(THUMB / 2.0)
+                        .fill(theme::island().on_surface)
+                        .border(1.5, theme::island().surface)
+                        .translate(at, (TARGET - THUMB) / 2.0),
+                ])
+                .width(width)
+                .height(TARGET),
+            )
+        } else {
+            Box::new(bar(width, fraction, tone))
+        };
+
         Rectangle::new()
             .width(width)
             .height(TARGET)
@@ -76,7 +125,7 @@ impl Slider {
                 crate::view::claim();
                 self.set((point.x / width * 100.0).round().clamp(0.0, 100.0) as u8);
             })
-            .child(bar(width, fraction, tone))
+            .child(track)
     }
 
     // down is lower

@@ -728,7 +728,7 @@ fn volume(width: f32, accent: Color, ring: bool) -> Rectangle {
         accent
     };
 
-    let bar = Slider::Speaker.bar(width, f32::from(percent) / 100.0, tone);
+    let bar = Slider::Speaker.bar_ringed(width, f32::from(percent) / 100.0, tone, ring);
 
     level(Row::new(children![speaker, bar])).border_if(ring)
 }
