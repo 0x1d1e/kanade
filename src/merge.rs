@@ -327,12 +327,10 @@ fn crown(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent, scre
 }
 
 /*
- * the room the Dock takes beside the canvas, as much of it as the output holds: the window is never
- * wider than the output under it, or its far side stands off the screen. That room is the icons' in a
- * Keystone or a Fold, and a Crown's plate past the canvas; either way what gives is the Dock past the
- * output's edge. The side the anchor hangs from keeps its room, so the canvas keeps the place its
- * side gives it, the body with it; the room away from that side takes the cut. Centered, the canvas
- * is as far out to one side as the other, so both give way alike, and the body stays in the middle
+ * the window is never wider than the output under it: the canvas plus the Dock's room is capped,
+ * and what gives is the Dock past the output's edge. the anchor side keeps its room, so the canvas
+ * keeps the place its side gives it; the far side takes the cut. centered, both give way alike and
+ * the body stays in the middle
  */
 fn room(along: Along, (left, right): (f32, f32), canvas: Canvas, screen: f32) -> (f32, f32) {
     let over = left + canvas.width + right - screen;

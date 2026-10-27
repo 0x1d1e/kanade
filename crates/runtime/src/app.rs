@@ -50,10 +50,9 @@ impl App {
         self
     }
 
-    // lets `kanade <name> [arguments...]` run the handler while the shell is running; it answers
-    // through the reply, at once or once it knows. `draws` says whether a call changes what a
-    // window draws beyond the Services it writes: the windows are drawn again after one that
-    // does, and a call that only writes Services is left to the frames that write asked for
+    // lets `kanade <name> [arguments...]` run the handler while the shell runs; it answers through
+    // the reply, at once or later. `draws` is read from the call's words before it runs, and a call
+    // that only writes Services draws no frame of its own.
     pub fn ipc(
         mut self,
         name: &str,

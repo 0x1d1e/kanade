@@ -19,11 +19,8 @@ use super::who::Who;
 use super::{Said, Status, locker};
 
 /*
- * as macOS's: the date over a large time near the top, who is signed in and a black pill to
- * type the password in near the bottom, over the output's wallpaper as `lock.backdrop` says. A
- * hidden window that only hands `kanade-lock` the scene of its monitor, unlocked too, so a lock
- * shows it from its first frame; it runs again as anything it reads changes, as the minute turns
- * while locked
+ * give `kanade-lock` each monitor's scene through a hidden window, even while unlocked, so locking
+ * has a first frame ready; refresh it when its inputs change, including each minute
  */
 pub fn scene(monitor: &Monitor) -> LayerWindow {
     if let Ok(locker) = locker() {

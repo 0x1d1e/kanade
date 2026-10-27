@@ -646,11 +646,8 @@ impl<O: Outside> Worker<O> {
     }
 
     /*
-     * keeps a sign-in's credentials, unless a newer sign-in or a sign-out came since, which then
-     * runs after this, including one that comes while the keyring prompts. They may be another
-     * account's: the events synced before stay until these are kept, then go. A sign-in not kept leaves the account it replaces as it was; a crash
-     * between keeping and deleting leaves the events to `run`, which drops a cache synced for
-     * another account
+     * a newer sign-in or sign-out supersedes this one, even during a keyring prompt. Keep old events
+     * until credentials are stored; if cleanup is interrupted, `run` drops events from another account.
      */
     fn keep(&mut self, sign_in: u64, credentials: Credentials) -> Result<(), String> {
         let superseded = || sign_in != self.outside.sign_in();

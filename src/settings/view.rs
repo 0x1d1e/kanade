@@ -930,7 +930,7 @@ fn found_heading(
  * clear of the card's corner instead of meeting it. The inset and `radius::CARD` are the same, so a
  * row's straight edge begins where the card's corner ends and the row keeps its own smaller
  * `radius::ROW`: a nested radius of `radius::CARD - CARD_INSET` would be square here. The height
- * grows by what the padding takes, so the column still fits exactly
+ * adds the inset back, so the column still fits
  */
 fn card_of(rows: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> Rectangle {
     let column = Column::new(rows).width(inner());

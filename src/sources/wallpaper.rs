@@ -465,11 +465,8 @@ pub fn current() -> Option<PathBuf> {
 }
 
 /*
- * the images showing on `output` as best known: what awww said it shows on each output when last
- * asked, which follows every set through its cache (`watch`). An output awww did not report has
- * none known, not the one Kanade last set, which may well be shown elsewhere; for every output
- * together, awww having said nothing at all still falls back to that, as it is the one image
- * Kanade knows is on the screens
+ * use awww's last reported image per output, updated through `watch`. An unreported named output
+ * has none; for all outputs, fall back to Kanade's last set image if awww reported nothing.
  */
 pub fn showing_on(output: &Output) -> Vec<PathBuf> {
     known(output, &Shown::read().by, current())

@@ -739,12 +739,9 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
 }
 
 /*
- * the Dock laid out around the Island's `body` (with the corner `radius` it has), in the shell's
- * window (`merge::Shell`, ADR 0031): the Island is the middle piece of the row, its icons on
- * either side. Folded (`dock.merge = "fold"`), the icons come out of the body as `unfold` goes
- * from 0 to 1, with the pointer or while a small form shows, and go back into it as a Surface
- * opens. `reach` is where the pointer reaches the Island, which the Dock's hover takes in too
- * while folded
+ * the merged row centers the Island's `body` with its `radius` between the Dock's icons. folded
+ * icons unfold on pointer reach or a small form, then fold back when a Surface opens; `reach` also
+ * extends the Dock's hover target
  */
 pub(crate) fn between(
     monitor: &Monitor,
@@ -1179,13 +1176,9 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 }
 
 /*
- * keeps windows off the Dock's strip of the output, `dock.reserve`: an empty window a pixel wide on
- * its edge, as thick as the Dock at rest and, beside the Island, the room it leaves the Island,
- * as layer-shell reserves the thickness of a window held to one edge. The Island's own reserve on
- * the same edge counts toward it, so the two keep off the larger, and none is left to reserve when
- * the Island's covers it. The Dock's own window is taller, with room for the icons to grow.
- * Another bar's reserve on the same edge stacks under this one, while the Dock keeps its place
- * from the edge and so draws over that bar
+ * `dock.reserve` reserves the larger of the Dock's strip and the Island's same-edge reserve; when
+ * the Island covers it, no Dock reserve remains. the reserve window leaves room for icon growth;
+ * another bar's reserve stacks beneath it while the Dock stays at the edge and draws over the bar
  */
 pub fn reserve(_monitor: &Monitor) -> LayerWindow {
     let items = !items(&Windows::read()).is_empty();
@@ -1273,11 +1266,9 @@ fn margin(anchor: Anchor) -> Margin {
 }
 
 /*
- * beside the Island, on its edge and side or one of them centered, past where its small forms and
- * their hover reach, so neither covers the other. Whatever either's width, as the Dock widens with
- * every app opened and grows under the pointer: the room it reserves stays put rather than move
- * windows as it does. One on the other side of the edge sits on the edge, and steps aside should
- * the Island reach it
+ * beside the Island, its room clears small forms and hover reach, with either side or edge allowed
+ * to center. Reserved room stays fixed as the Dock grows; on the far side, the Dock sits at the
+ * edge and yields if the Island reaches it
  */
 fn island_room(anchor: Anchor) -> f32 {
     // merged, the Island's window holds it, and there is no beside
@@ -1328,8 +1319,8 @@ pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
  * the Dock's strip on `monitor` while it shows there, and the edge it sits on: what a menu opened
  * from one of its icons keeps clear of. `strip` answers for what must keep off the Dock even as it
  * hides (a Banner); none under autohide. It reaches off the edge as far as its icons grow, and
- * BOUNCE further, the farthest its spring swings past its place. Merged, the shell lays the Dock
- * out and the strip lands in the same place, so a menu keeps clear of it there too.
+ * `BOUNCE` further. Merged, the shell lays the Dock out and the strip lands in the same place, so a
+ * menu keeps clear of it there too
  */
 pub fn standing(monitor: &Monitor) -> Option<(Edge, Rect)> {
     let items = items(&Windows::read());
@@ -2155,12 +2146,9 @@ fn spans(pieces: &[Piece], size: Size, scales: &[f32]) -> Row {
 }
 
 /*
- * how many times its size each piece is with the pointer at `pointer` along the row at rest, from
- * the strip's left edge: an icon grows by how near it is, a cosine falling to none at its reach
- * taken over its width at rest around its center rather than at its center alone, so the one
- * centered under the pointer grows by just `extra` of its size. As dockbar does, nearness is
- * measured where each icon stands in the grown row: those the growing ones push aside are farther,
- * and grow less, so the swell is steep around the pointer rather than a broad hump
+ * icons grow by a cosine over their rest-width and `reach`, giving the centered icon `extra` growth.
+ * distance is measured in the grown row, so icons pushed aside grow less and the swell stays steep
+ * around the pointer
  */
 fn scales(pieces: &[Piece], size: Size, pointer: f32, extra: f32) -> Vec<f32> {
     let rest = spans(pieces, size, &vec![1.0; pieces.len()]);

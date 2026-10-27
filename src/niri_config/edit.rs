@@ -1319,10 +1319,8 @@ fn splice(text: &str, mut splices: Vec<Splice>) -> String {
     text
 }
 
-// every node of the document but those at `skip`, as lines; the blocks on the way to `skip` are
-// left out when nothing else is in them, as an edit may make or empty one. The top-level `output`
-// nodes are told apart by their place (`output#1`); `gone` is the one an edit removes, left out
-// with the later ones counted without it
+// flatten nodes except `skip`, omitting empty ancestor blocks; `gone` removes one indexed output
+// before later outputs are counted
 fn flat(document: &KdlDocument, skip: &[String], gone: Option<(&str, usize)>) -> Vec<String> {
     fn walk(
         nodes: &[KdlNode],
@@ -1784,10 +1782,8 @@ fn apply_at(
     Ok(Some(format!("{bom}{edited}")))
 }
 
-// The splices that give a node with no argument the properties `want`: each property the node
-// already has is spliced where it stands, and one it lacks is added at the end, so the file's own
-// order, the blanks and the comments between the entries stay byte for byte (`x=0   y=0` becomes
-// `x=1   y=2`); a property dropped goes with the blanks before it and no comment of another.
+// splice existing properties in place and append new ones, preserving order, spacing, and comments;
+// dropping one takes the blanks after it, or before it when a comment stands between, and nothing else.
 fn props_splice(text: &str, leaf: &Leaf, want: &[(String, Value)]) -> Vec<Splice> {
     let end = leaf.entries_end.unwrap_or(leaf.name_end);
 

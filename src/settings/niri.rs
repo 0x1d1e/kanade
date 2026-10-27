@@ -1348,10 +1348,8 @@ fn stamps(files: &[PathBuf]) -> Vec<Stamp> {
     files.iter().map(|file| Stamp::of(file)).collect()
 }
 
-// what a read watches when the config could not be reached at all: the config's directory, and the
-// config itself. Neither is watched in place of a reading, so the page must also read again at each
-// poll: a directory gains the file without its stamp changing, and a file that is not there has no
-// stamp to differ, so a page opened before the config existed would never notice it appearing.
+// watch both the config directory and file when unreadable; poll reads too, since a new file may
+// appear without a directory stamp change and a missing file has no stamp to compare.
 fn unwatched() -> Vec<PathBuf> {
     match niri_config::target(None) {
         Ok(file) => file

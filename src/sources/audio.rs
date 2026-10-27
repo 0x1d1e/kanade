@@ -750,11 +750,8 @@ fn run() {
 }
 
 /*
- * `ask` through `act`, once its node is still the object it was, as `dump` prints the object at an
- * id, or the whole graph for none. Only the moment between that print and `act` is left, as wpctl
- * takes no serial. A duplex default is checked again after: wpctl fails on its own for a default
- * it did not set, while pw-metadata would configure a name nothing has any more, and exits 0 even
- * having set nothing, as when there is no such metadata
+ * `dump` and `act` have a race because wpctl has no serial; recheck duplex defaults afterward.
+ * `pw-metadata` can silently exit 0 when the named metadata no longer exists.
  */
 fn perform(
     ask: &Ask,

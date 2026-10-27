@@ -423,11 +423,9 @@ struct Shown {
 }
 
 /*
- * the events of the six weeks the month shows from `start`, expanded off the draw thread, as a
- * rule each second takes a limit's worth of work, too long for a frame. Files read again, edited,
- * added or gone, keep the month shown until it is expanded anew, so a sync neither blanks it nor
- * moves the ring; one that could not be expanded stays shown, saying so. Once none are found, the
- * events of the files before never show again
+ * expand the shown six weeks off the draw thread; recurrence rules can exceed a frame's work limit.
+ * Keep the old month through sync until re-expanded, including on failure; removed files' events
+ * disappear once expansion completes
  */
 fn month_of(calendars: &Calendars, start: NaiveDate) -> Shown {
     let wanted = Wanted::of(calendars, start);

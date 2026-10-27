@@ -123,11 +123,8 @@ fn prepare_radius(radius: u32, upright: bool, style: ShadowStyle) {
 }
 
 /*
- * the shadow of a body with this corner radius, to go under it. Mid-morph the nearest resting
- * radius stands in, a few pixels off under a blur in motion: every radius drawn is a set of
- * textures the runtime decodes and uploads again, which mid-morph costs more than the pixels.
- * Pieces still decoding are stood in for by the nearest radius that is ready, so the shadow
- * never blinks out
+ * during morphs, use the nearest resting radius: decoding and uploading each radius costs more
+ * than the small blur mismatch. Use the nearest ready pieces so shadows never blink out.
  */
 pub(crate) fn draw(layers: &mut Vec<Box<dyn Widget>>, body: Rect, radius: f32) {
     for style in ShadowStyle::ALL {

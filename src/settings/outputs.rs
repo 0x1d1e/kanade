@@ -718,11 +718,8 @@ pub fn restore_plan(
         plan.push(position_words(previous.x, previous.y));
     }
 
-    // On demand is invisible: niri reports the output off until a window wants the rate, so
-    // `vrr_enabled` cannot tell it from off. It is therefore sent back only for a trial that changed
-    // the variable refresh rate at all (`force`); for anything else, niri's own change is still
-    // there and the file's `on-demand=true` is what the output does once niri reloads it, so saying
-    // it again would be a change nobody asked for. Off and on are visible, and are restored.
+    // on-demand VRR looks off to niri, so `vrr_enabled` cannot detect it. Restore it only when the
+    // trial changed VRR (`force`); otherwise preserve niri's change. Off and on remain visible.
     let vrr_changed = force.contains(&Field::Vrr);
     let vrr_wanted = if previous.vrr == Vrr::OnDemand {
         vrr_changed
@@ -1204,10 +1201,8 @@ impl Controller {
         let edits: Vec<&Edit> = session.edits.values().collect();
         let (said, after) = port.write(output, &edits)?;
 
-        // the config is written: mark the pending file saved, so a start does not put the monitor
-        // back over a change that is already in the file. When writing the saved record fails,
-        // deleting or clearing the pending file ensures startup recovery will not put the monitor
-        // back over a change that is already saved. The borrow of `session` ends here.
+        // Once config is written, prevent startup recovery from reverting it; if saving the record
+        // fails, clear the pending file. The borrow of `session` ends here.
         let previous = session.previous.clone();
         let name = session.output.clone();
         let taken = session.taken;

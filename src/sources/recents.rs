@@ -75,12 +75,8 @@ struct Term {
 }
 
 /*
- * `anchor` is unix seconds, not a count: the score at `t` is
- * `max(1, exp(LAMBDA * (anchor - t) / DAY))`, so it halves every ten days and is 1 once the
- * anchor is ten days past. A launch at `t` moves the anchor to `t + DAY / LAMBDA * ln(score +
- * BONUS)`, `score` being the one at `t` before, so the score rises by exactly `BONUS` and never
- * falls: the anchor first moves forward to at least `t` (a clock that went back takes no score
- * down), the score after a launch is at least 101, and it is capped where `exp` would overflow.
+ * `anchor` is Unix seconds; the score halves every ten days and bottoms at 1. A launch adds
+ * `BONUS`, never lowers the score if the clock goes back, and caps the anchor before `exp` overflows
  */
 #[derive(Debug, Clone, PartialEq)]
 struct Item {

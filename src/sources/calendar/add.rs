@@ -371,11 +371,9 @@ fn current(path: &Path) -> io::Result<String> {
 }
 
 /*
- * whether `was`, as `text` types it again, parses back as the same event: the field has one date
- * and times to the minute, so an event over several days, a timed one ending on a later day or
- * with no end, one with seconds in a time, or an all-day one whose title starts like a time is not
- * one it can say, and saving it would cut it to fit or change it. Every event Kanade writes is
- * one. A title missing or too long to type is the field's to give, so it is not asked
+ * `text` must parse back to the same event: the field cannot preserve multi-day events, missing or
+ * later-day timed ends, seconds, or all-day titles that look like times. Missing or overlong titles
+ * are left for the field to supply
  */
 fn typable(was: &Occurrence) -> bool {
     let title = was.title.trim();
@@ -455,11 +453,9 @@ const NOT_CHANGED: [&str; 6] = [
 ];
 
 /*
- * `text`, the file of the event with `uid`, with its SUMMARY, DTSTART and DTEND now those of
- * `event` and every other line as it was, in the place it was: its UID, a place, a reminder
- * (VALARM) and what a program added. Refused for what cannot be changed without losing something
- * or guessing: a file of other events or of one with another UID, a repeat, a duration, or times
- * with a zone, which Kanade writes none of
+ * update only SUMMARY, DTSTART and DTEND for `uid`, preserving every other line and its place.
+ * Refuse other events, mismatched UIDs, repeats, durations, or zoned times rather than lose or
+ * guess at data
  */
 fn rewrite(text: &str, uid: &str, event: &Event) -> io::Result<String> {
     let lines = unfold(text);

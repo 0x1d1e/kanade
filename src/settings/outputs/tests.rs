@@ -1674,10 +1674,8 @@ fn injected_worker_panic_triggers_emergency_revert() {
     assert!(statuses.iter().any(|s| s.contains("kanade-outputs")));
 }
 
-// A Keep writes the config at once and niri's reload confirms it up to 2 s later. Kanade exiting
-// inside that window (a restart, a logout, a `scripts/dev` save) must not put the monitor back: the
-// config holds what the user kept, so a revert there would leave the screen as it was before the
-// Keep with no pending file and nothing said until niri's next reload.
+// Keep writes config before niri confirms it (up to 2 s later). An exit in that window must not
+// revert the monitor: the kept config has no pending file to trigger another reload.
 #[test]
 fn an_exit_after_a_keep_and_before_its_reload_does_not_put_the_output_back() {
     let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());

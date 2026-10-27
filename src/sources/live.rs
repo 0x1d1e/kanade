@@ -1201,12 +1201,9 @@ pub fn health_attention(waiting: usize) {
 const CANCEL: &str = "cancel";
 
 /*
- * `kanade activity run`: starts the live Activity, runs `command` and ends it by how the command
- * ended, exiting as it did; 127 when it cannot start. The command runs without a shell to tell, as
- * it is what the user asked for; Ctrl+C reaches only it, so its end is still told. `actions` are
- * shown with it (ADR 0110); a press of `cancel` is the only one `run` hears, and it sends SIGTERM to
- * the command. `run` reads presses only for it, so it is the only action it takes with it: another
- * would be read, and lost, by `run` before its own reader came for it. 2 for actions it refuses
+ * `kanade activity run` executes the command without a shell and returns its exit status (127 if it
+ * cannot start). Only `cancel` is handled here: other actions could be consumed before their reader.
+ * Ctrl+C reaches the command; `cancel` sends it SIGTERM. Invalid actions exit 2.
  */
 pub fn run(id: &str, title: &str, actions: &[Action], command: &[String]) -> ExitCode {
     if let Err(why) = check(actions) {
@@ -1425,10 +1422,8 @@ pub fn pressed(id: &str) -> ExitCode {
     }
 }
 
-// `kanade activity pressed` no longer polls the shell: `wait` holds one call (`pressed-wait`)
-// that the shell answers when a press arrives (`cli::activity_wait`), so there is one connect
-// and one wakeup instead of four asks a second. `POLL` stays the pace of `run`'s own looks at
-// its command
+// `wait` holds one `pressed-wait` call until a press arrives, replacing four polls per second.
+// `POLL` still sets how often `run` checks its command.
 
 fn complain(text: &str) {
     drop(writeln!(io::stderr().lock(), "{text}"));

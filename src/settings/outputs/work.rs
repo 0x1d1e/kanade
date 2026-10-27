@@ -381,11 +381,8 @@ fn spawn() -> Option<Sender<Job>> {
         .map(|_| sender)
 }
 
-// the deadline of a trial, and the retries of a revert that failed, on a thread of its own: the
-// worker draws the countdown and reverts when the page is left, but it panics, and it sits in
-// `niri msg output` for up to 2 s, and a trial whose deadline died with it would stay on the
-// monitor with nothing counting. The clock takes the trial through `controller`, as the worker
-// does, and never begins one: it only ever ends a trial that is already there.
+// the clock owns trial deadlines and retries failed reverts: the worker may panic or block in niri.
+// It uses `controller` like the worker, but only ends existing trials; it never starts one.
 static CLOCK: Mutex<Option<Sender<u64>>> = Mutex::new(None);
 static CLOCK_STARTED: OnceLock<()> = OnceLock::new();
 

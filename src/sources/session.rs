@@ -262,11 +262,8 @@ enum Failure {
 }
 
 /*
- * what logind is being asked, from just after `Pending::ask` or `Pending::end` let it, with
- * nothing between that panics, until it answers: a panic in between may leave it asked and
- * unanswered, so it may still be carried out, and says so. Made with no `pending()` guard held,
- * which its drop takes; a panic showing that is caught, since one escaping a drop while unwinding
- * aborts the shell
+ * tracks a logind request until answered; a panic meanwhile may leave it pending, so record that
+ * state. Construct without the `pending()` guard, and catch panics because unwinding from Drop aborts.
  */
 struct Asked(Leave);
 

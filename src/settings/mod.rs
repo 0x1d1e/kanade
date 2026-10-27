@@ -521,11 +521,8 @@ fn path(key: &str, entry: Option<&str>) -> Vec<String> {
 }
 
 /*
- * The text inputs of the keys a write changed back to what the files give: a path's value, an empty
- * field to add an entry. Only those: a value half-typed in another row is the user's until they
- * submit it, so a switch toggled elsewhere does not silently discard it. `None` sets them all, as a
- * window opening or an Undo does; `Some` names the keys a write replaced, and one that changed
- * nothing sets none
+ * Reset only inputs for keys changed by a write, preserving other half-typed values. `None` resets
+ * all inputs (opening or Undo); `Some` names replaced keys, and an unchanged write resets none.
  */
 fn reset_inputs(changed: Option<&[Vec<String>]>) {
     let read = {

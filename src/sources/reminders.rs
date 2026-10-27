@@ -190,11 +190,9 @@ fn leads(candidate: &Candidate, lead: Option<i64>) -> Vec<Lead> {
 }
 
 /*
- * what goes off at `now`, in seconds since the epoch, of the reminders of `candidates` not in
- * `fired`, `lead` the default lead in seconds. One goes off from when it is due while its event has
- * not begun, or LATE after, so one missed while the shell was off still goes off before its event.
- * Of an occurrence's reminders due at once only the nearest the event shows, the rest go off
- * unseen; past AT_ONCE occurrences, the later ones show as one
+ * Plan unfired reminders due at `now`; late reminders show until `LATE` after their event begins,
+ * or after it went due for one counting to an end. Show only the nearest simultaneous reminder per
+ * occurrence; coalesce past `AT_ONCE` occurrences.
  */
 pub fn plan(candidates: &[Candidate], fired: &Fired, lead: Option<i64>, now: i64) -> Plan {
     let mut plan = Plan::default();

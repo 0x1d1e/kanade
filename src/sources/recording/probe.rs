@@ -329,11 +329,8 @@ pub fn encoding_within(
 }
 
 /*
- * the encoding for a window, which GStreamer runs: `encoding` if its pipeline encodes a frame, else
- * software's, else why neither does. The notes say what gave way. `no_va` when the VA-API download
- * already failed on a live cast, which no trial with a test frame can see: only EGL is tried for
- * `encoding` then. Software's trial is free to use VA-API again, as the encoder may have failed
- * for its own reasons
+ * try `encoding` for a window, then software, reporting both failures. After a live cast's VA-API
+ * download fails, `no_va` limits that encoding's probe to EGL; software may retry VA-API
  */
 pub fn window(
     encoding: Encoding,
@@ -419,11 +416,9 @@ pub fn window_within(
 }
 
 /*
- * `encoding` with the way to get a window's frames to system memory that works, found by a trial of
- * the whole chain: NVIDIA's encoder and x264 try the VA-API post-processor of each node VA-API may
- * use, which imports what niri casts (Intel's compressed tiled DMA-BUF among it), then EGL, which
- * does not import all of it but needs no VA-API driver. VA-API's own chain needs none. Err says
- * what each said
+ * probe the whole chain for a working frame download: NVIDIA and x264 try VA-API post-processing
+ * before EGL, which needs no VA-API driver but cannot import every DMA-BUF; VA-API encoding needs
+ * no download. Errors report each failed trial
  */
 fn downloading(
     encoding: &Encoding,
@@ -474,11 +469,8 @@ fn downloading(
 }
 
 /*
- * what `kanade doctor` says of recording a window with `encoding`: asked afresh, whether GStreamer
- * encodes a test frame through the chain a window's pipeline has after the cast, and by which
- * download of the cast's frames. That is the chain and not the cast: no frame of a live cast (niri's
- * DMA-BUF) is tried, and a GPU's own tiling can fail where a test frame does not. None when
- * `gst-launch-1.0` is not there to ask, which a start names
+ * `kanade doctor` probes a test frame through the window's encoding and download chain, not the
+ * live cast; GPU tiling may still fail on its DMA-BUF. Returns none if `gst-launch-1.0` is absent
  */
 pub fn window_line(encoding: &Encoding, device: Option<&str>) -> Option<Result<String, String>> {
     if !wake::found(ENCODER) {

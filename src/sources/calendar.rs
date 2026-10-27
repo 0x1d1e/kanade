@@ -995,12 +995,8 @@ fn cancelled(component: &ICalendarComponent) -> bool {
 }
 
 /*
- * a copy whose recurrences run only near the range, in seconds since the epoch: calcard expands a
- * rule from its first occurrence until its end, so one with none, like a weekly meeting, would
- * run to the limit and crowd out the file's other events, and one long begun, like an hourly one
- * since 2010, would spend the limit on years before the range. Each rule reads the range in its
- * own zone, ends a margin past it and starts again a margin before it (`restart`); a rule that
- * starts after the range keeps only its first occurrence, which is after it too
+ * `restart` makes each rule a copy starting a margin before the range and ending one past it, in its
+ * own zone, so calcard's expansion does not spend its limit outside the range.
  */
 fn bounded<'a>(
     calendar: &'a ICalendar,
@@ -1270,11 +1266,9 @@ fn moved_near(
 }
 
 /*
- * the change onward `change` made as it goes on from `first`, the restarted rule's first
- * occurrence: calcard moves each occurrence after one by the same amount, and names it by its
- * component, until another, so a copy of it taking over at `first` makes the same occurrences
- * there and after. None where calcard would not: a change or an EXDATE at either end of the move,
- * or a change before `first` that the move brings back after it
+ * calcard applies a change onward by the same offset until another, naming it by its component;
+ * the copy is therefore a clone of `changed` taking over at `first`. Do not take over across a
+ * change or EXDATE at either end, or one moved across `first`.
  */
 fn take_over(
     master: &ICalendarComponent,
@@ -1764,11 +1758,9 @@ fn starts(
 }
 
 /*
- * a calendar as one of its events that recur each, with their exceptions, and one of the rest:
- * calcard's limit on occurrences is for a whole calendar, so a rule that runs to it, like one
- * every minute for years, would otherwise hide the events after it. Each keeps the calendar's
- * time zones, which its times may name, and each event its alarms (ADR 0043); whatever else is
- * not an event goes
+ * split recurring events from the rest because calcard's occurrence limit applies to a whole
+ * calendar, so a runaway rule would otherwise hide the events after it. Copies keep time zones and
+ * each event's alarms (ADR 0043).
  */
 fn series(calendar: ICalendar) -> Vec<ICalendar> {
     let uid = |component: &ICalendarComponent| text(component, &ICalendarProperty::Uid);
@@ -2398,10 +2390,8 @@ mod tests {
         assert_eq!(weeks.occurrences[0].start, at(day(2026, 9, 28), 0, 0));
     }
 
-    // a change to an occurrence and the ones after, long before the range, still moves and names
-    // the occurrences in it, without the rule expanding from the change: the last change counts,
-    // and an EXDATE and a single change in the range still match the moved occurrences. One from
-    // 2025 to the end of the year matches calcard's whole expansion
+    // an old change moves and names later occurrences without expanding the rule from it; the last
+    // change, EXDATEs and in-range changes must match. A 2025-to-year-end rule fits calcard's limit.
     #[test]
     fn an_old_change_onward_holds_now() {
         let series = |zone: &str, [begins, moved, again]: [&str; 3], rule: &str| {

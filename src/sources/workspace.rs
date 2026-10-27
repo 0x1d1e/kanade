@@ -40,12 +40,8 @@ pub fn follow() {
 }
 
 /*
- * what the island does about niri going from `before` to `now`. Only a switch on the output that
- * had the focus shows: focus moving to another output, by a window or the pointer, is no switch,
- * and a list that only renumbers is none either. The overview opening takes a shown switch away,
- * so it does not come back when the overview closes; switches inside it show nothing, nor does
- * the one that closes it, which niri tells beside the close. An overview that opened and closed
- * between two looks is told by its count, and shows nothing either
+ * Show only workspace changes on the previously focused output; focus moves and renumbering do not
+ * count. Overview open/close, switches within it, and overviews between reads suppress the switch.
  */
 pub fn change(before: &Seen, now: &Seen) -> Option<Change> {
     if now.overview {

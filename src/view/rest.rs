@@ -140,11 +140,8 @@ pub(super) fn has_battery() -> bool {
 }
 
 /*
- * the time's Peek, which leads the Tray strip: the time, with the battery's percent as the settings
- * ask, over the date and, as they ask, the weather and today's next event. An autohidden Island
- * shows this as it comes out, so the battery is seen here. Each source is read only when shown, so
- * an island without it never wakes on its changes. `slots` says whether slots follow, which sets
- * the room after it
+ * the Tray-leading Peek shows time, date, configured battery percentage, weather and next event.
+ * Sources are read only while shown, so disabled slots do not wake the Island; `slots` sets its room
  */
 pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
     let config = config::on(monitor);

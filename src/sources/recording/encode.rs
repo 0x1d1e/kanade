@@ -14,11 +14,8 @@ pub const TRIAL: Duration = Duration::from_millis(1500);
 pub const MAX_VAAPI_CANDIDATES: usize = 2;
 
 /*
- * how long a window's chain may go without a buffer before that is a fault. `pipewiresrc` re-emits
- * the last buffer every second (`keepalive-time=1000`), so a window that is merely still keeps the
- * chain fed, and the VA-API encoder emits its first byte 0.6 s in (measured against a cast that
- * delivers one buffer a second). Three of those periods, and under the 5 s a `start` waits, so a
- * chain started again still has time to answer it
+ * `pipewiresrc` re-emits the last buffer every second; VA-API's first byte arrives at 0.6 s.
+ * Three seconds allows a restarted chain to answer within `start`'s 5 s wait.
  */
 pub const QUIET: Duration = Duration::from_secs(3);
 
@@ -28,21 +25,14 @@ const NVENC: &str = "h264_nvenc";
 const SOFTWARE: &str = "libx264";
 
 /*
- * what the VA-API encoder is fed: the screen's RGB converted on the GPU to NV12 in the matrix and
- * range every player assumes for H.264 of this size, BT.709 limited. `wf-recorder`'s own default
- * converts to full range with the encoder's default matrix (BT.601) and no tag, which players
- * then read as BT.709 and show with shifted colors. The `out_color_*` options only describe the
- * frames to the filter graph: no encoder reads them. What the file says is the tag `COLOR` puts on
- * the encoder
+ * feed VA-API NV12 in BT.709 limited range; `wf-recorder` defaults to untagged BT.601 full range.
+ * `out_color_*` only describe filter frames; `COLOR` sets the encoder's output tags.
  */
 pub const VAAPI_FILTER: &str = "scale_vaapi=format=nv12:out_range=tv:out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709";
 
 /*
- * the options of the encoder that make its H.264 stream say BT.709, limited range (the video
- * usability information: primaries, transfer, matrix and range), the same for all three. Checked
- * with libavcodec given them through the option dictionary `wf-recorder -p` fills, and the stream's
- * headers read back; not yet through a live capture. Without them h264_vaapi writes no tag at all,
- * and a player takes a picture under 720 lines as BT.601
+ * these options tag H.264 as BT.709 limited (primaries, transfer, matrix, and range); without them,
+ * h264_vaapi writes no tag and players read video under 720 lines as BT.601. Checked via libavcodec.
  */
 const COLOR: [&str; 4] = [
     "colorspace=bt709",
@@ -62,11 +52,9 @@ const DOWNLOAD: [&str; 6] = ["glupload", "!", "gldownload", "!", "video/x-raw", 
 const SOFTWARE_FILTER: &str = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p";
 
 /*
- * the constant quantizer `quality` is for `kind`, or for software the constant rate factor, which an
- * encoder keeps whatever the picture does: a still screen costs nothing and a busy one what it
- * needs. Measured on a 1080p test pattern of text over moving bars (ADR 0116, Update): a quality
- * step changes the size 25 to 30%, below 20 it grows fast for little to see, above 24 text starts
- * to smear. NVENC's and VA-API's scales differ little; x264's crf 19 is about their 20
+ * constant quantizer/CRF leaves bitrate content-dependent. At 1080p, each quality step changes size
+ * 25–30%; below 20 it grows fast for little to see, above 24 text smears. x264 CRF 19 is about
+ * NVENC/VA-API 20.
  */
 pub fn quantizer(quality: Quality, kind: Kind) -> u32 {
     match (kind, quality) {
@@ -607,11 +595,9 @@ pub struct Choice {
 }
 
 /*
- * the encoder to record with. `Auto` tries VA-API on each candidate node, then NVENC, then
- * software, and takes the first that encodes a frame: NVENC is not tried while VA-API works, so
- * the NVIDIA GPU of a hybrid machine stays asleep. A named encoder that does not work gives way to
- * software, said in the notes. A probe that could not run (`Unknown`) lets VA-API and software
- * through, which a failure then falls back from at run time, and NVENC only when it is named
+ * `auto` tries VA-API, NVENC, then software, stopping at the first frame (so working VA-API leaves
+ * hybrid NVIDIA GPUs asleep). Named failures fall back to software; `Unknown` allows VA-API/software,
+ * while NVENC is allowed only when named.
  */
 pub fn choose_within(
     preference: Preference,
@@ -1169,10 +1155,8 @@ mod tests {
         );
     }
 
-    // niri casts DMA-BUF only and `pipewiresrc` offers a format only if the next element takes it: a
-    // CPU converter right after it fails to negotiate, and EGL's `glupload` cannot import Intel's
-    // compressed tiled buffers (both seen live), so the CPU encoders' frames come from the VA-API
-    // post-processor where one works, else through EGL; VA-API's own chain has neither
+    // niri casts DMA-BUF only; CPU conversion directly after `pipewiresrc` fails negotiation, and
+    // EGL cannot import Intel compressed tiles. CPU encoders use VA-API post-processing or EGL.
     #[test]
     fn a_windows_cpu_encoders_download_the_casts_dmabuf_before_converting() {
         for (kind, encoder) in [(Kind::Nvenc, "nvh264enc"), (Kind::Software, "x264enc")] {

@@ -178,11 +178,8 @@ impl Atlas {
     }
 
     /*
-     * one letter's place in the atlas, its pixels written there
-     *
-     * `reads` says whether quads already gathered read texels of this atlas: starting over draws
-     * over the letters placed before, so while they do it waits, and the caller draws them first
-     * rather than place a letter over what they read
+     * one letter's place in the atlas, its pixels written there; when `reads` is true, the caller
+     * must draw gathered quads before restarting the atlas, or their texels will be overwritten
      */
     pub fn letter(
         &mut self,

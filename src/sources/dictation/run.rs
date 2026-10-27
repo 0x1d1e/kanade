@@ -175,12 +175,8 @@ enum Job {
 }
 
 /*
- * the one gate thread, started by the first toggle and living as long as Kanade. This is the thread
- * that starts `pw-record`, and that matters: a child started through `setpriv --pdeathsig` dies when
- * the THREAD that started it ends, not the process (ADR 0027; `wake::run`, `caffeine::request`). A
- * thread made for one toggle and gone after it would kill the recorder as it exits. The recorder
- * is therefore started only from here and from the draw thread (`Effect::Start` follows a
- * `Gated` event, and `Gated` is fed only by `begin`, which runs on this thread).
+ * `pw-record` must start on the persistent gate thread: `setpriv --pdeathsig` kills it when its
+ * starting thread exits, even if Kanade remains alive (ADR 0027).
  */
 static GATE: Mutex<Option<Sender<Job>>> = Mutex::new(None);
 
@@ -619,13 +615,9 @@ impl Tools for Programs {
 }
 
 /*
- * does `chosen`; the tool failing is not the end of the text, which is copied then. `again` decides
- * afresh, and is asked just before the keys are sent: a window that took the focus, or a lock, while
- * the clipboard was set gets the copy, and none (the dictation was cancelled) gets nothing more. What
- * is typed is the text as one line without control characters (`insert::typed`), so a terminal is
- * never given a line break or an escape; a paste copies the text as it was said, since the target's
- * bracketed paste is what makes its line breaks safe and a copy may be read in an editor. Returns
- * what was done. Neither the text nor what the tools print goes in an error
+ * Recheck focus and lock state just before typing; cancellation inserts nothing, and tool failure
+ * copies the text. Typing strips control characters; paste preserves the text for bracketed paste.
+ * Errors never include dictated text or tool output.
  */
 fn perform(
     tools: &impl Tools,

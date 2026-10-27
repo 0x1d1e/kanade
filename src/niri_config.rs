@@ -1213,10 +1213,8 @@ impl Editor<'_> {
         validate_original: bool,
         plan: impl FnOnce(&[u8]) -> Result<Plan, String>,
     ) -> Result<String, String> {
-        // the lock first, so the mode below is the one the file has once it is Kanade's turn, not
-        // one another writer may have replaced in between. What refuses the file outright (the
-        // system config, a link, a missing file) is said before the lock, which needs a path to
-        // resolve
+        // lock before checking the file mode, so another writer cannot change it between check and
+        // write. Reject the system config, links and missing files before locking, which needs a path
         self.writable()?;
         let _lock = self.lock()?;
         let symlink_meta = fs::symlink_metadata(&self.file)

@@ -842,11 +842,8 @@ pub fn trailing(hang: Hang) -> Rect {
 }
 
 /*
- * the Satellite in `slot`, beside the body toward the middle of the output and centered on its
- * small form, between places while it slides: right of it, left of an island at the right, below
- * one standing along a side edge. Past a Peek, or the longest upright small form, a body that grows
- * on only covers them, so they stay inside the canvas while they fade out. At `presence` 0 it is
- * tucked under the body's end, as it comes out and goes back
+ * the Satellite in `slot`, sliding toward the output's middle and centered on its small form. Keep
+ * it inside the canvas while it fades beyond Peek; at `presence` 0 it tucks under the body's end.
  */
 pub fn satellite(body: Rect, hang: Hang, canvas: Canvas, slot: f32, presence: f32) -> Rect {
     let step = SATELLITE_GAP + slot * (SATELLITE + SATELLITE_GAP);

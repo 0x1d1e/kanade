@@ -412,11 +412,8 @@ fn beside(url: &str) -> Option<String> {
     read_file(&path)
 }
 /*
- * the file a URL names on this machine: a `file://` one, whose path that is, or an `http://` or
- * `https://` one addressed to this machine (`localhost`, `127.0.0.1`, `[::1]`, a port allowed),
- * so a player that streams a track it holds here is found too. A stream from any other host names
- * no file here, and its path is never opened as one, so a remote address could not read a local
- * `.lrc`
+ * accept file URLs and HTTP(S) URLs to localhost, including streams held locally; never open paths
+ * from remote hosts, which could expose a local `.lrc`.
  */
 fn local_path(url: &str) -> Option<String> {
     let rest = ["file://", "http://", "https://"]

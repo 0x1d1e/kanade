@@ -146,11 +146,9 @@ pub fn hides() -> bool {
 }
 
 /*
- * how much of its edge the Island keeps windows off, `island.reserve`: its small forms, with their
- * Satellites, and the gap on both sides, as a menu bar does; across a side edge, its width. A Peek
- * or a Surface grows over the windows. None while it autohides, as it then leaves the edge to them.
- * A capture does not hold a hidden Island's strip (`hides` ignores privacy), so the reserve and the
- * Dock's merge never flicker as one starts and stops
+ * `island.reserve` keeps windows clear of small forms, Satellites and side gaps (or the Island's
+ * width on a side edge); Peeks and Surfaces grow over windows. Autohide clears the reserve, and
+ * privacy capture does not affect `hides`, keeping the reserve and Dock merge stable
  */
 pub fn reserved() -> f32 {
     let config = config::get();
@@ -677,12 +675,10 @@ fn body_pane(pane_body: pane::Body, body: Rect, radius: f32, merged: bool) -> Pa
 }
 
 /*
- * exactly the input region, so leaving it is leaving the island; niri also sends the leave when
- * the region shrinks away from a still pointer. Hover, click and arming all take this one target:
- * the runtime hit-tests only on pointer events, so a body that grows under a still pointer (Peek)
- * would never report it on the body. It draws nothing, and comes first: the shadow's pieces and
- * the Satellites, which come and go, must not move it, or a leave after they did would go to
- * another target.
+ * exactly the input region, so leaving it is leaving the island; niri sends leave when it shrinks
+ * away from a still pointer. Hover, click and arming share this target: runtime hit-tests only on
+ * pointer events, so a body growing under a still pointer (Peek) would not report it. It draws
+ * nothing and comes first, so shadows and Satellites cannot shift it and misroute leave.
  */
 fn hover_target(
     monitor: &str,

@@ -360,11 +360,8 @@ fn choose(name: &str) -> Result<(Config, String), String> {
 }
 
 /*
- * the picture as it is before a theme change, so a failed change puts it back: `None` when there is
- * nothing at the path, and the bytes when there is. A file Kanade cannot snapshot (a link, one that is
- * not a file, one over the cap, one it cannot read) is an error and not `None`: the rollback removes
- * what is at the path when the snapshot is `None`, so calling a real file "no picture" would delete
- * it
+ * `None` means no file existed, so rollback removes the path. Unsnapshotable files are errors, never
+ * `None`, or rollback could delete a real picture.
  */
 fn snapshot_picture(picture: &Path) -> Result<Option<Vec<u8>>, String> {
     let shown = picture.display();

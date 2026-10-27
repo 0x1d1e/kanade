@@ -252,11 +252,9 @@ fn leftovers(remembered: &[u64], casts: &Json) -> Vec<u64> {
 }
 
 /*
- * the sessions an earlier Kanade made and did not stop, as the ledgers of the Kanades that are gone
- * say, and the ones this pid's own ledger holds from a Kanade that had this pid before, stopped; a
- * ledger of a Kanade that runs is left alone. Off the caller's thread, as niri is asked. A session
- * niri still casts after the attempt, or whose niri could not be asked, stays in a ledger for the
- * next start
+ * reclaim sessions from dead Kanade ledgers and this pid's inherited ledger; leave live ledgers
+ * alone. Read ledgers on the caller's thread; ask niri and clean up on another. Retain casts niri
+ * still has or could not be asked about for the next start.
  */
 pub fn reclaim() {
     let Some(dir) = ledger_dir() else {
@@ -353,11 +351,8 @@ fn inherit(dir: &Path, own: u32) -> Vec<(String, u64)> {
 }
 
 /*
- * the sessions made and not yet confirmed gone, in a file of this Kanade's own under the runtime
- * directory, which is the user's alone and goes with the login: `window-casts.<pid>`, so no two
- * Kanades change one file, and a file whose pid runs is a Kanade's that lives. Each is written with the
- * niri it was made for: niri numbers its sessions from 1, so a number alone could be another niri's
- * cast. Held across a change of the file
+ * keep unconfirmed sessions in the user's runtime directory as `window-casts.<pid>`; live pids own
+ * their ledger. Record the niri socket too, since session numbers overlap between niri instances.
  */
 static LEDGER: Mutex<()> = Mutex::new(());
 

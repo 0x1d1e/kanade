@@ -84,11 +84,10 @@ impl<const N: usize> Spring<N> {
     }
 
     /*
-     * a new leg starts from where it is and how fast it moves now, so a changed mind never jumps.
-     * No overshoot from rest or on a reversal toward the other endpoint. A same-direction target
-     * closer than speed / w may be passed, since keeping the velocity leaves no other way to stop.
-     * The same target keeps the motion but still starts a leg, for content that changes in place.
-     * The leg covers 95% of its way in `response`; Reduced snaps geometry and uses it for opacity
+     * each leg starts at the current position and velocity, so retargeting never jumps. reversals
+     * do not overshoot, but a closer same-direction target may; a leg aimed at the same target still
+     * starts, so content changing in place tracks the motion. `response` covers 95% of the leg, while
+     * Reduced snaps geometry and uses it for opacity
      */
     pub fn to(&mut self, target: [f32; N], response: Duration, now: Instant) {
         let position = self.at(now);

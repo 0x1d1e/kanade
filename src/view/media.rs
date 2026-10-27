@@ -278,11 +278,9 @@ pub(crate) fn accent(track: &Track) -> Color {
 const TALL: f32 = 14.0;
 
 /*
- * what moves beside a playing track, as `media.visualizer` says, in `ink`, the artwork's accent:
- * when cava is available and gives audio spectrum data, the bars, wave, and dots follow real audio
- * frequencies; otherwise, or while cava is initializing/silent, they fall back to the synthetic
- * swing animation so motion never freezes. `off` draws still bars, and a paused track draws the pause
- * mark.
+ * `media.visualizer` selects bars, wave, or dots in the artwork accent. Cava data drives them when
+ * available; initializing or silent cava falls back to synthetic motion. Off draws still bars; paused
+ * draws the pause mark.
  */
 pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
     let style = config::get().visualizer;

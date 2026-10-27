@@ -300,11 +300,8 @@ impl Detail {
     }
 
     /*
-     * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
-     * where it stands: a held volume key slides one bar, a draining battery ticks its number, a
-     * workspace switch moves the pager's mark, a mode turned back flips its word, a live job's
-     * bar moves, a reminder counts down to its event. A new track stays in place too, but
-     * dissolves; a job that ends crossfades
+     * reposted activities redraw in place: volume, battery, workspace, mode, job, and reminder
+     * details update without replacing the activity. tracks dissolve in place; ended jobs crossfade
      */
     pub fn is_level(&self) -> bool {
         match self {

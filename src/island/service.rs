@@ -1204,11 +1204,9 @@ impl IslandService {
     }
 
     /*
-     * the pointer entered or left the input region, which arms or disarms the keyboard. In, a
-     * Compact island peeks after the hover delay, and one at Rest shows the Tray strip; out, a Peek
-     * or an open Surface collapses after the grace unless pinned, and the tray items go; either
-     * edge cancels the other. With `peeks` off, coming in starts neither a Peek nor the Tray, as
-     * when it brings out the Dock folded into the Island (`dock.merge`) instead
+     * entering arms input and leaving disarms the keyboard; in, a Compact island may peek or a Rest
+     * one show the Tray, and out, unpinned Peeks and Surfaces collapse after grace. each edge cancels
+     * the other; with `peeks` off, entry shows neither
      */
     pub fn hover(&mut self, monitor: &str, inside: bool, peeks: bool, now: Instant) {
         let presentation = self.presentation(monitor);

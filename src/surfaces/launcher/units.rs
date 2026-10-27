@@ -1,9 +1,6 @@
 /*
- * the units the calculator converts between (`10 cm to in`), kept in this table: no network, so
- * nothing that moves, like a currency. Each dimension has a base unit and each unit says how many
- * of it make one; a temperature is the exception, converted through degrees Celsius. US customary
- * volumes are the US ones. Names are matched ignoring case, whole, so `m` is a meter and never
- * the end of `cm`.
+ * fixed conversion units need no network; temperatures convert through Celsius and customary
+ * volumes are US measures. Match whole names case-insensitively (`m` never matches `cm`)
  */
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

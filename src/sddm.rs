@@ -169,10 +169,8 @@ impl Where {
         self.data().join("backdrop.png")
     }
 
-    // SDDM's own config, in the order it reads it (sddm.conf(5)), later winning: the system's
-    // directory, the local one, then /etc/sddm.conf. SDDM sorts files in a drop-in directory
-    // using Qt's QDir::LocaleAware (upstream src/common/ConfigReader.cpp); sorting by ASCII
-    // lowercase approximates this order without pulling in full locale-aware collation
+    // SDDM reads system drop-ins, local drop-ins, then /etc/sddm.conf; later entries win.
+    // ASCII lowercase approximates Qt's locale-aware drop-in ordering.
     fn configs(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();
 
@@ -274,12 +272,10 @@ fn theme_ok(name: &str) -> bool {
 
 // `#rrggbb`
 /*
- * the `theme.conf.user` for `theme`. Kanade's own theme reads `backdrop` (a picture already
- * blurred and dimmed, so no shade over it), `surface` (the color without one); its file is Kanade's
- * whole. Any other theme reads the picture from `key` (`background` for most, told by its class): its
- * file is the installed theme's own `theme.conf.user` (`installed`, already through `user_ini`) with
- * that one key replaced when there is a picture, so what the user set for the theme stays. A value the theme
- * would refuse is an error here, not a file that says nothing.
+ * the `theme.conf.user` for `theme`. Kanade's theme reads `backdrop` (a blurred, dimmed picture)
+ * and `surface` (the unshaded color); its file is Kanade's whole. Other themes keep installed
+ * `theme.conf.user` via `user_ini`, replacing `key` only when a picture exists, so user settings stay.
+ * Reject values the theme would refuse.
  */
 #[cfg(test)]
 fn conf_user(
@@ -503,12 +499,9 @@ fn encode(picture: &Picture) -> Result<Vec<u8>, String> {
 }
 
 /*
- * the picture at `source` as a png to show behind the login screen: decoded as the lock screen's
- * wallpaper is (the first frame, a drawing rasterised, none too large), covering `size`, blurred
- * `blur` pixels and dimmed `dim` percent as the lock screen does, then encoded afresh so none of
- * the original's metadata is left. Smaller by steps if it comes over `MOST_BYTES`. The source is only
- * read, so a link to it is followed (a wallpaper is often one) and the file it leads to must be a
- * regular file; every write refuses links
+ * decode the source as the lock screen does, cover `size`, blur and dim it, then re-encode without
+ * source metadata; shrink until under `MOST_BYTES`. Follow source links to regular files; writes
+ * refuse links.
  */
 fn backdrop(source: &Path, size: (u32, u32), blur: u32, dim: u32) -> Result<Vec<u8>, String> {
     let named = class::plain(&source.display().to_string());
@@ -868,12 +861,9 @@ fn modes(dir: &Path, fix: bool) -> io::Result<Vec<PathBuf>> {
 }
 
 /*
- * makes the overlay of an installed theme: its directories and links to its files, with `user` as
- * its `USER`. It is built beside the overlay as `<theme>.new` and moved into place, so a failure
- * partway leaves the overlay that was there. When the overlay exists, the swap uses
- * `clock::exchange`, `renameat2` with `RENAME_EXCHANGE`, so the active directory is never absent.
- * If the filesystem does not support exchange, installation fails and leaves the active theme
- * unchanged. The overlay is Kanade's, and is replaced whole
+ * build the overlay beside the active one, then replace it with `renameat2(RENAME_EXCHANGE)` so it
+ * is never absent. If exchange is unsupported, fail with the active theme unchanged; the overlay is
+ * Kanade's and is replaced whole.
  */
 #[cfg(test)]
 fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Result<(), String> {
@@ -1125,11 +1115,9 @@ fn legacy_settings(overlay: &Path) -> (Option<String>, Option<String>) {
 }
 
 /*
- * An overlay that is not root-owned and read-only is one an earlier Kanade made for the desktop user
- * to write: it is moved aside whole to `<prefix>.legacy`, beside it, and a fresh root-owned one is
- * made in its place. Nothing ever recovers `<prefix>.legacy`: it is left as the user's own copy, to
- * delete once they have looked at what it held. Its `QtVersion` and `theme.conf.user` are the
- * settings a setup carries over, which is why they are read before the rename
+ * an overlay that fails the root-owned, read-only check is moved whole to `<prefix>.legacy`, beside
+ * it, and replaced by a fresh root-owned one. Never recover the user's copy. Read `QtVersion` and
+ * `theme.conf.user` before the rename, since setup carries those settings over.
  */
 fn migrate_legacy_prefix(w: &Where) -> Result<(Option<String>, Option<String>), String> {
     let prefix = w.prefix();
@@ -2287,10 +2275,8 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
-    // the sddm user is no one the overlay belongs to: a person's umask must not shut it out. The
-    // umask is the process's, so the check runs in a child of its own
-    // the doctor says nothing is wrong before the overlay exists, and warns of an overlay the sddm
-    // user cannot read or SDDM does not read
+    // the doctor is silent before an overlay exists; afterward it warns if SDDM cannot read it
+    // or does not read the overlay.
     #[test]
     fn the_doctor_warns_of_an_overlay_sddm_cannot_use() {
         let root = std::env::temp_dir().join(format!("kanade-sddm-doctor-{}", std::process::id()));

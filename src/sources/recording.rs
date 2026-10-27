@@ -1082,11 +1082,8 @@ fn output_name(reply: &Json) -> Option<String> {
 }
 
 /*
- * the one worker thread, started by the first job and living as long as Kanade. This is the thread
- * that starts the recorder, the area picker and the joiner, and that matters: a child started
- * through `setpriv --pdeathsig` dies when the THREAD that started it ends, not the process (ADR
- * 0027; `wake::run`). A thread made for one request and gone after it would end the recorder as it
- * exits. It is never held on `RUNTIME`.
+ * one worker lives as long as Kanade: `setpriv --pdeathsig` children die with their starting thread,
+ * so a per-job thread would kill the recorder when it exits. Never hold this on `RUNTIME`.
  */
 static WORKER: Mutex<Option<Sender<Job>>> = Mutex::new(None);
 
@@ -1336,13 +1333,8 @@ enum Again {
 }
 
 /*
- * what to start again with, from how the segment ran and what the recording has already given up.
- * A failed VA-API download, when the encoder failed (`fault` is `Fault::Encoder`), goes to EGL once.
- * A non-software encoder goes to software once, which tries the VA-API download afresh: the encoder
- * may have failed for its own reasons and software with VA-API can work where EGL cannot import the
- * cast. Nothing else — no failure loops: EGL is taken once per `no_va`, and `no_va` is cleared only
- * by the step to software. A `Fault::Vanished` output is not tried again: the same target is gone
- * whichever encoder reads it
+ * retry an encoder failure or stall at most once per fallback: failed VA-API download tries EGL;
+ * a non-software encoder tries software, which retries VA-API. Vanished outputs are never retried.
  */
 fn again(ran: Ran, given: Given, fault: Fault) -> Option<Again> {
     if fault == Fault::Vanished {
@@ -1414,9 +1406,10 @@ fn step(given: Given, ran: Ran, fault: Fault) -> Option<(Again, Given)> {
 /*
  * a segment whose program failed, when the recording has a way left to try (`again`, ADR 0116):
  * says so, notes it on the recording and gives the number of the segment to start again, which is
- * the one it was. None when it is not to be tried. `fault` says what failed, and only the encoder's
- * own failure, or a stall, is worth another start. A segment that wrote frames keeps them: the one
- * started again writes to its own file, so nothing recorded is written over or lost
+ * the one it was. None when it is not to be tried. `fault` says what failed: an encoder failure or
+ * a stall may change the download, while a muxer failure only walks on to the software encoder. A
+ * segment that wrote frames keeps them: the one started again writes to its own file, so nothing
+ * recorded is written over or lost
  */
 fn falls_back(
     runtime: &mut Runtime,
@@ -2199,11 +2192,8 @@ fn classify_window(
     }
 
     /*
-     * the guard ended the chain because no buffer arrived for `QUIET`, and the window is still
-     * there: a stall, said as one rather than as an encoder that failed to start. What stalled (the
-     * cast, the download, the encoder) is not visible from here, so the words claim none of them.
-     * After the closed cases above, because a window that closes ends the cast and so trips the
-     * guard too, and that is a recording saved, not a stall
+     * only call this a stall when the window remains open; a closing window also trips the guard.
+     * The missing buffer could be from the cast, download, or encoder, so do not assign blame.
      */
     if closed.is_none() && stalled {
         return Segment::Lost(format!("no picture arrived for {}s", QUIET.as_secs()));
@@ -2480,12 +2470,8 @@ fn join(segments: u32) {
 }
 
 /*
- * the file is the recording once its one segment is written to it. More are joined by copying their
- * streams (no re-encoding): the first, written to the file, is moved to the parts folder to be
- * joined with the rest into one beside them, which is then moved to the file's name. Neither move
- * replaces anything: a file that appeared at the name meanwhile is kept, not overwritten. Only once
- * the file is there are the segments Kanade made deleted, and only those: a failure keeps them, the
- * first segment put back where it was written
+ * segments are joined by stream copy. Moves never overwrite; delete Kanade's segments only after
+ * the joined file is in place, and restore the first segment on failure.
  */
 fn saved(parts: &Path, path: &Path, segments: u32) -> Result<(), String> {
     if segments == 1 {
@@ -2689,10 +2675,8 @@ fn saving(take: &Take) -> Activity {
     }))
 }
 
-// on the output the user is looking at; a saved one copied or opened, a failed one as nothing else
-// says that no recording came of it. `preempt` puts a failed one in front of what is shown: for a
-// start the user just asked for, not for a failure that comes later (a join, a recorder that ends),
-// which would collapse a Surface they are typing in
+// Show the result on the focused output. Preempt only an immediate start failure; a later failure
+// must not collapse a Surface the user is typing in.
 fn ended(clip: Clip, preempt: bool) -> Activity {
     let actions = match clip {
         Clip::Saved { .. } => vec![

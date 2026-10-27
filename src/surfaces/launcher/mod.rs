@@ -428,11 +428,9 @@ impl Search {
     }
 
     /*
-     * a key while the actions are open: the ring moves over the rows, Enter or Space presses the
-     * one it is on and a click the one clicked; Escape and `Ctrl+K` close the panel unacted, as does
-     * a key no row takes, so the list comes back rather than typing under a panel. `Ctrl+V` and
-     * `Ctrl+C` are no row's key, so they close the panel and edit the query the list shows, as
-     * they do with no panel open
+     * arrows move the action ring; Enter, Space and clicks activate. Escape, `Ctrl+K` or an
+     * unhandled key closes the panel. `Ctrl+V` pastes; `Ctrl+C` closes the panel and copies a fully
+     * selected query.
      */
     fn stepped_panel(mut self, key: Key) -> Option<(Search, Intent)> {
         let last = self
@@ -1048,11 +1046,8 @@ fn kept(answer: &Answer) -> Option<String> {
 }
 
 /*
- * ADR 0127's order inside a Fit: the class of a query that launched the answer leads, then the
- * match score (ADR 0126), then the providers' own order. `provider::ranked` gave the last two, so
- * sorting stably on the Fit and the class alone moves a habit ahead of the noisy in-tier scores and
- * leaves every answer of an equal class where it lay: `fit` sometimes reads an alias where the
- * score reads the title, so the score alone is not the better order
+ * ADR 0127 ranks by Fit, then launch class, keeping ADR 0126's score order within a class. Score
+ * alone must not decide across classes: `fit` may read an alias while the score reads the title.
  */
 fn learned_first(answers: &mut [Answer], query: &str, now: i64, usage: &sources::recents::Usage) {
     let query = query.trim().to_lowercase();
@@ -1129,13 +1124,9 @@ fn forget() {
 }
 
 /*
- * what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit.
- * `read` says whether the apps were read at all: until they are, an app may be the answer, so the
- * web is not offered for a query they could still match.
- *
- * The answer is kept from the frame before, and what it depends on is read every time, so a change
- * still draws the window that shows it: the Services it reads are read here, not only when the
- * ranking runs
+ * `visit` supplies provider results, or only dmenu lines; `read` gates web until apps are loaded.
+ * The answer is kept from the prior frame; every input it depends on is read each frame, so a
+ * change re-ranks and draws the window that shows it.
  */
 fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> Arc<Found> {
     if let Some((_, choices)) = choose::of(visit) {
@@ -2621,12 +2612,8 @@ mod tests {
     }
 
     /*
-     * the ranking is kept between frames, so what it answers has to follow its inputs: the same
-     * inputs answer the same and copy nothing, and an app that arrives or leaves ranks again
-     *
-     * Its inputs are read from Services the process shares, and the window titles among them are
-     * written by a test in this module's own tree: the turn keeps that write out of these calls,
-     * which read the titles as equal between them
+     * cached rankings follow their inputs: unchanged inputs reuse the answer; app changes rerank.
+     * Window titles come from shared Services, so the test holds their write turn across reads.
      */
     #[test]
     fn the_ranking_follows_its_inputs() {

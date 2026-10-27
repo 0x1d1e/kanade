@@ -1,9 +1,6 @@
 /*
- * Kanade's own verbs, as a Launcher provider (ADR 0112): a closed table of the `kanade` verbs a
- * person types the name of ("caffeine" finds Toggle Caffeine), each a static argv. Pressing one
- * runs it through the shell's own socket, as the CLI does, so the Module gate and the parse apply
- * (`Action::Run`). A row shows only while its Module is on, is found by name alone and never takes
- * typed text; this is not the gesture allow-list (ADR 0107)
+ * the Launcher exposes a closed table of static `kanade` argv, routed through the shell socket and
+ * `Action::Run`. Rows require their Module enabled, match names only, and are not the gesture list.
  */
 
 use std::time::Duration;
@@ -422,11 +419,8 @@ pub fn dispatch(verb: &'static [&'static str]) -> Result<(), String> {
 }
 
 /*
- * whether a verb is never run from the Launcher: it types or presses into windows (`ui`), runs a
- * program (`activity run|hook`), ends the session (`session logout|reboot|poweroff`), or waits on
- * the user (`dmenu`, `gesture`, `capture color`); records the microphone (`capture record start
- * ... mic`, which is only ever asked for by name, ADR 0116); or it is no verb. The table holds none, and
- * `press` checks again
+ * verbs that type into windows, run programs, end the session, wait for input, or record the mic
+ * are excluded; `press` checks again. Microphone recording is only selectable by name (ADR 0116).
  */
 pub fn denied(words: &[&str]) -> bool {
     let Ok((_, call)) = cli::parse(words) else {

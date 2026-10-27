@@ -824,12 +824,8 @@ fn fitting(
 }
 
 /*
- * where in this window the Banners line up. Under a top Island they hang down, over a bottom one
- * up, at `x` across the window, from no nearer the Island's edge than `clear` to no farther than
- * `end`. Beside one on a side edge they hang down from level with its top, no nearer that edge
- * than `x`, from no higher than `clear` to no lower than `end`. Kept clear of the Dock's strip:
- * past it on the Island's edge, short of it on the far one, aside of it on an edge across the
- * column, wherever the column would cover it from the Island at rest to its end
+ * banner lane bounds are `x`, `clear` and `end`; top and bottom Islands hang banners inward.
+ * Side lanes start level with the Island, and avoid the Dock strip across the Island's full travel
  */
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Lane {

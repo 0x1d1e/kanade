@@ -40,9 +40,8 @@ impl Gpu {
      * (shared.rs, when a normal window closes). The images are still counted as uploaded in the
      * atlas that went, so they are sent again; the atlas is shared, so every window does this.
      *
-     * A scene that resolves no image no longer reaches this: it would leave the atlas a texel
-     * wide and free the one every window's images were in, so flush.rs draws those on a renderer
-     * of their own, which never holds an image
+     * A scene that resolves no resources at all (no patches, not merely no image) is drawn on a
+     * renderer of its own, which never holds an image, so it cannot shrink the shared atlas
      */
     pub(super) fn keep_atlas(&mut self) {
         if self.atlas_seen == self.atlas_drops.get() {

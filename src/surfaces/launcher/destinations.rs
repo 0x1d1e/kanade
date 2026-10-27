@@ -1,9 +1,6 @@
 /*
- * where Kanade itself goes, as a Launcher provider: Wi-Fi and Bluetooth open Controls on their
- * networks and devices, Clipboard opens the history, Calendar the month and agenda, Wallpapers the wallpaper grid (also for
- * anything typed after `@`), Keys the keybinds, Notifications, Controls, Weather, Tray, Session, Timer and Capture
- * their Surfaces, and each page of Settings and each setting opens Settings on the page showing it. They only open: switching a radio or joining a network
- * is done in the Surface they open
+ * Launcher destinations open their matching Surface or Settings page; Wi-Fi and Bluetooth open
+ * Controls, and `@` opens Wallpapers. They navigate only; actions happen in the opened Surface.
  */
 
 use crate::clock;

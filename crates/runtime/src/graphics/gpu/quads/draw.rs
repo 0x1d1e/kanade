@@ -50,12 +50,9 @@ impl Quads {
     }
 
     /*
-     * one letter, drawn where it was gathered
-     *
-     * a letter that would make a full atlas start over is put off until what reads the atlas is
-     * drawn, since placing it now would draw over the texels those quads name. drawn only after
-     * the batch, it would land over quads gathered after it, so what waits is drawn here instead:
-     * that leaves nothing reading the atlas, and the letter goes in right where it belongs
+     * one letter, drawn where it was gathered: a letter that would make a full atlas start over
+     * waits until what reads the atlas is drawn, then goes in here, so it lands in place rather than
+     * over the quads gathered after it
      */
     #[allow(clippy::too_many_arguments)]
     pub fn letter_in_order(

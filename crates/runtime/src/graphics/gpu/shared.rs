@@ -12,11 +12,9 @@ use vello::{AaSupport, RendererOptions};
 use super::wait::wait;
 
 /*
- * one gpu device and one vello for every window: separate devices are
- * separate gpu contexts, which the driver switches between whenever two
- * windows draw, and each compiled every shader again on its first frame.
- * a normal window close replaces the renderer on this device, which drops
- * the pool of buffers only that larger target needed; the next frame does
+ * one gpu device and one vello for every window: separate devices are separate contexts the driver
+ * switches between, and each compiles every shader again on its first frame. Closing a normal window
+ * replaces the renderer and drops the buffer pool only its larger target needed; the next frame does
  * not compile the shaders again, this close does, once
  */
 #[derive(Clone)]

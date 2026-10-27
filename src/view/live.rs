@@ -60,11 +60,8 @@ fn line(job: &Job) -> String {
 const TITLE: f32 = 72.0;
 
 /*
- * the mark, the title, then how far along; Peek puts the detail under the title and a bar under
- * that. The amount has a fixed width, so a percent going by redraws it in place. A Peek with
- * `actions` (ADR 0110) trades the amount for a pill each, as many as leave the title `TITLE`; the
- * first is cut with an ellipsis to leave it too, so the title never has no width; a press is queued
- * for the program that posted the Activity, nothing more
+ * Peek replaces progress with action pills, truncating the first to preserve `TITLE` width; progress
+ * keeps fixed width to avoid shifting. Presses are queued for the Activity's posting program.
  */
 pub(super) fn live(
     presentation: Presentation,

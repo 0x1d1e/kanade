@@ -20,12 +20,9 @@ unsafe extern "C" {
 }
 
 /*
- * glibc raises the mapping size after the first big block is freed, so
- * later decode buffers stay in a pool after they are freed; fixing it
- * keeps big blocks on their own mappings, which go back to the system as
- * soon as an image is done with them. each new thread also gets a pool of
- * its own, so every image decoded on its own thread left freed memory
- * behind in yet another pool; two pools let that memory be used again
+ * glibc raises its mmap threshold after the first big block is freed, so later decode buffers
+ * would stay in a pool; pinning it keeps them on their own mappings. Two pools stop every decode
+ * thread leaving freed memory behind in a pool of its own.
  */
 pub fn limit() {
     let mapped = unsafe { mallopt(M_MMAP_THRESHOLD, ONE_MEGABYTE) };

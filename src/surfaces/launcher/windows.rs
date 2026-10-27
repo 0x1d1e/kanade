@@ -1,10 +1,6 @@
 /*
- * the open windows, as a Launcher provider: a query that fits a window's title or its app's name
- * lists it, and pressing it focuses it. niri's titles are not kept by the `windows` Service, which
- * holds window ids only; they are asked of niri off the view thread each time the Launcher opens
- * (`refresh`) and held here, in memory, for the providers to read, so a title changed since shows
- * from the next opening. They are a Service, so a search made before niri answered shows them when
- * they arrive
+ * lists open windows by title or app name and focuses the selected one. Refresh titles from niri
+ * off the view thread when Launcher opens; Service updates let pending searches show late answers.
  */
 
 use std::path::PathBuf;

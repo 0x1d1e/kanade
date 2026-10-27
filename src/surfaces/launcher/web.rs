@@ -1,9 +1,7 @@
 /*
- * the web, as the Launcher's last resort (ADR 0130): a typed query nothing answers offers to search
- * Google for it, and to open it in the default browser. It is the one answer that sends what was
- * typed off the machine, so it is offered only when nothing else answers, each row says where the
- * text goes, and neither the query nor the address is ever logged or kept (ADR 0019). The browser is
- * the default one, through `xdg-open` alone, and the search's address is fixed in the binary
+ * The web is the Launcher's last resort (ADR 0130), and the only answer that sends the query off
+ * machine. Disclose destinations; never log or keep the query or address (ADR 0019). Use only
+ * `xdg-open`, with the search address fixed in the binary.
  */
 
 use std::process::{Command, Stdio};

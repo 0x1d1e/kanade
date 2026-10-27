@@ -284,11 +284,8 @@ fn write(file: &Path, text: &str) -> io::Result<()> {
 }
 
 /*
- * The mode the file keeps: the user's own when it is already private, else 0600. The file can hold
- * `calendar.subscriptions`, and a feed's address is often its only secret (ADR 0062), so Kanade's
- * own window makes a new one private rather than leaving it to the umask, and does not widen one
- * that already grants nothing to group or other (0400, 0600). A file the umask left at 0644, which
- * is what Kanade wrote before this, is narrowed once.
+ * Keep an already-private mode; otherwise use 0600. Subscription files can contain a feed's only
+ * secret, its address, so the umask must not leave them readable by group or other.
  */
 fn mode(file: &Path) -> Mode {
     use std::os::unix::fs::PermissionsExt;

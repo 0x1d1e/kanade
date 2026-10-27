@@ -230,11 +230,8 @@ impl Launch {
     }
 
     /*
-     * starts it with `files`, which an `Exec` taking one standing as an argument of its own
-     * receives as arguments of the start and nowhere else: niri's `Spawn` takes the arguments as
-     * they are, so no shell reads a name. Nothing starts for an entry that takes no file, or whose
-     * `Path` needs a shell to move into, nor for a name that is not an absolute path to something
-     * that exists. Blocks on niri, so off the view thread
+     * passes absolute existing paths as arguments to niri's `Spawn`; entries needing a shell or
+     * that take no files are skipped. This blocks on niri, so run it off the view thread.
      */
     pub fn run_files(&self, files: &[PathBuf]) -> Result<(), String> {
         let command = self

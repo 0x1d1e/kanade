@@ -148,11 +148,9 @@ pub fn answered(status: u16, body: &str, key: &str) -> String {
 }
 
 /*
- * the transcript of a 200 answer, trimmed. UNVERIFIED shape: the text parts of `outputs`
- * (`{"type": "text", "text": ...}`), else of the `model_output` steps' `content` in `steps`, joined.
- * An answer that is JSON of the right kind but holds no such array, step or text is no speech
- * heard (`Silence`); one that is not JSON, not an object, or has a field of the wrong type is
- * `Unreadable`.
+ * the transcript of a 200 answer, trimmed. UNVERIFIED shape: text parts in `outputs`, else
+ * `model_output` steps' `content` in `steps`. Valid JSON with no text is `Silence`; non-JSON,
+ * non-object JSON, or wrong field types are `Unreadable`.
  */
 pub fn transcript(body: &str) -> Result<String, Error> {
     let body: Value = serde_json::from_str(body).map_err(|_| Error::Unreadable)?;

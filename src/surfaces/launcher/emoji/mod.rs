@@ -1,10 +1,6 @@
 /*
- * emoji, as a Launcher provider: a query starting with `:` searches them by shortcode (`:smile`,
- * `:thumbs_up:`) and name, and pressing one copies it. Only on that prefix, so a search for apps
- * never fills with emoji
- *
- * The table is the Emoji Surface's (`super::super::emoji::data`), so both offer the same emoji; the
- * picture is asked only for the answers a query found
+ * a `:` query searches emoji by shortcode or name, and selecting one copies it; other Launcher
+ * searches stay clear. Share the Emoji Surface's table and load pictures only for matches.
  */
 
 use super::super::emoji::data;

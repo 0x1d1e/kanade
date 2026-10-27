@@ -78,13 +78,8 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
 }
 
 /*
- * what a call draws beyond the Services it writes: `Yes` for calls that change something no Service
- * carries (`settings`, `close-settings`, `gesture`, `osd`, `brightness`); `No` for everything
- * else, which changes a window's show only through a Service or the config.
- *
- * A call that does not parse changes nothing. A call whose Module is off is answered with a
- * refusal, and reads no Module here to say so: `modules::on` is read by views, so asking it on this
- * thread would note a read for a window that is not drawing
+ * whether a call draws beyond its Services: only calls changing state no Service carries return
+ * Yes. Parse failures change nothing; don't read `modules::on` here, as views track those reads.
  */
 pub fn draws(arguments: &[String]) -> Draws {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();

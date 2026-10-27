@@ -634,11 +634,9 @@ fn catch_termination() -> io::Result<std::os::unix::net::UnixStream> {
 }
 
 /*
- * runs `action` when this process gets SIGTERM or SIGINT (`systemctl --user stop`, `restart`, Ctrl+C),
- * then ends it as the signal would have, so what the shell must put back on the way out
- * (a monitor change on trial) is not lost to the default, which kills at once. A thread reads the
- * signal from a pipe, so `action` is no signal handler's code. It is given `LIMIT` to finish, then
- * the process ends all the same; a second signal ends it at once
+ * runs `action` on a thread when this process gets SIGTERM or SIGINT, read from a pipe so `action`
+ * is no signal handler's code, then ends it as the signal would have; `LIMIT` bounds the cleanup and
+ * a second signal ends it at once. this lets the shell put back a trial monitor change before exit
  */
 pub fn on_terminate(action: impl FnOnce() + Send + 'static) -> io::Result<()> {
     use std::sync::mpsc;
@@ -782,11 +780,9 @@ enum Turn {
 }
 
 /*
- * what each of `messages`, a conversation's styles and texts, gets, or none when it cannot be
- * answered, which fails the check. The password answers the first hidden prompt of a check and
- * nothing else: not an echoed prompt, which is a name or a code, nor a second hidden one, which is
- * another secret (a one-time code, a PIN), nor a style this does not know. `answered` is whether
- * the password was given already, and is set when it is
+ * the password answers the first hidden prompt only: not an echoed name or code, not a second
+ * secret, not an unknown prompt style, and any of those fails the conversation (`PAM_CONV_ERR`).
+ * `answered` records whether the password was already given
  */
 fn decide(messages: &[(c_int, String)], answered: &mut bool) -> Option<Vec<Turn>> {
     let mut given = *answered;

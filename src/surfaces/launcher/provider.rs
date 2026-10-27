@@ -245,11 +245,9 @@ fn match_score(query: &str, name: &str) -> Option<i32> {
 }
 
 /*
- * How well `name` answers `query`: the name is the query, starts with it, has a word starting so,
- * has it, then matches its characters in order. Case folds away, so `Firefox` starts with
- * `firefox`; diacritics do not, so `Café` holds `cafe` only once folded and is never called a
- * prefix of what the name shows. Fit remains the outer ordering; the score admits a match at all
- * and ranks the matches within a fit.
+ * how well `name` answers `query`: equal, starts with it, has a word starting so, has it, then
+ * matches its characters in order. Case folds away, but diacritics do not: `Café` is never a prefix
+ * of what the name shows. Fit orders categories; the score admits and ranks matches within a fit.
  */
 pub fn fit(query: &str, name: &str) -> Option<Fit> {
     let query = query.to_lowercase();

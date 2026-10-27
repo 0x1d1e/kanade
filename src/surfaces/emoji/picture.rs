@@ -1,10 +1,6 @@
 /*
- * an emoji as the picture its color font holds. The runtime draws a letter from its outline, and color
- * emoji fonts like Noto Color Emoji have none, only a png per emoji; so the png is written as a
- * file and drawn like an app's icon
- *
- * One at a time, memoized: the Emoji Surface draws a window of tiles, so only those are asked for,
- * never the whole table. `raster::write` is content-addressed, so a repeat is one `exists()` check
+ * color emoji fonts provide PNGs, not outlines; write each requested image as an icon file. Memoize
+ * visible tiles only, and let content-addressed `raster::write` reduce repeats to an `exists()` check.
  */
 
 use std::collections::{HashMap, HashSet};

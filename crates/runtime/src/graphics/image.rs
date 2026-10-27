@@ -23,12 +23,8 @@ const ICON_SIDE: f32 = 256.0;
 const WORKERS: usize = 3;
 
 /*
- * the most small copies kept, and their most bytes; past either, those no window holds go, the
- * longest unused first. Every caller asks for an icon or a tile, never a picture: the largest is a
- * Wallpapers tile at `SCALE` 2, 288x180 px, 202 KiB. One grid draws at most 30 of them, 5.9 MiB:
- * six rows built and clipped between rows, four showing whole. Next a Dock icon at its most
- * magnified, 144 KiB. So the bounds hold several gridfuls scrolled away and back, beside every
- * Dock icon and other Surface's
+ * bound cached thumbnails by count and bytes, evicting the least recently used unheld copies; the
+ * limits retain several scrolled Wallpapers grids alongside magnified Dock icons and other Surfaces.
  */
 const THUMBNAILS: usize = 128;
 const THUMBNAIL_BYTES: usize = 24 << 20;
@@ -101,11 +97,7 @@ pub enum ImageState {
  */
 struct Decoded;
 
-// a file, the size it is shrunk to cover (none for its own size), and the file it was asked for
-//
-// the stamp is the file's modification time and length: a file replaced in place, an icon
-// overwritten by an update or a wallpaper by another, keeps its path, so the stamp is what tells
-// the new one from the old, instead of serving the old pixels forever
+// file path, optional cover size, and modification time plus length to detect in-place replacement
 type Key = (PathBuf, Option<(u32, u32)>, Stamp);
 
 // what a file read when it was asked for; one gone or unreadable stamps as none, and reading it
