@@ -23,6 +23,8 @@
 > [!WARNING]
 > Kanade is in active pre-1.0 development. Expect bugs, missing pieces, and breaking changes to config, CLI, and behavior until 1.0. See [Limitations](docs/wiki/Limitations.md) for known gaps.
 
+Kanade is a personal project, made for the author's own niri session and shared as is. There is no support or stability promise: issues and pull requests may go unanswered, and APIs and config can change before 1.0.
+
 ## The Concept
 
 There is no status bar. Each monitor hosts one Island, positioned at the top center by default.
