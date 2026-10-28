@@ -1201,6 +1201,50 @@ pub fn screenshot_failed(why: &str) {
     IslandService::write().post(activity(SHOT, job, Vec::new()), Instant::now());
 }
 
+// the id of a screenshot niri saved; a space is outside a client's alphabet
+const SAVED: &str = "screenshot";
+
+// how much of a path the island's title keeps; the end, where the file name is
+const PATH: usize = 80;
+
+/*
+ * a screenshot niri saved (`niri::on_screenshot`): the done form of a Live Activity a while on the
+ * focused output, the path as its title, or that it was copied when niri kept no path. No
+ * thumbnail, and the path is not logged. Shown even when the capture Module is off: niri saved it
+ */
+pub fn screenshot_captured(path: Option<String>) {
+    let (title, detail) = captured_words(path.as_deref());
+    let job = Job {
+        title,
+        detail,
+        progress: None,
+        ended: Some(Ended::Done),
+        serial: 0,
+    };
+
+    IslandService::write().post(activity(SAVED, job, Vec::new()), Instant::now());
+}
+
+fn captured_words(path: Option<&str>) -> (String, String) {
+    match path.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => (path_tail(path), String::new()),
+        None => (String::from("Screenshot"), String::from("Copied")),
+    }
+}
+
+fn path_tail(path: &str) -> String {
+    let path = path.lines().next().unwrap_or(path);
+    let count = path.chars().count();
+
+    if count <= PATH {
+        return path.to_owned();
+    }
+
+    let mut tail: String = path.chars().skip(count - (PATH - 1)).collect();
+    tail.insert(0, '\u{2026}');
+    tail
+}
+
 // the id of the first-start health notice; a space is outside a client's alphabet
 const HEALTH: &str = "health notice";
 
@@ -2051,6 +2095,24 @@ mod tests {
                 .is_some()
         );
         assert_eq!(board.form("a", at).len(), 2);
+    }
+
+    #[test]
+    fn a_saved_screenshot_shows_the_path_or_that_it_was_copied() {
+        assert_eq!(
+            captured_words(Some("/tmp/shot.png")),
+            (String::from("/tmp/shot.png"), String::new())
+        );
+        assert_eq!(
+            captured_words(None),
+            (String::from("Screenshot"), String::from("Copied"))
+        );
+        assert_eq!(
+            captured_words(Some("  ")),
+            (String::from("Screenshot"), String::from("Copied"))
+        );
+        assert!(path_tail(&"a".repeat(200)).chars().count() <= PATH);
+        assert!(path_tail(&"a".repeat(200)).ends_with('a'));
     }
 
     #[test]

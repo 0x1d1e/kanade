@@ -108,6 +108,9 @@ pub(super) fn satellite_mark(activity: &Activity, output: &str, now: Instant) ->
         Detail::Hardware(event) => Box::new(mark(event.class).draw(14.0)),
         Detail::Reminder(reminder) => label(reminder.short.clone(), theme::island().on_surface),
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
+        Detail::Workspace(workspace) => {
+            label(workspace.index.to_string(), theme::signals().critical)
+        }
         Detail::Timer(countdown, _) => label(timer::short(countdown, now), timer_tone(countdown)),
         Detail::Session(Leaving::Counting { countdown, .. }) => label(
             format!("{}s", session::left(countdown, now)),

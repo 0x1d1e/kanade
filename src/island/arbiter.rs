@@ -185,7 +185,12 @@ impl Arbiter {
      * whole: no Satellite beside it, they come back with what it hid
      */
     pub fn frame(&self, now: Instant, island: Island) -> Frame {
-        let ranked = self.ranked(now, island.focused);
+        self.frame_on(now, island, "")
+    }
+
+    // `output` is the island's monitor; empty leaves `Scope::Output` out
+    pub fn frame_on(&self, now: Instant, island: Island, output: &str) -> Frame {
+        let ranked = self.ranked(now, island.focused, output);
 
         self.framed(&ranked, island.focused, now)
     }
@@ -194,30 +199,42 @@ impl Arbiter {
      * the Frame under the OSD, as if no Feedback were posted: what a Peek or an open Surface keeps
      * showing while the OSD floats over it
      */
+    #[cfg(test)]
     pub fn beneath(&self, now: Instant, island: Island) -> Frame {
-        let mut ranked = self.ranked(now, island.focused);
+        self.beneath_on(now, island, "")
+    }
+
+    pub fn beneath_on(&self, now: Instant, island: Island, output: &str) -> Frame {
+        let mut ranked = self.ranked(now, island.focused, output);
         ranked.retain(|entry| entry.activity.priority() != Priority::Feedback);
 
         self.framed(&ranked, island.focused, now)
     }
 
     fn framed(&self, ranked: &[&Entry], focused: bool, now: Instant) -> Frame {
-        let primary = self.primary(ranked, focused, now);
+        // an output notice sits beside the body; it never takes the primary
+        let body: Vec<&Entry> = ranked
+            .iter()
+            .copied()
+            .filter(|entry| entry.activity.scope() != Scope::Output)
+            .collect();
+        let primary = self.primary(&body, focused, now);
         let feedback =
-            primary.is_some_and(|index| ranked[index].activity.priority() == Priority::Feedback);
+            primary.is_some_and(|index| body[index].activity.priority() == Priority::Feedback);
 
         // what is playing keeps a place beside a timer or a low battery, which it would only hide
         let media_beside = primary.is_some_and(|index| {
-            let activity = &ranked[index].activity;
+            let activity = &body[index].activity;
 
             activity.lifetime() == Lifetime::Persistent
                 && matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
         });
+        let primary_id = primary.map(|index| body[index].activity.id());
         let mut satellites: Vec<Activity> = ranked
             .iter()
-            .enumerate()
-            .filter(|&(index, _)| Some(index) != primary && !feedback)
-            .map(|(_, entry)| entry.activity.clone())
+            .map(|entry| entry.activity.clone())
+            .filter(|activity| Some(activity.id()) != primary_id)
+            .filter(|_| !feedback)
             .filter(|activity| {
                 activity.lifetime() == Lifetime::Persistent
                     && (matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
@@ -228,7 +245,7 @@ impl Arbiter {
         satellites.truncate(SATELLITES);
 
         Frame {
-            primary: primary.map(|index| ranked[index].activity.clone()),
+            primary: primary.map(|index| body[index].activity.clone()),
             satellites,
             overflow,
         }
@@ -246,12 +263,12 @@ impl Arbiter {
     }
 
     // the live Activities on an island, highest first
-    fn ranked(&self, now: Instant, focused: bool) -> Vec<&Entry> {
+    fn ranked(&self, now: Instant, focused: bool, output: &str) -> Vec<&Entry> {
         let mut entries: Vec<&Entry> = self
             .activities
             .values()
             .filter(|entry| entry.live(now))
-            .filter(|entry| focused || entry.activity.scope() == Scope::Global)
+            .filter(|entry| shows(&entry.activity, focused, output))
             .filter(|entry| !self.silenced(&entry.activity))
             .collect();
         entries.sort_by_key(|entry| Reverse((entry.activity.priority(), entry.post)));
@@ -288,7 +305,7 @@ impl Arbiter {
         let mut changed = false;
 
         for focused in [false, true] {
-            let ranked = self.ranked(now, focused);
+            let ranked = self.ranked(now, focused, "");
             let before = self.shown[usize::from(focused)].as_ref();
             let shown = self.primary(&ranked, focused, now).map(|index| {
                 let id = ranked[index].activity.id().clone();
@@ -318,12 +335,21 @@ impl Arbiter {
     }
 }
 
+fn shows(activity: &Activity, focused: bool, output: &str) -> bool {
+    match activity.scope() {
+        Scope::Global => true,
+        Scope::FocusedOutput => focused,
+        Scope::Output => !output.is_empty() && activity.output() == Some(output),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
     use crate::island::activity::fixture::{persistent, shown};
+    use crate::island::activity::{Activity, Id, Interrupt, Kind, Lifetime, Scope};
 
     // the focused island at rest, where everything shows
     const FOCUSED: Island = Island { focused: true };
@@ -914,6 +940,38 @@ mod tests {
         assert_eq!(arbiter.frame(now, FOCUSED).primary, Some(workspace()));
         assert_eq!(arbiter.frame(now, OTHER).primary, Some(media("spotify")));
         assert_eq!(unfocused.primary, Some(countdown()));
+    }
+
+    #[test]
+    fn an_output_notice_is_a_satellite_only_on_that_output() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let urgent = Activity::new(
+            Id::new(Kind::Workspace, "urgent-3"),
+            Priority::Ongoing,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::None,
+        )
+        .unwrap()
+        .on_output("HDMI-A-1");
+
+        arbiter.post(urgent.clone(), t0);
+
+        let there = arbiter.frame_on(t0, OTHER, "HDMI-A-1");
+        let focused = arbiter.frame_on(t0, FOCUSED, "eDP-1");
+
+        assert!(there.primary.is_none());
+        assert_eq!(there.satellites.as_slice(), std::slice::from_ref(&urgent));
+        assert!(focused.primary.is_none());
+        assert!(focused.satellites.is_empty());
+
+        arbiter.post(media("spotify"), t0);
+        let beside = arbiter.frame_on(t0, OTHER, "HDMI-A-1");
+
+        assert_eq!(beside.primary, Some(media("spotify")));
+        assert_eq!(beside.satellites.as_slice(), std::slice::from_ref(&urgent));
+        assert!(arbiter.frame_on(t0, FOCUSED, "eDP-1").satellites.is_empty());
     }
 
     // a Preempt Activity closes the Surface on arrival (`IslandService`), so competes for the primary

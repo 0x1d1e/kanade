@@ -74,7 +74,7 @@ A volume, brightness, keyboard backlight or microphone mute level, a mode (Caps 
 `Transient(duration)` expires on its own: a workspace switch, an OSD. It implies no Scope and no Interrupt.
 
 ## Arbiter
-Function of (registered Activities, the primary shown and since when, now, focused output) to a Frame. Owns priority, preemption, primary dwell, expiry and Satellite selection.
+Function of (registered Activities, the primary shown and since when, now, focused output, the output the frame is for) to a Frame. Owns priority, preemption, primary dwell, expiry and Satellite selection.
 - **Invariant:** time is an input. The Arbiter never reads a clock.
 - **Invariant:** preemption never destroys. A Persistent Activity hidden by a Transient shows again when the Transient expires, with no re-post.
 
@@ -83,7 +83,7 @@ The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (
 - Not a rendered frame (the runtime's `request_frame`, `KANADE_FRAMES`).
 
 ## Scope
-`Global` shows on every island. `FocusedOutput` shows only on the island of the focused output.
+`Global` shows on every island. `FocusedOutput` shows only on the island of the focused output. `Output` shows only on the named output, as a Satellite, never as that island's primary; without a name it shows nowhere.
 
 ## Interrupt
 How an Activity interrupts: `None | Preempt | AutoExpand(duration)`.

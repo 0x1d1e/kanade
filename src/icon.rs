@@ -76,6 +76,7 @@ const CAPS_LOCK: &str = include_str!("icons/caps-lock.svg");
 const KEYPAD: &str = include_str!("icons/keypad.svg");
 const KEYBOARD: &str = include_str!("icons/keyboard-light.svg");
 const AIRPLANE: &str = include_str!("icons/airplane.svg");
+const TOUCHPAD: &str = include_str!("icons/touchpad.svg");
 const PALETTE: &str = include_str!("icons/palette.svg");
 const ISLAND: &str = include_str!("icons/island.svg");
 const DOCK: &str = include_str!("icons/dock.svg");
@@ -189,6 +190,9 @@ pub(crate) enum Icon {
 
     // every radio off
     Airplane,
+
+    // niri's touchpad, on or off
+    Touchpad,
 
     // Settings' pages: the look, the Island, the Dock, motion, Modules, where data comes from
     Palette,
@@ -328,6 +332,7 @@ impl Icon {
             Icon::CapsLock => &[CAPS_LOCK],
             Icon::Keypad => &[KEYPAD],
             Icon::Airplane => &[AIRPLANE],
+            Icon::Touchpad => &[TOUCHPAD],
             Icon::Palette => &[PALETTE],
             Icon::Island => &[ISLAND],
             Icon::Dock => &[DOCK],

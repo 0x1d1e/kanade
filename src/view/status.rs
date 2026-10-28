@@ -508,6 +508,7 @@ pub(super) fn mode(presentation: Presentation, mode: Mode) -> Option<Rectangle> 
         Mode::CapsLock(_) => (Icon::CapsLock, "Caps Lock"),
         Mode::NumLock(_) => (Icon::Keypad, "Num Lock"),
         Mode::Airplane(_) => (Icon::Airplane, "Airplane Mode"),
+        Mode::Touchpad(_) => (Icon::Touchpad, "Touchpad"),
     };
 
     let roles = theme::island();

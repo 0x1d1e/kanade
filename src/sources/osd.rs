@@ -279,6 +279,11 @@ pub fn mode(mode: Mode) {
  * a keyboard layout switch, as niri names the layout switched to (`niri::on_layout`); read off the
  * config as it comes, so turning `osd.layout` off holds from the next switch
  */
+// niri toggled the touchpad (`niri::on_touchpad`); the hardware switch is not this
+pub fn touchpad(on: bool) {
+    post(Osd::Mode(Mode::Touchpad(on)), Shown::show);
+}
+
 pub fn layout(name: String) {
     if config::get().osd_layout {
         let short = xkb::short(&name);

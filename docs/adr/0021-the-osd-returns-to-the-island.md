@@ -10,7 +10,7 @@ ADR 0007 moved volume, brightness and mic changes into an Overlay pill of their 
 
 ## Decision
 
-- An OSD is an Activity: Kind `Volume`, `Brightness` or `Mode` (Caps Lock, Num Lock, airplane mode), `Transient(timings.osd)`, `FocusedOutput`, `Interrupt::None`, Detail the level or mode. The Island shows it in its small form, as it shows a workspace switch.
+- An OSD is an Activity: Kind `Volume`, `Brightness` or `Mode` (Caps Lock, Num Lock, airplane mode, and a touchpad niri toggles), `Transient(timings.osd)`, `FocusedOutput`, `Interrupt::None`, Detail the level or mode. The Island shows it in its small form, as it shows a workspace switch. The touchpad is niri's `TouchpadToggled` event, not the hardware switch, and shows only while the `osd` Module is on, as a layout switch does.
 - Its Priority is `Feedback`, above `Critical`: it answers a key just pressed, so it shows over anything for the moment it lives, alone, with no Satellites, then the primary and its Satellites return. The workspace switch's Priority, once named `Osd`, is now `Glance`. Below a timer or a call it would show nothing, and at the workspace switch's Priority it would wait out its dwell.
 - One OSD at a time: one id per Kind, and an OSD posted withdraws the other Kinds' under the same Island write, so a held key extends one Transient.
 - Over an open Surface or a Peek, which draw themselves and not the primary, the OSD floats as a capsule of its Compact form over the near edge, popping in and fading out as it expires. What is under it stays as it was: a pinned Peek stays pinned. A Peek of the OSD itself grows from it, as any Peek does.

@@ -155,6 +155,10 @@ pub enum Lifetime {
 pub enum Scope {
     Global,
     FocusedOutput,
+
+    // one output, named by `Activity::output`; without a name it shows nowhere, and it is a
+    // Satellite there, never that island's primary
+    Output,
 }
 
 // whether and how an Activity pushes in front of what the island shows
@@ -385,12 +389,15 @@ pub enum Mode {
 
     // every radio off
     Airplane(bool),
+
+    // niri's touchpad toggle; not the hardware switch
+    Touchpad(bool),
 }
 
 impl Mode {
     pub fn on(self) -> bool {
         match self {
-            Mode::CapsLock(on) | Mode::NumLock(on) | Mode::Airplane(on) => on,
+            Mode::CapsLock(on) | Mode::NumLock(on) | Mode::Airplane(on) | Mode::Touchpad(on) => on,
         }
     }
 }
@@ -745,6 +752,10 @@ pub struct Activity {
     lifetime: Lifetime,
     scope: Scope,
     interrupt: Interrupt,
+
+    // set by `on_output`; Scope::Output with none shows nowhere. Boxed so a notice does not
+    // grow every Activity past the Satellite mark's size
+    output: Option<Box<str>>,
     actions: Vec<Action>,
     detail: Detail,
 }
@@ -775,9 +786,17 @@ impl Activity {
             lifetime,
             scope,
             interrupt,
+            output: None,
             actions: Vec::new(),
             detail: Detail::None,
         })
+    }
+
+    // this output only, as a Satellite; replaces whatever Scope `new` set
+    pub fn on_output(mut self, name: impl Into<String>) -> Activity {
+        self.scope = Scope::Output;
+        self.output = Some(name.into().into_boxed_str());
+        self
     }
 
     pub fn with_actions(mut self, actions: Vec<Action>) -> Activity {
@@ -823,6 +842,11 @@ impl Activity {
 
     pub fn scope(&self) -> Scope {
         self.scope
+    }
+
+    // the output a `Scope::Output` Activity shows on; none otherwise
+    pub fn output(&self) -> Option<&str> {
+        self.output.as_deref()
     }
 
     pub fn interrupt(&self) -> Interrupt {

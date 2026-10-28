@@ -146,6 +146,9 @@ pub const ALL: &[Module] = &[
             });
             service::watch::<Niri>(fullscreen::follow_shown);
 
+            // a screenshot niri saved, including one Kanade did not ask for
+            niri::on_screenshot(live::screenshot_captured);
+
             // the keyboards, for the OSD's keys and lights; typing and key repeat are the runtime's
             if on("osd") {
                 let reads = osd_reads();
@@ -160,7 +163,7 @@ pub const ALL: &[Module] = &[
     // a switch the island's niri stream tells of
     Module {
         name: "workspace",
-        about: "A workspace switch, shown on the Island",
+        about: "A workspace switch, and an urgent workspace, shown on the Island",
         requires: &[CORE],
         optional: &[],
         warns: None,
@@ -536,6 +539,7 @@ pub const ALL: &[Module] = &[
 
             // a keyboard layout switch shows whatever else is on, heard from niri
             niri::on_layout(osd::layout);
+            niri::on_touchpad(osd::touchpad);
 
             // reads the volume fresh for `kanade osd volume`
             if reads.audio {

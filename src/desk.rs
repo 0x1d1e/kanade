@@ -210,9 +210,9 @@ fn agenda_line(config: &config::Config) -> Option<String> {
     let now = clock::unix_seconds();
     let _ = clock::now(config.clock);
     let events = calendar::upcoming(clock::today());
-    let next = events.iter().find(|event| {
-        !event.all_day && event.span.1.max(event.span.0 + 1) > now
-    })?;
+    let next = events
+        .iter()
+        .find(|event| !event.all_day && event.span.1.max(event.span.0 + 1) > now)?;
     let at = clock::time(next.start.time(), config.clock);
 
     if !config.desk_agenda_titles {

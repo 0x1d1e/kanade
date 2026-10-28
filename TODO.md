@@ -345,7 +345,7 @@ Sources are checkouts under `/home/k/Projects/acknowledgements/`. Costs are roug
 
 Quick, high fit:
 
-- [ ] niri IPC events not yet used, each an Activity: `ScreenshotCaptured` (capture Banner with thumbnail and path), `TouchpadToggled` (OSD), `WorkspaceUrgencyChanged` (urgency Satellite), `Request::OverviewState` (hide or morph the Island during the overview). Src: `niri/niri-ipc/src/lib.rs`. S.
+- [x] niri IPC events: `ScreenshotCaptured` (path on the island, no thumbnail), `TouchpadToggled` (OSD), `WorkspaceUrgencyChanged` (Satellite on that output). `Request::OverviewState` was already shipped as `OverviewOpenedOrClosed` (ADR 0038); not reimplemented. Src: `niri/niri-ipc/src/lib.rs`.
 - [ ] Press/release binds and modifier-only binds: hold to Peek, push-to-talk dictation, tap Super opens the Launcher. Src: `niri/docs/wiki/Configuration:-Key-Bindings.md`. S-M. Unverified whether already handled.
 - [ ] Agent permission prompts on the Island: Claude Code and Codex hooks drive a sticky Activity showing the command with Deny / Allow / Always, silent while that agent's window is focused. Src: `isle/crates/isle-daemon/src/agents`, `isle/docs/product-spec.md:362-400`. Check ADR 0058 first. M.
 - [ ] AI plan usage Activity: 5-hour and weekly limit rings, a warning near the limit. Src: `isle/crates/isle-daemon/src/usage.rs`. S-M.

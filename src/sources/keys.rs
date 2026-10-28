@@ -131,7 +131,7 @@ impl Lights {
         let light = match mode {
             Mode::CapsLock(_) => &mut self.caps,
             Mode::NumLock(_) => &mut self.num,
-            Mode::Airplane(_) => return false,
+            Mode::Airplane(_) | Mode::Touchpad(_) => return false,
         };
 
         light.replace(mode.on()) != Some(mode.on())

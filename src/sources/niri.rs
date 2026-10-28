@@ -3,7 +3,8 @@
 //! many times it opened, the focused workspace, whether anything casts and the window each output
 //! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. Each window
 //! niri opens, closes or focuses and each keyboard layout switch are events, not state, so a
-//! Module takes those by `on_windows` and `on_layout`, and a failed load of niri's config by
+//! Module takes those by `on_windows` and `on_layout`, a screenshot niri saved by `on_screenshot`,
+//! a touchpad toggle by `on_touchpad`, and a failed load of niri's config by
 //! `on_config_failed`. `ask` sends
 //! niri one request on a connection of its own.
 
@@ -58,6 +59,19 @@ pub struct Seen {
 
     // the windows tracked across workspaces for strip minimap
     pub windows: Vec<StripWindow>,
+
+    // urgent workspaces whose output is known; one with none is left out
+    pub urgent: Vec<UrgentWorkspace>,
+}
+
+// a workspace niri marked urgent, on a known output
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrgentWorkspace {
+    pub id: u64,
+    pub output: String,
+    pub index: u32,
+    pub count: u32,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -208,6 +222,8 @@ struct Listed {
 
     // the window it shows
     window: Option<u64>,
+
+    urgent: bool,
 }
 
 // niri's events only say what changed, so the rest is remembered here
@@ -274,6 +290,7 @@ impl Known {
                         name: text("name"),
                         active: workspace.get("is_active").and_then(Json::as_bool) == Some(true),
                         window: workspace.get("active_window_id").and_then(Json::as_u64),
+                        urgent: workspace.get("is_urgent").and_then(Json::as_bool) == Some(true),
                     },
                 );
 
@@ -395,6 +412,13 @@ impl Known {
                         }
                     }
                 }
+            }
+        } else if let Some(urgency) = event.get("WorkspaceUrgencyChanged") {
+            if let Some(id) = urgency.get("id").and_then(Json::as_u64)
+                && let Some(urgent) = urgency.get("urgent").and_then(Json::as_bool)
+                && let Some(listed) = self.workspaces.get_mut(&id)
+            {
+                listed.urgent = urgent;
             }
         } else if let Some(urgency) = event.get("WindowUrgencyChanged") {
             if let Some(id) = urgency.get("id").and_then(Json::as_u64)
@@ -537,7 +561,36 @@ impl Known {
             workspaces,
             focused_window,
             windows,
+            urgent: self.urgent(),
         }
+    }
+
+    // urgent workspaces with a known output, by id, so a list that only reorders posts nothing
+    fn urgent(&self) -> Vec<UrgentWorkspace> {
+        let mut rows: Vec<_> = self
+            .workspaces
+            .iter()
+            .filter(|(_, listed)| listed.urgent)
+            .filter_map(|(&id, listed)| {
+                Some((
+                    id,
+                    listed.output.clone()?,
+                    listed.index,
+                    listed.name.clone(),
+                ))
+            })
+            .collect();
+
+        rows.sort_by_key(|row| row.0);
+        rows.into_iter()
+            .map(|(id, output, index, name)| UrgentWorkspace {
+                count: self.on(&Some(output.clone())),
+                id,
+                output,
+                index,
+                name,
+            })
+            .collect()
     }
 
     // how many workspaces `output` has
@@ -898,6 +951,9 @@ impl Layouts {
 // what a Module asked to hear, in the order asked; kept as `fn`s so a Module takes it in its start
 static WINDOWS: Mutex<Vec<fn(Heard)>> = Mutex::new(Vec::new());
 static LAYOUTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
+type Shot = fn(Option<String>);
+static SCREENSHOTS: Mutex<Vec<Shot>> = Mutex::new(Vec::new());
+static TOUCHPADS: Mutex<Vec<fn(bool)>> = Mutex::new(Vec::new());
 static CONFIGS: Mutex<Vec<fn()>> = Mutex::new(Vec::new());
 static KEYBOARDS: Mutex<Vec<InUse>> = Mutex::new(Vec::new());
 
@@ -933,6 +989,29 @@ pub fn on_layout(then: fn(String)) {
     );
 
     LAYOUTS.locked().push(then);
+}
+
+/*
+ * `then` hears a screenshot niri saved, the path or none when it only copied, on the niri thread,
+ * so it must not block. The path is not logged
+ */
+pub fn on_screenshot(then: fn(Option<String>)) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    SCREENSHOTS.locked().push(then);
+}
+
+// `then` hears niri's touchpad toggle, on or off, on the niri thread, so it must not block
+pub fn on_touchpad(then: fn(bool)) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    TOUCHPADS.locked().push(then);
 }
 
 /*
@@ -1273,6 +1352,22 @@ fn watch(
             }
         }
 
+        if let Some(path) = shot(&event) {
+            let hearing = SCREENSHOTS.locked().clone();
+
+            for then in hearing {
+                then(path.clone());
+            }
+        }
+
+        if let Some(on) = touchpad(&event) {
+            let hearing = TOUCHPADS.locked().clone();
+
+            for then in hearing {
+                then(on);
+            }
+        }
+
         if let Some(loaded) = event.get("ConfigLoaded") {
             let is_failed = loaded.get("failed").and_then(Json::as_bool) == Some(true);
 
@@ -1294,6 +1389,25 @@ fn watch(
     }
 
     io::ErrorKind::UnexpectedEof.into()
+}
+
+// the path niri saved, or none when it only copied; none for another event. Never logged
+fn shot(event: &Json) -> Option<Option<String>> {
+    let captured = event.get("ScreenshotCaptured")?;
+
+    Some(
+        captured
+            .get("path")
+            .and_then(Json::as_str)
+            .map(str::to_owned),
+    )
+}
+
+fn touchpad(event: &Json) -> Option<bool> {
+    event
+        .get("TouchpadToggled")?
+        .get("on")
+        .and_then(Json::as_bool)
 }
 
 #[cfg(test)]
@@ -1354,6 +1468,45 @@ mod tests {
         assert!(!last.overview);
         assert_eq!(last.overviews, 1);
         assert_eq!(last.workspace.as_ref().map(|focused| focused.id), Some(2));
+    }
+
+    #[test]
+    fn urgency_names_the_output_and_drops_one_without() {
+        let read = posts;
+        let (posts, _) = read(&[
+            OK,
+            WORKSPACES,
+            r#"{"WorkspaceUrgencyChanged":{"id":2,"urgent":true}}"#,
+            r#"{"WorkspaceUrgencyChanged":{"id":9,"urgent":true}}"#,
+            r#"{"WorkspaceUrgencyChanged":{"id":2,"urgent":false}}"#,
+        ]);
+        let marked = &posts[1];
+
+        assert_eq!(marked.urgent.len(), 1);
+        assert_eq!(marked.urgent[0].id, 2);
+        assert_eq!(marked.urgent[0].output, "eDP-1");
+        assert!(posts.last().unwrap().urgent.is_empty());
+
+        let (unknown, _) = read(&[
+            OK,
+            r#"{"WorkspacesChanged":{"workspaces":[{"id":4,"idx":1,"name":null,"output":null,"is_urgent":true,"is_active":true,"is_focused":false}]}}"#,
+        ]);
+
+        assert!(unknown.last().unwrap().urgent.is_empty());
+    }
+
+    #[test]
+    fn a_screenshot_event_is_a_path_or_copied() {
+        let saved = json::parse(r#"{"ScreenshotCaptured":{"path":"/tmp/a.png"}}"#).unwrap();
+        let copied = json::parse(r#"{"ScreenshotCaptured":{"path":null}}"#).unwrap();
+
+        assert_eq!(shot(&saved).unwrap().as_deref(), Some("/tmp/a.png"));
+        assert_eq!(shot(&copied).unwrap(), None);
+        assert!(shot(&json::parse(OK).unwrap()).is_none());
+        assert_eq!(
+            touchpad(&json::parse(r#"{"TouchpadToggled":{"on":false}}"#).unwrap()),
+            Some(false)
+        );
     }
 
     #[test]

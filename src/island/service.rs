@@ -472,21 +472,23 @@ impl IslandService {
 
     // what the Arbiter shows on this island at `now`
     pub fn frame(&self, monitor: &str, now: Instant) -> Frame {
-        self.arbiter.frame(
+        self.arbiter.frame_on(
             now,
             arbiter::Island {
                 focused: self.focused(monitor),
             },
+            monitor,
         )
     }
 
     // what a raised island keeps showing under the OSD (`Arbiter::beneath`)
     fn beneath(&self, monitor: &str, now: Instant) -> Frame {
-        self.arbiter.beneath(
+        self.arbiter.beneath_on(
             now,
             arbiter::Island {
                 focused: self.focused(monitor),
             },
+            monitor,
         )
     }
 
