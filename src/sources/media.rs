@@ -21,7 +21,7 @@ use crate::bus::{Argument, Bus, Signal, Value};
 use kanade_runtime::service::Service;
 use kanade_runtime::{Color, MutexExt};
 
-use super::playback::{self, Deck, Playback, Timeline, Tint};
+use super::playback::{self, Deck, Keys, Playback, Remote, Timeline, Tint};
 use crate::config;
 use crate::island::activity::{
     Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Track,
@@ -767,7 +767,10 @@ fn follow_players(
     loop {
         let now = Instant::now();
 
-        follower.advance(players.choose(), now, |changes| post(changes, now));
+        let chosen = players.choose();
+
+        publish(players, chosen.as_ref());
+        follower.advance(chosen, now, |changes| post(changes, now));
         watcher.show(players, watching(), now);
 
         let deadline = [follower.deadline(), watcher.tick]
@@ -836,10 +839,29 @@ fn follow_players(
             }
             Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("kanade: session bus unreachable, no Media Activity");
+                publish(players, None);
                 follower.advance(None, now, |changes| post(changes, now));
                 return;
             }
         }
+    }
+}
+
+// what the Desk's buttons may ask: of the player `request` would ask, written when it changes
+fn publish(players: &Players, chosen: Option<&Seen>) {
+    let keys = chosen.and_then(|seen| {
+        let player = players.open.get(&seen.key)?;
+
+        Some(Keys {
+            playing: player.status == Status::Playing,
+            can_play_pause: player.can_play || player.can_pause,
+            can_previous: player.can_previous,
+            can_next: player.can_next,
+        })
+    });
+
+    if Remote::read().keys != keys {
+        Remote::write().keys = keys;
     }
 }
 

@@ -39,6 +39,34 @@ impl Service for Playback {
     fn listen() {}
 }
 
+/*
+ * what `kanade media` can ask of the player it would ask now, for the Desk's buttons (ADR 0137).
+ * Unlike `Playback` it is written at all times, by `media::follow`, and only when it changes; none
+ * while no player is open or the Module is off
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Remote {
+    pub keys: Option<Keys>,
+}
+
+impl Service for Remote {
+    fn new() -> Self {
+        Remote::default()
+    }
+
+    fn listen() {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keys {
+    pub playing: bool,
+
+    // play-pause: the player can play or pause
+    pub can_play_pause: bool,
+    pub can_previous: bool,
+    pub can_next: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     // the bus name, which commands go to

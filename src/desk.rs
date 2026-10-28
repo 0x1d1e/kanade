@@ -1,17 +1,25 @@
 //! The Desk (ADR 0137): read-only faces of Services drawn as plain text on the desktop, in a
 //! window of its own on each output, under every other window. The Desk is the shell's whatever
-//! core is chosen, so it lives outside `island/`. This slice has the clock; the window takes no
-//! pointer, so every click goes to what lies below.
+//! core is chosen, so it lives outside `island/`. It has the clock, which takes no pointer, and the
+//! media buttons, the only part of the window that does: its input region is those three buttons
+//! and every other click goes to what lies below. Title and artist are not drawn.
 
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Column, End, Horizontal, Keyboard, Layer, LayerWindow, Margin, Monitor, Size, Start, Text,
-    Vertical, Widget, Zone,
+    Button, Center, Column, Cursor, End, Horizontal, InputArea, Keyboard, Layer, LayerWindow,
+    Margin, Monitor, Rectangle, Row, Size, Start, Text, Vertical, Widget, Zone, children,
 };
 
 use crate::config::{self, Corner};
+use crate::icon::Icon;
+use crate::island::geometry::Rect;
+use crate::later::Later;
+use crate::sources::media::{self, Transport};
 use crate::sources::niri::Niri;
-use crate::{clock, theme};
+use crate::sources::playback::{Keys, Remote};
+use crate::theme::DISABLED;
+use crate::{clock, theme, view};
 
 // whether niri's overview is open; the Desk is hidden while it is
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -42,7 +50,16 @@ pub fn follow_overview() {
 const MARGIN: i32 = 48;
 
 const WIDTH: f32 = 420.0;
-const HEIGHT: f32 = 150.0;
+
+// the clock's room, and the media buttons' row under it
+const CLOCK_HEIGHT: f32 = 150.0;
+const ROW: f32 = 56.0;
+
+// a button, its glyph, and the room between two
+const BUTTON: f32 = 44.0;
+const GLYPH: f32 = 22.0;
+const GAP: f32 = 16.0;
+const BUTTONS: f32 = 3.0 * BUTTON + 2.0 * GAP;
 
 const TIME: f32 = 72.0;
 const DATE: f32 = 20.0;
@@ -52,9 +69,14 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let config = config::on(&monitor.name);
     let corner = config.desk_clock_corner;
 
+    // the clock's room and the buttons' row stay whether or not a player is open, so a player
+    // opening or closing moves nothing
+    let height = if config.desk_clock { CLOCK_HEIGHT } else { 0.0 }
+        + if config.desk_media { ROW } else { 0.0 };
+
     let window = LayerWindow::new()
         .width(WIDTH)
-        .height(HEIGHT)
+        .height(height.max(1.0))
         .anchor_vertical(if corner.top() {
             Vertical::Top
         } else {
@@ -77,8 +99,8 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .namespace("kanade-desk")
         .click_through();
 
-    // off, it reads no Service: no clock, so no frame each minute
-    if !config.desk_clock {
+    // every face off, it reads no Service: no clock, so no frame each minute
+    if !config.desk_clock && !config.desk_media {
         return window.visible(false);
     }
 
@@ -88,7 +110,128 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         return window.visible(false);
     }
 
-    window.child(clock_face(corner, &config))
+    // none while no player is open, or the media Module is off
+    let keys = if config.desk_media {
+        Remote::read().keys
+    } else {
+        None
+    };
+
+    // the clock alone, or the buttons while a player is open; nothing else to show
+    if !config.desk_clock && keys.is_none() {
+        return window.visible(false);
+    }
+
+    let mut faces: Vec<Box<dyn Widget>> = Vec::new();
+
+    if config.desk_clock {
+        faces.push(Box::new(clock_face(corner, &config)));
+    }
+
+    let mut window = window;
+
+    if config.desk_media {
+        match keys {
+            Some(keys) => {
+                faces.push(Box::new(media_row(keys)));
+                window = window.input_region(media_areas(corner, height, keys));
+            }
+
+            // the row's room, so the clock does not move when a player opens
+            None => faces.push(Box::new(Rectangle::new().width(1.0).height(ROW))),
+        }
+    }
+
+    let column = Column::new(faces).width(Size::Parent).height(Size::Parent);
+
+    window.child(if corner.left() {
+        column.align(Start)
+    } else {
+        column.align(End)
+    })
+}
+
+// previous, play or pause, next; each faded and dead when the player cannot
+fn media_row(keys: Keys) -> Row {
+    let glyph = if keys.playing {
+        Icon::Pause
+    } else {
+        Icon::Play
+    };
+
+    Row::new(children![
+        button(
+            Icon::Previous,
+            "media/previous",
+            Transport::Previous,
+            keys.can_previous
+        ),
+        button(
+            glyph,
+            "media/play-pause",
+            Transport::PlayPause,
+            keys.can_play_pause
+        ),
+        button(Icon::Next, "media/next", Transport::Next, keys.can_next),
+    ])
+    .width(BUTTONS)
+    .height(ROW)
+    .gap(GAP)
+    .align(Center)
+}
+
+fn button(icon: Icon, name: &'static str, transport: Transport, able: bool) -> Rectangle {
+    let ink = if able {
+        theme::ON_SCENE
+    } else {
+        theme::faded(theme::ON_SCENE, DISABLED)
+    };
+
+    let button = Rectangle::new()
+        .width(BUTTON)
+        .height(BUTTON)
+        .radius(BUTTON / 2.0)
+        .fill(if able {
+            theme::SCENE_PLATE
+        } else {
+            theme::faded(theme::SCENE_PLATE, DISABLED)
+        })
+        .align_child(Center, Center)
+        .semantics(move || Semantics::new(Role::Button, name).disabled(!able))
+        .child(icon.on(GLYPH, ink));
+
+    if !able {
+        return button;
+    }
+
+    // the press is a Kanade verb on the media follower, never a bus call or a write here, and
+    // nobody waits on its answer
+    button.cursor(Cursor::Pointer).on_click(move |pressed| {
+        if pressed == Button::Left {
+            media::request(transport, Later::detached());
+        }
+    })
+}
+
+// where the pointer is taken: the buttons that can act, in the window's own space. Those that cannot
+// are left to what lies below
+fn media_areas(corner: Corner, height: f32, keys: Keys) -> Vec<InputArea> {
+    let x = if corner.left() { 0.0 } else { WIDTH - BUTTONS };
+    let y = height - ROW + (ROW - BUTTON) / 2.0;
+
+    [keys.can_previous, keys.can_play_pause, keys.can_next]
+        .into_iter()
+        .enumerate()
+        .filter(|(_, able)| *able)
+        .map(|(at, _)| {
+            view::input_area(Rect {
+                x: x + at as f32 * (BUTTON + GAP),
+                y,
+                width: BUTTON,
+                height: BUTTON,
+            })
+        })
+        .collect()
 }
 
 fn clock_face(corner: Corner, config: &config::Config) -> impl Widget + use<> {
@@ -106,7 +249,7 @@ fn clock_face(corner: Corner, config: &config::Config) -> impl Widget + use<> {
 
     let column = Column::new(vec![Box::new(time), Box::new(date)])
         .width(Size::Parent)
-        .height(Size::Parent)
+        .height(CLOCK_HEIGHT)
         .gap(2.0);
 
     if corner.left() {

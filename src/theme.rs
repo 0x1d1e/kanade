@@ -162,6 +162,9 @@ pub const TERMINAL_HUES: [(&str, &str); 6] = [
 // a glyph or a rim over the scene
 pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
 
+// the plate under a Desk button's glyph: it must be seen on any wallpaper
+pub const SCENE_PLATE: Color = Color::rgba(0, 0, 0, 96);
+
 /*
  * the pane's shadows: an ambient one lifting it off what is under it, and a contact one along its
  * edge (alpha 72 and 44). Faint, so they reinforce its elevation over a bright desktop and all but vanish on a dark one

@@ -278,7 +278,11 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Desk",
-                rows: &[Row::Key("desk.clock"), Row::Key("desk.clock_corner")],
+                rows: &[
+                    Row::Key("desk.clock"),
+                    Row::Key("desk.clock_corner"),
+                    Row::Key("desk.media"),
+                ],
             },
         ],
     },

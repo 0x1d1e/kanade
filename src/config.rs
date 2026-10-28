@@ -245,8 +245,10 @@ pub struct Config {
     pub osd_layout: bool,
     // `desk.clock`: the Desk clock shows on the desktop (ADR 0137)
     pub desk_clock: bool,
-    // `desk.clock_corner`: where on each output the Desk clock stands
+    // `desk.clock_corner`: where on each output the Desk stands, the clock and the media buttons
     pub desk_clock_corner: Corner,
+    // `desk.media`: the player's previous, play-pause and next buttons on the Desk (ADR 0137)
+    pub desk_media: bool,
     // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
     pub live_stale: Duration,
     // `battery.*`: when a draining battery shows, and what a critical one does
@@ -626,6 +628,7 @@ impl Default for Config {
             osd_layout: true,
             desk_clock: false,
             desk_clock_corner: Corner::default(),
+            desk_media: false,
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
@@ -2260,7 +2263,7 @@ pub const DESK: &[Setting] = &[
     Setting {
         key: "desk.clock",
         label: "Desk clock",
-        help: "the time and date in large plain text on the desktop, under every window, one per output; click-through",
+        help: "the time and date in large plain text on the desktop, under every window, one per output; the clock itself takes no click",
         kind: Kind::Switch(Field {
             get: |config| config.desk_clock,
             set: |config, on| config.desk_clock = on,
@@ -2274,7 +2277,7 @@ pub const DESK: &[Setting] = &[
     Setting {
         key: "desk.clock_corner",
         label: "Desk clock corner",
-        help: "the corner of the output the Desk clock stands in",
+        help: "the corner of the output the Desk stands in, the clock and the media buttons",
         kind: Kind::Choice(
             Choices::named(Corner::NAMES),
             Field {
@@ -2283,7 +2286,21 @@ pub const DESK: &[Setting] = &[
             },
         ),
         tail: Tail {
-            hint: Some("Where the Desk clock stands"),
+            hint: Some("Where the Desk stands"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.media",
+        label: "Desk media buttons",
+        help: "previous, play or pause and next buttons for the player on the desktop, under every window, one set per output; only the buttons take the pointer, and no title or artist is shown; needs the media Module",
+        kind: Kind::Switch(Field {
+            get: |config| config.desk_media,
+            set: |config, on| config.desk_media = on,
+        }),
+        tail: Tail {
+            hint: Some("Show media buttons on the desktop"),
             per_output: true,
             ..Tail::DEFAULT
         },
@@ -4750,6 +4767,7 @@ mod tests {
                 "notifications.rules",
                 "desk.clock",
                 "desk.clock_corner",
+                "desk.media",
                 "controls.tiles",
                 "wallpaper.directory",
                 "wallpaper.per_monitor",
@@ -4831,7 +4849,8 @@ mod tests {
                 "rest.peek.weather",
                 "rest.peek.agenda",
                 "desk.clock",
-                "desk.clock_corner"
+                "desk.clock_corner",
+                "desk.media"
             ]
         );
 

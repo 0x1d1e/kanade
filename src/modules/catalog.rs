@@ -636,9 +636,9 @@ notifications dnd on until <HH:MM>
     // the Desk (ADR 0137): faces of Services on the desktop; reads none while its keys are off
     Module {
         name: "desk",
-        about: "Read-only faces of Services on the desktop, under every window",
+        about: "Faces of Services on the desktop, under every window",
         requires: &[CORE],
-        optional: &[],
+        optional: &["media"],
         warns: None,
         needs: &[Need {
             on: Provider::Niri,
