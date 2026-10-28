@@ -3,13 +3,40 @@
 //! core is chosen, so it lives outside `island/`. This slice has the clock; the window takes no
 //! pointer, so every click goes to what lies below.
 
+use kanade_runtime::service::Service;
 use kanade_runtime::{
     Column, End, Horizontal, Keyboard, Layer, LayerWindow, Margin, Monitor, Size, Start, Text,
     Vertical, Widget, Zone,
 };
 
 use crate::config::{self, Corner};
+use crate::sources::niri::Niri;
 use crate::{clock, theme};
+
+// whether niri's overview is open; the Desk is hidden while it is
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Overview(bool);
+
+impl Service for Overview {
+    fn new() -> Self {
+        Overview::default()
+    }
+
+    fn listen() {}
+}
+
+// a watcher of `Niri`: the Desk's windows redraw when the overview opens or closes, not at each of
+// niri's events; the same again changes nothing
+pub fn follow_overview() {
+    let open = Niri::read().seen.overview;
+    let mut overview = Overview::write();
+
+    if overview.0 == open {
+        overview.quiet();
+    } else {
+        overview.0 = open;
+    }
+}
 
 // from the output's edges to the text
 const MARGIN: i32 = 48;
@@ -52,6 +79,12 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     // off, it reads no Service: no clock, so no frame each minute
     if !config.desk_clock {
+        return window.visible(false);
+    }
+
+    // niri's overview is its own picture of the desktop: no Desk in it, and no clock to tick
+    // for a window nobody sees
+    if Overview::read().0 {
         return window.visible(false);
     }
 

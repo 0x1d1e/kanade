@@ -640,11 +640,18 @@ notifications dnd on until <HH:MM>
         requires: &[CORE],
         optional: &[],
         warns: None,
-        needs: &[],
+        needs: &[Need {
+            on: Provider::Niri,
+            without: "shown in niri's overview",
+        }],
         settings: config::DESK,
         hooks: Hooks::NONE,
         verbs: &[],
-        start: |app| app.window_per_monitor(desk::window),
+        start: |app| {
+            service::watch::<Niri>(desk::follow_overview);
+
+            app.window_per_monitor(desk::window)
+        },
     },
     // the three share one system bus watcher, which follows only the daemons of those that are on
     Module {

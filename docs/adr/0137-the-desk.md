@@ -17,7 +17,7 @@ The first design refused desktop widgets, to stay a shell around the Island and 
 - **Private content is off by default.** A face that shows what is private (a calendar event's title, a track's title and artist) has its own switch, off, apart from the face's own. The clock shows none.
 - **Idle cost.** With `desk` on and `desk.clock` off the window is `.visible(false)`: it attaches no buffer and reads no Service (CONTEXT.md: a Module that is off starts no thread, opens no window and reads no Service). With the clock on, the only frame is the clock's one a minute, armed by `clock::now` and nothing else (ADR 0004). With the Module off, nothing exists.
 - **No lock-screen presence.** The Desk is not drawn on the lock screen (`crates/lock`, ADR 0025): the lock holds the session, and its own surface covers the outputs. The Desk is a layer under windows; the session lock covers it.
-- **Not shown in niri's overview** beyond whatever niri does with a Bottom layer. Nothing is placed in the overview's backdrop for it.
+- **Hidden while niri's overview is open.** The window is `.visible(false)` then, built before any face, so a hidden Desk reads no clock and takes no tick. It follows the overview through a small `Overview` Service written from `Niri` only when the flag changes, so the Desk does not redraw at each of niri's events; it reads `Niri`, not `IslandService`, as it belongs to no core. The `desk` Module needs niri (`Provider::Niri`): without it the overview cannot be known and the Desk would be shown in it. Nothing is placed in the overview's backdrop.
 
 ## Why not another place
 

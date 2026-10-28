@@ -10,7 +10,7 @@ The single physical surface on one monitor. One per monitor.
 
 ## Desk widget
 A read-only face of an existing Service, drawn as plain text on the desktop in a window of its own on the `Bottom` layer, one per monitor, by the `desk` Module (ADR 0137). Not an Activity, Surface, Satellite or Pane: it has no Arbiter, Lifetime or Presentation, and writes no Service. It belongs to the shell whatever core is chosen. The first is the clock (`desk.clock`, off by default).
-- **Invariant:** a Desk widget with its switch off reads no Service and its window is hidden; the Module off opens no window. The clock's one frame a minute is its only idle cost.
+- **Invariant:** a Desk widget with its switch off reads no Service and its window is hidden; the Module off opens no window. The Desk is hidden while niri's overview is open. The clock's one frame a minute is its only idle cost.
 - **Invariant:** private content (a calendar title, a track name) is a face's own switch, off by default.
 - Interaction is a later slice: the pointer only inside an input region of its drawn controls, `Keyboard::None` always, every effect a Kanade verb. "Every target is a key away" covers Surfaces, not Desk widgets.
 - In code it is a *Desk* item (`src/desk.rs`); the runtime's `widgets/` are layout primitives.
