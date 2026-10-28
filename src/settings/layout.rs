@@ -87,7 +87,14 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Activities",
-        &["media", "timer", "live", "launcher-entry", "battery"],
+        &[
+            "media",
+            "timer",
+            "screen-time",
+            "live",
+            "launcher-entry",
+            "battery",
+        ],
     ),
     (
         "Notifications & privacy",
@@ -412,6 +419,20 @@ pub const PAGES: &[Page] = &[
                 Row::Key("timer.pomodoro.break"),
                 Row::Key("timer.pomodoro.long_break"),
                 Row::Key("timer.pomodoro.rounds"),
+            ],
+        }],
+    },
+    Page {
+        name: "screen-time",
+        title: "Screen time",
+        summary: "Today's focused time, off unless turned on",
+        group: "Experience",
+        icon: Icon::Stopwatch,
+        sections: &[Section {
+            title: "Today",
+            rows: &[
+                Row::Key("screen-time.limit"),
+                Row::Key("screen-time.titles"),
             ],
         }],
     },

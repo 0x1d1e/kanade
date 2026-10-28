@@ -257,6 +257,10 @@ pub struct Config {
     pub desk_agenda_titles: bool,
     // `desk.media_titles`: the track's title and artist on the Desk (ADR 0137)
     pub desk_media_titles: bool,
+    // `screen-time.limit`: focused minutes before one notice that day; 0 is off (ADR 0138)
+    pub screen_time_limit: Duration,
+    // `screen-time.titles`: keep the focused window's title in the private file; off (ADR 0138)
+    pub screen_time_titles: bool,
     // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
     pub live_stale: Duration,
     // `battery.*`: when a draining battery shows, and what a critical one does
@@ -569,7 +573,7 @@ impl Default for Config {
             clock: Hours::default(),
             // idle locking is hypridle's until this Module is turned on (ADR 0047); dictation sends
             // audio to Google, so it is the user's choice (ADR 0111)
-            off: vec!["dictation", "idle"],
+            off: vec!["dictation", "idle", "screen-time"],
             apps: BTreeMap::new(),
             gestures: BTreeMap::new(),
             pinned: Vec::new(),
@@ -641,6 +645,8 @@ impl Default for Config {
             desk_agenda: false,
             desk_agenda_titles: false,
             desk_media_titles: false,
+            screen_time_limit: Duration::ZERO,
+            screen_time_titles: false,
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
@@ -2086,7 +2092,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "modules",
         label: "Modules",
-        help: "every Module is on unless set to false here; idle and dictation are off unless set to true",
+        help: "every Module is on unless set to false here; idle, dictation and screen-time are off unless set to true",
         kind: Kind::Modules(Field {
             get: |config| config.off.clone(),
             set: |config, off| config.off = off,
@@ -2920,6 +2926,43 @@ pub const SETTINGS: &[Setting] = &[Setting {
         ..Tail::DEFAULT
     },
 }];
+
+pub const SCREEN_LIMIT: Range = Range {
+    least: 0,
+    most: 24 * 60,
+};
+
+pub const SCREEN_TIME: &[Setting] = &[
+    Setting {
+        key: "screen-time.limit",
+        label: "Daily limit",
+        help: "minutes of focused time before one notice that day, 0 for none",
+        kind: Kind::Minutes(
+            SCREEN_LIMIT,
+            Field {
+                get: |config| config.screen_time_limit,
+                set: |config, limit| config.screen_time_limit = limit,
+            },
+        ),
+        tail: Tail {
+            hint: Some("Minutes before one notice; 0 for none"),
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "screen-time.titles",
+        label: "Remember titles",
+        help: "keep the focused window's title in the private screen-time file, off so only the app id is kept",
+        kind: Kind::Switch(Field {
+            get: |config| config.screen_time_titles,
+            set: |config, on| config.screen_time_titles = on,
+        }),
+        tail: Tail {
+            hint: Some("Keep window titles in the private file"),
+            ..Tail::DEFAULT
+        },
+    },
+];
 
 pub const LIVE_STALE: Range = Range {
     least: 1,
@@ -4724,7 +4767,7 @@ mod tests {
                 osd: ms(1000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
                 clock: Hours::Twelve,
-                off: vec!["dictation", "idle", "media"],
+                off: vec!["dictation", "idle", "screen-time", "media"],
                 apps: BTreeMap::new(),
                 gestures: BTreeMap::new(),
                 pinned: Vec::new(),
@@ -4858,6 +4901,8 @@ mod tests {
                 "recording.quality",
                 "recording.encoder",
                 "recording.device",
+                "screen-time.limit",
+                "screen-time.titles",
                 "gestures",
                 "dictate.insert",
                 "dictate.never_in",
@@ -5050,7 +5095,10 @@ mod tests {
 
         let next = restarted(&running, read);
         assert_eq!(next.clock, Hours::Twelve);
-        assert_eq!(next.off, ["dictation", "idle", "media", "timer"]);
+        assert_eq!(
+            next.off,
+            ["dictation", "idle", "screen-time", "media", "timer"]
+        );
     }
 
     #[test]
@@ -5232,7 +5280,7 @@ HDMI-A-1 = "12h"
         assert_eq!(problems, vec![]);
         assert_eq!(config.island.hover, ms(90));
         assert_eq!(config.palette.as_deref(), Some("a \"b\" \\c\t"));
-        assert_eq!(config.off, ["dictation", "idle", "media"]);
+        assert_eq!(config.off, ["dictation", "idle", "screen-time", "media"]);
     }
 
     // a later file wins key by key; a table it leaves out keeps what is below
@@ -5249,7 +5297,10 @@ HDMI-A-1 = "12h"
         assert_eq!(config.island.hover, ms(100));
         assert_eq!(config.island.expand, ms(300));
         assert_eq!(config.palette.as_deref(), Some("/a.png"));
-        assert_eq!(config.off, ["dictation", "idle", "media", "battery"]);
+        assert_eq!(
+            config.off,
+            ["dictation", "idle", "screen-time", "media", "battery"]
+        );
     }
 
     // what a bad key would have set stays as the layers below left it
@@ -5283,7 +5334,7 @@ battery = false
         assert_eq!(config.osd, ms(1000));
         assert_eq!(config.palette, None);
         assert_eq!(config.clock, Hours::TwentyFour);
-        assert_eq!(config.off, ["dictation", "idle", "battery"]);
+        assert_eq!(config.off, ["dictation", "idle", "screen-time", "battery"]);
         assert_eq!(
             problems[1],
             said(&[

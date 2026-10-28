@@ -26,8 +26,9 @@ use crate::sources::{
     clipboard, devices, dictation, focus, fullscreen, google, keys, launch, launcher_entry, live,
     lyrics, media, network, night_light,
     niri::{self, Niri},
-    notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
-    sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
+    notifications, osd, pipewire, power, privacy, radios, recording, reminders, screen_time, seat,
+    session, sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows,
+    workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, desk, dock, gesture, hooks, idle,
@@ -1413,6 +1414,35 @@ notifications dnd on until <HH:MM>
         ],
         start: |app| {
             surfaces::strip::start();
+            app
+        },
+    },
+    // today's focused time per app, from focus events the shell already receives (ADR 0138).
+    // Off, it starts nothing and the Surface does not open
+    Module {
+        name: "screen-time",
+        about: "Today's focused time per app, off unless turned on",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::SCREEN_TIME,
+        hooks: Hooks {
+            status: None,
+            reload: Some(screen_time::reload),
+        },
+        verbs: &[Verb {
+            name: "screen-time",
+            about: "Open today's focused time",
+            usage: || String::from("screen-time open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::ScreenTime, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            screen_time::start();
             app
         },
     },

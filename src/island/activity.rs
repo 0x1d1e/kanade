@@ -35,10 +35,13 @@ pub enum Kind {
 
     // speech being turned into text (ADR 0111)
     Dictation,
+
+    // today's focused time crossed its limit (ADR 0138)
+    ScreenTime,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 17] = [
+    pub const ALL: [Kind; 18] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -56,6 +59,7 @@ impl Kind {
         Kind::NightLight,
         Kind::Reminder,
         Kind::Dictation,
+        Kind::ScreenTime,
     ];
 
     // as IPC names it
@@ -78,6 +82,7 @@ impl Kind {
             Kind::NightLight => "night-light",
             Kind::Reminder => "reminder",
             Kind::Dictation => "dictation",
+            Kind::ScreenTime => "screen-time",
         }
     }
 
@@ -274,6 +279,7 @@ pub enum Detail {
     NightLight(String),
     Reminder(Reminder),
     Dictation(Dictation),
+    ScreenTime(String),
 
     // a device that connected, went or took over, whatever Kind posts it
     Hardware(Hardware),
@@ -299,6 +305,7 @@ impl Detail {
             Detail::NightLight(_) => Some(Kind::NightLight),
             Detail::Reminder(_) => Some(Kind::Reminder),
             Detail::Dictation(_) => Some(Kind::Dictation),
+            Detail::ScreenTime(_) => Some(Kind::ScreenTime),
             Detail::Hardware(_) => None,
         }
     }

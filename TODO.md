@@ -366,7 +366,7 @@ Medium:
 - [ ] In-process PipeWire spectrum replacing cava, plus notification and OSD sounds. Src: `noctalia/src/pipewire`. Notification sounds exist (ADR 0118); unverified overlap. M.
 - [ ] Built-in screenshot, region picker and annotation editor on the runtime pipeline. Src: `noctalia/src/capture`, `iNiR/modules/regionSelector`. Capture Surface and the region overlay exist; unverified overlap. H.
 - [ ] Window/Layers toolbox in `kanade doctor`. Src: `niri-settings` toolbox; `Request::Layers`, `PickWindow`. S-M.
-- [ ] Digital wellbeing / screen time Surface. Src: `DankMaterialShell` `WellbeingService.qml`, `iNiR/services/ScreenTime.qml`. M.
+- [x] Digital wellbeing / screen time Surface. Src: `DankMaterialShell` `WellbeingService.qml`, `iNiR/services/ScreenTime.qml`. M. Done: ADR 0138, the `screen-time` Module, off unless turned on.
 - [ ] Files tray with drag-out on the Island. Src: `isle/crates/isle-shelf`. M-L.
 - [ ] Bar-to-Dock "drop" morph; reuse for Island-to-Dock or a core switch. Src: `k4/README` ("Dual mode"). M.
 

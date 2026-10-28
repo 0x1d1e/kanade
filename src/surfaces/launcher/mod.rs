@@ -890,6 +890,7 @@ fn destinations() -> Destinations {
         window: modules::on("window-surface"),
         strip: modules::on("strip-surface"),
         emoji: modules::on("emoji-surface"),
+        screen_time: modules::on("screen-time"),
         settings: modules::on("settings"),
     }
 }
@@ -1103,7 +1104,7 @@ struct Inputs {
 
     // which destinations exist, as the flags they are: `Destinations` is not compared, its file
     // not this one's
-    destinations: [bool; 17],
+    destinations: [bool; 18],
 
     // what the ranking read off the services, so a change to any of them ranks again
     radios: Radios,
@@ -1169,6 +1170,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
             destinations.window,
             destinations.strip,
             destinations.emoji,
+            destinations.screen_time,
             destinations.settings,
         ],
         radios: *radios,
@@ -1227,7 +1229,7 @@ fn rank(apps: &[App], query: &str, recording: Rec, read: bool, key: &Inputs) -> 
 }
 
 // the destinations the flags in a ranking's inputs name
-fn destination(flags: [bool; 17]) -> Destinations {
+fn destination(flags: [bool; 18]) -> Destinations {
     let [
         wifi,
         bluetooth,
@@ -1238,7 +1240,7 @@ fn destination(flags: [bool; 17]) -> Destinations {
         session,
         timer,
         capture,
-    ] = flags[..9].try_into().expect("nine of seventeen");
+    ] = flags[..9].try_into().expect("nine of eighteen");
 
     Destinations {
         wifi,
@@ -1257,7 +1259,8 @@ fn destination(flags: [bool; 17]) -> Destinations {
         window: flags[13],
         strip: flags[14],
         emoji: flags[15],
-        settings: flags[16],
+        screen_time: flags[16],
+        settings: flags[17],
     }
 }
 
@@ -2422,6 +2425,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
         }
         Destination::Emoji => {
             IslandService::write().open(monitor, Surface::Emoji, Instant::now());
+            Ok(())
+        }
+        Destination::ScreenTime => {
+            IslandService::write().open(monitor, Surface::ScreenTime, Instant::now());
             Ok(())
         }
         Destination::Settings(page) => {

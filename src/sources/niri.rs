@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use kanade_runtime::{MutexExt, service::Service};
 
 use super::json::{self, Json};
+use crate::config;
 use crate::island::activity::Workspace;
 use crate::supervise;
 
@@ -969,6 +970,109 @@ static CONFIG_LOADS: AtomicU64 = AtomicU64::new(0);
 
 // `then` hears every window event, on the niri thread, so it must not block. Taken before `follow`
 // runs, or the windows niri lists first are missed
+/// A window as screen time attributes it. The title is absent unless that switch is on, and
+/// is never logged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppWindow {
+    pub id: u64,
+    pub app_id: Option<String>,
+    pub title: Option<String>,
+    pub focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppHeard {
+    All(Vec<AppWindow>),
+    Opened(AppWindow),
+    Closed(u64),
+    Focused(Option<u64>),
+    Lost,
+}
+
+static APPS_ON: AtomicBool = AtomicBool::new(false);
+static APPS: Mutex<Option<fn(AppHeard)>> = Mutex::new(None);
+
+// once, before the stream, and only while the screen-time Module is on
+pub fn on_apps(then: fn(AppHeard)) {
+    assert!(
+        !APPS_ON.swap(true, Ordering::Relaxed),
+        "the screen-time listener is registered once, before niri's stream"
+    );
+    *APPS.locked() = Some(then);
+}
+
+fn tell_apps(heard: AppHeard) {
+    if !APPS_ON.load(Ordering::Relaxed) {
+        return;
+    }
+
+    if let Some(then) = *APPS.locked() {
+        then(heard);
+    }
+}
+
+fn apps(event: &Json) {
+    if !APPS_ON.load(Ordering::Relaxed) {
+        return;
+    }
+
+    if let Some(heard) = app_heard(event, config::get().screen_time_titles) {
+        tell_apps(heard);
+    }
+}
+
+fn app_heard(event: &Json, titles: bool) -> Option<AppHeard> {
+    if let Some(changed) = event.get("WindowsChanged") {
+        let windows = changed.get("windows").and_then(json::array);
+
+        Some(AppHeard::All(
+            windows
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|window| app_window(window, titles))
+                .collect(),
+        ))
+    } else if let Some(opened) = event.get("WindowOpenedOrChanged") {
+        opened
+            .get("window")
+            .and_then(|window| app_window(window, titles))
+            .map(AppHeard::Opened)
+    } else if let Some(closed) = event.get("WindowClosed") {
+        closed
+            .get("id")
+            .and_then(Json::as_u64)
+            .map(AppHeard::Closed)
+    } else {
+        event
+            .get("WindowFocusChanged")
+            .map(|focus| AppHeard::Focused(focus.get("id").and_then(Json::as_u64)))
+    }
+}
+
+fn app_window(window: &Json, titles: bool) -> Option<AppWindow> {
+    let text = |key, most| {
+        window.get(key).and_then(Json::as_str).map(|text| {
+            text.chars()
+                .filter(|character| !character.is_control())
+                .take(most)
+                .collect::<String>()
+        })
+    };
+
+    Some(AppWindow {
+        id: window.get("id").and_then(Json::as_u64)?,
+        app_id: text("app_id", 128),
+        title: titles
+            .then(|| text("title", 80))
+            .flatten()
+            .filter(|title| !title.is_empty()),
+        focused: window
+            .get("is_focused")
+            .and_then(Json::as_bool)
+            .unwrap_or(false),
+    })
+}
+
 pub fn on_windows(then: fn(Heard)) {
     assert!(
         !FOLLOWING.load(Ordering::Relaxed),
@@ -1141,6 +1245,7 @@ fn run(
 
     // the windows niri had may be gone by the time it is back; it lists them again then
     hear(Heard::Lost);
+    tell_apps(AppHeard::Lost);
 }
 
 fn connect() -> io::Result<UnixStream> {
@@ -1338,6 +1443,9 @@ fn watch(
         if let Some(heard) = windowed(&event) {
             hear(heard);
         }
+
+        // no-op until screen time registers, so an off Module reads no titles
+        apps(&event);
 
         let before = layouts.in_use();
         if let Some(name) = layouts.switch(&event) {
@@ -2210,5 +2318,27 @@ mod tests {
         known.apply(&close_event);
         let seen = known.seen();
         assert!(seen.windows.iter().find(|w| w.id == 50).is_none());
+    }
+
+    #[test]
+    fn app_focus_carries_no_title_unless_asked() {
+        let changed = json::parse(
+            r#"{"WindowsChanged":{"windows":[{"id":1,"title":"secret title","app_id":"kitty","is_focused":true}]}}"#,
+        )
+        .unwrap();
+        let focus = json::parse(r#"{"WindowFocusChanged":{"id":2}}"#).unwrap();
+        let none = json::parse(r#"{"WindowFocusChanged":{"id":null}}"#).unwrap();
+
+        let heard = app_heard(&changed, false).unwrap();
+        assert!(!format!("{heard:?}").contains("secret"));
+        assert!(format!("{heard:?}").contains("kitty"));
+
+        let heard = app_heard(&changed, true).unwrap();
+        assert!(
+            matches!(heard, AppHeard::All(windows) if windows[0].title.as_deref() == Some("secret title"))
+        );
+        assert_eq!(app_heard(&focus, false), Some(AppHeard::Focused(Some(2))));
+        assert_eq!(app_heard(&none, false), Some(AppHeard::Focused(None)));
+        assert!(!APPS_ON.load(Ordering::Relaxed));
     }
 }

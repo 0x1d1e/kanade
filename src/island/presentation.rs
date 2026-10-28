@@ -56,6 +56,9 @@ pub enum Surface {
 
     // every emoji as a grid, with the ones used lately first
     Emoji,
+
+    // today's focused time per app (ADR 0138)
+    ScreenTime,
 }
 
 /*

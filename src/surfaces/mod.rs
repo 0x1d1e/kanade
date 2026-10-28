@@ -23,6 +23,7 @@ pub mod media;
 pub mod notifications;
 mod pad;
 mod ring;
+pub mod screen_time;
 mod search;
 pub mod session;
 pub(crate) mod slider;

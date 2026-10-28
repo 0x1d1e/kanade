@@ -113,6 +113,7 @@ pub(super) fn surface(
             island.held(monitor),
         )),
         Surface::Emoji => Some(surfaces::emoji::surface(monitor, island.visit())),
+        Surface::ScreenTime => Some(surfaces::screen_time::surface(monitor, island.visit())),
     }
 }
 
@@ -294,6 +295,7 @@ pub(super) fn small_form(
             self::session(presentation, leaving, actions, now)
         }
         (presentation, Some(Detail::NightLight(why))) => night_light(presentation, why),
+        (presentation, Some(Detail::ScreenTime(line))) => screen_time(presentation, line),
         (presentation, Some(Detail::Hardware(event))) => hardware(presentation, event),
         (presentation, Some(Detail::Reminder(shown))) => {
             let activity = content.activity.as_ref();
@@ -436,6 +438,21 @@ fn night_light(presentation: Presentation, why: &str) -> Option<Rectangle> {
         (Icon::Sunset, theme::island().on_surface),
         "Night light failed",
         why,
+        Pills {
+            actions: &[],
+            subject: "",
+            act: |_, _| {},
+        },
+    )
+}
+
+// the stopwatch, then that today's limit was reached; no app is named
+fn screen_time(presentation: Presentation, line: &str) -> Option<Rectangle> {
+    titled(
+        presentation,
+        (Icon::Stopwatch, theme::island().on_surface),
+        "Screen time",
+        line,
         Pills {
             actions: &[],
             subject: "",

@@ -50,6 +50,7 @@ pub mod radios;
 pub mod recents;
 pub mod recording;
 pub mod reminders;
+pub mod screen_time;
 pub mod seat;
 pub mod secrets;
 pub mod session;
