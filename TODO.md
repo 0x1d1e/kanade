@@ -336,3 +336,42 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - Premise no longer holds: `Sanitize.js` names the data file only (`dist/sddm/kanade/Sanitize.js:65`), and test `the_theme_names_the_data_path_the_rust_side_writes` holds every theme file to the Rust `DATA` path (`sddm.rs:2760`).
 - [x] Fixed: the overlay's `metadata.desktop` gets the `QtVersion` of the greeter found — `target_qt_version` reads the installed greeter (or `PATH`) and `set_qt_version` writes it on setup and on a theme's state, so a Qt 5 SDDM needs no hand edit (`sddm.rs:943`, `:976`, `:1155`; tests `setup_writes_the_qt_version_of_the_greeter_it_finds` and `target_qt_version_recovers_to_qt6_when_greeter_upgraded`).
 - [x] The conf-file sort is case-insensitive as sddm.conf(5) says; `to_ascii_lowercase` approximates Qt's `QDir::LocaleAware`. Mixed-case or non-ASCII drop-in names can only produce a benign false status warning when ordered differently than SDDM would — no code change warranted (`sddm.rs:188`, `:203-205`).
+
+## Ideas from the acknowledgements survey (2026-10, unscheduled)
+
+Sources are checkouts under `/home/k/Projects/acknowledgements/`. Costs are rough: S small, M medium, L large, H huge. The user allows these to violate an ADR or the design; where one is named, check it first. Existing coverage of an idea is not verified unless said.
+
+Quick, high fit:
+
+- [ ] niri IPC events not yet used, each an Activity: `ScreenshotCaptured` (capture Banner with thumbnail and path), `TouchpadToggled` (OSD), `WorkspaceUrgencyChanged` (urgency Satellite), `Request::OverviewState` (hide or morph the Island during the overview). Src: `niri/niri-ipc/src/lib.rs`. S.
+- [ ] Press/release binds and modifier-only binds: hold to Peek, push-to-talk dictation, tap Super opens the Launcher. Src: `niri/docs/wiki/Configuration:-Key-Bindings.md`. S-M. Unverified whether already handled.
+- [ ] Agent permission prompts on the Island: Claude Code and Codex hooks drive a sticky Activity showing the command with Deny / Allow / Always, silent while that agent's window is focused. Src: `isle/crates/isle-daemon/src/agents`, `isle/docs/product-spec.md:362-400`. Check ADR 0058 first. M.
+- [ ] AI plan usage Activity: 5-hour and weekly limit rings, a warning near the limit. Src: `isle/crates/isle-daemon/src/usage.rs`. S-M.
+- [ ] Hover polish: 3D perspective tilt and a one-shot light sweep; metaball merge for Satellites and Split. Src: `Vitreus/liquid.wgsl`, `Vitreus/cursortrail/goo.wgsl`, `liquid-glass-studio/src/shaders/fragment-main.glsl`, `caelestia/shell/plugin/src/Caelestia/Blobs`. S-M.
+- [ ] Cheap services, S each:
+  - Synced lyrics in the media Surface. Src: `DankMaterialShell/quickshell/Services/LyricsService.qml`, `iNiR/services/LyricsService.qml`. Lyrics may already exist (see the lyrics item above); unverified.
+  - Per-track accent colour. Src: `DankMaterialShell` `MediaAccentService.qml`, `TrackArtService.qml`.
+  - Meeting Join alert from the calendar. Src: `isle/crates/isle-daemon/src/meeting.rs`.
+  - Polkit agent as an auth Activity. Src: `iNiR` and `DankMaterialShell` `PolkitService.qml`.
+
+Medium:
+
+- [ ] Wallpaper owned by the shell: video or GIF wallpaper paused when occluded, iris transitions from the Island, shader transitions shared with the lock. Src: `k4/README` ("Wallpapers that move"), `SekaiPop/sekaipop/shaders`. M.
+- [ ] Settings pending/undo model: modified, added and removed states, revert closures, Discard / Save. Also niri's include-file strategy, writing only Kanade's own kdl files. Src: `hyprmod/hyprmod/core/{pending,ownership,undo,change_tracking}.py`, `niri-settings/README.md`. Check ADR 0119. M.
+- [ ] Launcher providers interface with frecency, and a dmenu stdin mode; Raycast-style script commands and Quicklinks. Src: `noctalia/src/launcher/*_provider.cpp`, `usage_tracker.cpp`, `dmenu_ipc.cpp`, `oma-cast`. Overlaps ADR 0127 frecency and the dmenu verb; unverified how much. M.
+- [ ] Glass frost modes (auto, smoke, milk), frost only where the backdrop is busy. Src: `pleamar/src/lens.rs`, `backdrop.wgsl`. M.
+- [ ] Render-thread per-property springs, so a logic stall never blocks morph frames and an interrupt turns without a jolt. Keep as a morph invariant. Src: `pleamar/src/render.rs`. M.
+- [ ] In-process PipeWire spectrum replacing cava, plus notification and OSD sounds. Src: `noctalia/src/pipewire`. Notification sounds exist (ADR 0118); unverified overlap. M.
+- [ ] Built-in screenshot, region picker and annotation editor on the runtime pipeline. Src: `noctalia/src/capture`, `iNiR/modules/regionSelector`. Capture Surface and the region overlay exist; unverified overlap. H.
+- [ ] Window/Layers toolbox in `kanade doctor`. Src: `niri-settings` toolbox; `Request::Layers`, `PickWindow`. S-M.
+- [ ] Digital wellbeing / screen time Surface. Src: `DankMaterialShell` `WellbeingService.qml`, `iNiR/services/ScreenTime.qml`. M.
+- [ ] Files tray with drag-out on the Island. Src: `isle/crates/isle-shelf`. M-L.
+- [ ] Bar-to-Dock "drop" morph; reuse for Island-to-Dock or a core switch. Src: `k4/README` ("Dual mode"). M.
+
+Big, low priority:
+
+- [ ] Plugin system: a Luau/script API described as data, with a commit-pinned registry, lockfile and permissions. Src: `noctalia/src/scripting`, `docs/plugin-api.json`, `plugin_lint`; `k4/plugins/registro.json`, `DankMaterialShell/core/internal/plugins`. H.
+- [ ] Daemon and thin UI split with a subscription router. A boundary idea only. Src: `DankMaterialShell/core/internal/server/router.go`. H.
+- [ ] Desktop widgets: live-edit grid, desktop clock, cards and notes, widget kinds. Src: `SekaiPop` services `EditGrid`, `Vitreus` `desktopclock`/`desktopcards`/`desktopnotes`, `lucid/README:433-500`. Overlaps the Desk (ADR 0137); unverified. L.
+- [ ] Baked, cached 3D scene as wallpaper or lock backdrop. Src: `DEsk/src/room.glsl`, `DEsk/docs/design.md` section 1. L.
+- [ ] Lower: hook runner hardening (`silere-shell/docs/scripting.md:125-161`); signed updates with rollback (`silere-shell/security/update-signers`); live reload keeps the last good state (`pleamar` README). Hooks and reload exist (`src/hooks.rs`); unverified overlap.
