@@ -130,8 +130,9 @@ fn gather(shell: Check, pid: Option<u32>) -> Vec<Check> {
         )),
         shell,
         unit(pid),
-        niri(),
     ];
+
+    checks.extend(niri());
 
     let blur = config.appearance.finish == Finish::Blur;
 
@@ -311,10 +312,15 @@ fn unit_check(shell: Option<u32>, state: &Unit) -> Check {
     }
 }
 
-fn niri() -> Check {
+fn niri() -> Vec<Check> {
     match niri_version() {
-        Ok(version) => niri_check(&version),
-        Err(problem) => Check::fail(format!("niri: {problem}")),
+        Ok(version) => {
+            let mut checks = vec![niri_check(&version)];
+            checks.extend(niri_windows());
+            checks.extend(niri_layers());
+            checks
+        }
+        Err(problem) => vec![Check::fail(format!("niri: {problem}"))],
     }
 }
 
@@ -350,6 +356,115 @@ fn niri_check(version: &str) -> Check {
         )),
         None => Check::warn(format!("niri {version}: cannot tell the release")),
     }
+}
+
+// how many windows or layers doctor lists before cutting the rest
+const NIRI_LIST: usize = 64;
+
+fn niri_windows() -> Vec<Check> {
+    match niri::ask("\"Windows\"") {
+        Ok(reply) => match windows_check(&reply) {
+            Some(check) => vec![check],
+            None => vec![Check::warn(String::from("niri windows: unexpected reply"))],
+        },
+        Err(problem) => vec![Check::warn(format!("niri windows: {problem}"))],
+    }
+}
+
+fn niri_layers() -> Vec<Check> {
+    match niri::ask("\"Layers\"") {
+        Ok(reply) => match layers_check(&reply) {
+            Some(check) => vec![check],
+            None => vec![Check::warn(String::from("niri layers: unexpected reply"))],
+        },
+        Err(problem) => vec![Check::warn(format!("niri layers: {problem}"))],
+    }
+}
+
+fn windows_check(reply: &Json) -> Option<Check> {
+    let windows = reply.get("Windows").and_then(Json::as_array)?;
+    Some(niri_list(
+        "niri windows",
+        windows.len(),
+        windows.iter().take(NIRI_LIST).filter_map(window_line),
+    ))
+}
+
+fn layers_check(reply: &Json) -> Option<Check> {
+    let layers = reply.get("Layers").and_then(Json::as_array)?;
+    Some(niri_list(
+        "niri layers",
+        layers.len(),
+        layers.iter().take(NIRI_LIST).filter_map(layer_line),
+    ))
+}
+
+fn niri_list(name: &str, total: usize, lines: impl IntoIterator<Item = String>) -> Check {
+    let mut detail: Vec<String> = lines.into_iter().collect();
+    let omitted = total.saturating_sub(NIRI_LIST);
+
+    if omitted > 0 {
+        detail.push(format!("{omitted} omitted"));
+        Check {
+            detail,
+            ..Check::warn(format!("{name}: {total}"))
+        }
+    } else {
+        Check {
+            detail,
+            ..Check::ok(format!("{name}: {total}"))
+        }
+    }
+}
+
+fn window_line(window: &Json) -> Option<String> {
+    let id = window.get("id").and_then(Json::as_u64)?;
+    let app_id = window
+        .get("app_id")
+        .and_then(Json::as_str)
+        .filter(|app_id| !app_id.is_empty())
+        .unwrap_or("?");
+    let focused = window
+        .get("is_focused")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+    let urgent = window
+        .get("is_urgent")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+    let workspace = window
+        .get("workspace_id")
+        .and_then(Json::as_u64)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| String::from("?"));
+
+    let mut line = format!("id {id} app_id {app_id}");
+    if focused {
+        line.push_str(" focused");
+    }
+    if urgent {
+        line.push_str(" urgent");
+    }
+    line.push_str(&format!(" workspace {workspace}"));
+    Some(line)
+}
+
+fn layer_line(layer: &Json) -> Option<String> {
+    let namespace = layer.get("namespace").and_then(Json::as_str)?;
+    let output = layer
+        .get("output")
+        .and_then(Json::as_str)
+        .filter(|output| !output.is_empty())
+        .unwrap_or("?");
+    let kind = layer.get("layer").and_then(Json::as_str).unwrap_or("?");
+    let keyboard = layer
+        .get("keyboard_interactivity")
+        .and_then(Json::as_str)
+        .unwrap_or("?");
+
+    Some(format!(
+        "{namespace} on {output} {kind} keyboard {keyboard}"
+    ))
 }
 
 // the buses Modules read, and the PipeWire and PulseAudio servers the audio and privacy ones do
@@ -1006,6 +1121,56 @@ fn holder(name: &str, holder: Option<String>, running: bool) -> Found {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_formats_niri_windows_and_layers() {
+        let windows = serde_json::json!({
+            "Windows": [
+                {
+                    "id": 5,
+                    "title": "secret\ntitle",
+                    "app_id": "kitty",
+                    "is_focused": true,
+                    "is_urgent": false,
+                    "workspace_id": 3
+                },
+                {
+                    "id": 9,
+                    "app_id": null,
+                    "is_focused": false,
+                    "is_urgent": true,
+                    "workspace_id": null
+                }
+            ]
+        });
+        let layers = serde_json::json!({
+            "Layers": [
+                {
+                    "namespace": "kanade",
+                    "output": "eDP-1",
+                    "layer": "Top",
+                    "keyboard_interactivity": "None"
+                }
+            ]
+        });
+
+        let windows = windows_check(&windows).unwrap();
+        assert_eq!(windows.verdict, Verdict::Ok);
+        assert_eq!(windows.text, "niri windows: 2");
+        assert_eq!(
+            windows.detail,
+            [
+                "id 5 app_id kitty focused workspace 3",
+                "id 9 app_id ? urgent workspace ?",
+            ]
+        );
+        assert!(!windows.detail.iter().any(|line| line.contains("secret")));
+
+        let layers = layers_check(&layers).unwrap();
+        assert_eq!(layers.verdict, Verdict::Ok);
+        assert_eq!(layers.text, "niri layers: 1");
+        assert_eq!(layers.detail, ["kanade on eDP-1 Top keyboard None"]);
+    }
 
     #[test]
     fn doctor_checks_sddm_greeter_qt_version_compatibility() {
