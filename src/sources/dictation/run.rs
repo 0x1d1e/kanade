@@ -158,6 +158,32 @@ pub fn request(request: Request, later: Later) {
 
             later.result(answer(&runtime, refused));
         }
+        // a hold starts only from idle, and the lock refuses it before any audio
+        Request::Down if runtime.machine.state().starts() && lock::holds() => {
+            later.refused("the session is locked");
+        }
+        Request::Down if runtime.machine.state().starts() => {
+            let refused = runtime.feed(Event::Down, &[]);
+
+            match runtime.gate.take() {
+                Some(ticket) => {
+                    if let Err(why) = ask(Job::Gate {
+                        ticket,
+                        later: later.clone(),
+                    }) {
+                        runtime.feed(Event::Cancel, &[]);
+                        later.refused(why);
+                    }
+                }
+                None => later.result(answer(&runtime, refused)),
+            }
+        }
+        Request::Down => later.done(""),
+        // stops only the recording this hold started; a toggle, or up alone, is left running
+        Request::Up => {
+            runtime.feed(Event::Up, &[]);
+            later.done("");
+        }
         // handled by the CLI itself, which never asks the shell
         Request::Key | Request::Consent | Request::Forget => {
             later.refused("this runs in your terminal, not in the shell");

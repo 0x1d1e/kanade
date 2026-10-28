@@ -18,6 +18,10 @@ pub enum Command {
 
     Collapse,
 
+    // `peek down` / `peek up`: a hold of the focused island's Peek, not a grab
+    PeekDown,
+    PeekUp,
+
     SetDnd(bool),
     ToggleDnd,
 

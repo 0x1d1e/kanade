@@ -22,6 +22,7 @@ use kanade_runtime::{
 use crate::cli::{self, Call, Reply};
 use crate::config;
 use crate::island::activity::Leave;
+use crate::island::command::Command;
 use crate::island::motion::Mode as Motion;
 use crate::lock;
 use crate::sources::live;
@@ -103,6 +104,9 @@ pub fn check(verb: &str) -> Result<Vec<String>, String> {
         }
         Call::Session(Leave::Ending(_)) => {
             Err(String::from("ends the session, which a gesture does not"))
+        }
+        Call::Island(Command::PeekDown | Command::PeekUp) => {
+            Err(String::from("a hold, which a gesture cannot keep"))
         }
         Call::Island(_)
         | Call::Timer(_)
@@ -776,6 +780,8 @@ mod tests {
             "ui press result#1",
             "session logout",
             "session poweroff",
+            "peek down",
+            "peek up",
             "no-such-verb",
         ] {
             assert!(check(verb).is_err(), "{verb}");

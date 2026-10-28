@@ -88,6 +88,10 @@ pub enum Event {
     // starts a dictation by asking for the gate, or stops the recording
     Toggle,
 
+    // push-to-talk. `Up` stops only a recording `Down` started
+    Down,
+    Up,
+
     // the gate's verdict for the ticket `Effect::Gate` named: a start needs `Ready`
     Gated {
         ticket: u64,
@@ -153,6 +157,9 @@ pub struct Machine {
 
     // recordings started since Kanade did, never reused, so a serial names one
     issued: u64,
+
+    // the recording under way was started by `down`, so only `up` stops it
+    hold: bool,
 }
 
 impl Machine {
@@ -160,6 +167,7 @@ impl Machine {
         Machine {
             state: State::Idle,
             issued: 0,
+            hold: false,
         }
     }
 
@@ -169,7 +177,8 @@ impl Machine {
 
     pub fn step(&mut self, event: Event) -> Vec<Effect> {
         match (event, &mut self.state) {
-            (Event::Toggle, state) if state.starts() => {
+            (event @ (Event::Toggle | Event::Down), state) if state.starts() => {
+                self.hold = matches!(event, Event::Down);
                 self.issued += 1;
                 self.state = State::Gating {
                     ticket: self.issued,
@@ -177,9 +186,21 @@ impl Machine {
 
                 vec![Effect::Gate(self.issued)]
             }
+            (Event::Up, State::Gating { .. }) if self.hold => self.idle(Vec::new()),
+            (Event::Up, State::Recording { serial, held }) if self.hold => {
+                self.hold = false;
+                self.state = State::Transcribing {
+                    serial: *serial,
+                    held: *held,
+                };
+
+                vec![Effect::Stop, Effect::Show]
+            }
+            (Event::Up, _) => Vec::new(),
             (Event::Gated { ticket, gate }, State::Gating { ticket: now }) if ticket == *now => {
                 match refusal(gate) {
                     Some((why, brief)) => {
+                        self.hold = false;
                         self.state = State::Idle;
                         vec![Effect::Refuse(why, brief)]
                     }
@@ -198,6 +219,7 @@ impl Machine {
                 "Starting",
             )],
             (Event::Toggle, State::Recording { serial, held }) => {
+                self.hold = false;
                 self.state = State::Transcribing {
                     serial: *serial,
                     held: *held,
@@ -308,6 +330,7 @@ impl Machine {
     }
 
     fn idle(&mut self, mut effects: Vec<Effect>) -> Vec<Effect> {
+        self.hold = false;
         self.state = State::Idle;
         effects.push(Effect::Show);
         effects
@@ -674,5 +697,58 @@ mod tests {
             *machine.state(),
             State::Failed(String::from("Rate limit reached; try again later"))
         );
+    }
+
+    fn hold() -> Machine {
+        let mut machine = Machine::new();
+
+        assert_eq!(machine.step(Event::Down), [Effect::Gate(1)]);
+        assert_eq!(
+            machine.step(Event::Gated {
+                ticket: 1,
+                gate: Gate::Ready,
+            }),
+            [Effect::Start(1), Effect::Show]
+        );
+        machine
+    }
+
+    #[test]
+    fn up_stops_only_the_recording_down_started() {
+        let mut machine = hold();
+
+        assert_eq!(machine.step(Event::Up), [Effect::Stop, Effect::Show]);
+        assert!(matches!(machine.state(), State::Transcribing { .. }));
+
+        let mut toggle = recording();
+
+        assert!(toggle.step(Event::Up).is_empty());
+        assert!(matches!(toggle.state(), State::Recording { .. }));
+        assert_eq!(toggle.step(Event::Toggle), [Effect::Stop, Effect::Show]);
+    }
+
+    #[test]
+    fn up_with_no_down_and_a_second_down_do_nothing() {
+        let mut machine = Machine::new();
+
+        assert!(machine.step(Event::Up).is_empty());
+        assert_eq!(*machine.state(), State::Idle);
+
+        machine.step(Event::Down);
+        assert!(machine.step(Event::Down).is_empty());
+        assert!(matches!(machine.state(), State::Gating { .. }));
+
+        // up before the recorder starts ends the hold, and a late verdict is ignored
+        assert_eq!(machine.step(Event::Up), [Effect::Show]);
+        assert_eq!(*machine.state(), State::Idle);
+        assert!(
+            machine
+                .step(Event::Gated {
+                    ticket: 1,
+                    gate: Gate::Ready,
+                })
+                .is_empty()
+        );
+        assert_eq!(*machine.state(), State::Idle);
     }
 }

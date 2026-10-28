@@ -954,6 +954,18 @@ impl IslandService {
 
             Command::Collapse => return collapse(),
 
+            // a hold of the Peek a hover would show; an open Surface or a pointer Peek is left as it is
+            Command::PeekDown | Command::PeekUp => {
+                let monitor = self.focused_output.as_deref().ok_or(NoFocus)?;
+                let down = matches!(command, Command::PeekDown);
+                let changes = match down {
+                    true => self.presentations.can_hold(monitor),
+                    false => self.presentations.holding(monitor),
+                };
+
+                return Ok(changes.then(|| Effect::Peek(monitor.to_owned(), down)));
+            }
+
             Command::Close(surface) | Command::Toggle(surface)
                 if focused.is_some_and(|(_, shown)| shown == surface) =>
             {
@@ -994,6 +1006,13 @@ impl IslandService {
         match effect {
             Effect::Open(monitor, surface) => self.open(&monitor, surface, now),
             Effect::Collapse(monitor) => self.input(&monitor, Input::Collapse, now),
+            Effect::Peek(monitor, down) => {
+                self.input(
+                    &monitor,
+                    if down { Input::Hold } else { Input::Release },
+                    now,
+                );
+            }
             Effect::Post(activity) => self.post(activity, now),
             Effect::Withdraw(id) => self.withdraw(&id, now),
             Effect::Dnd(dnd) => self.set_dnd(dnd, now),
@@ -1522,6 +1541,8 @@ fn response(from: Presentation, to: Presentation, timings: Timings) -> Duration 
 pub enum Effect {
     Open(String, Surface),
     Collapse(String),
+    // `peek down` (`true`) or `peek up` on this output
+    Peek(String, bool),
     Post(Activity),
     Withdraw(Id),
     Dnd(bool),

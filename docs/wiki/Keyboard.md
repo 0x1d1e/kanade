@@ -17,6 +17,8 @@ Mod+Alt+P hotkey-overlay-title="Island: Session" { spawn "kanade" "session" "men
 Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island" "collapse"; }
 ```
 
+`peek down` / `peek up` and `dictate down` / `up` are for niri's press and release binds. Kanade grabs no key. Tap Super opening the Launcher stays a niri bind to `kanade launcher toggle`.
+
 Screenshots and caffeine work the same way:
 
 ```kdl

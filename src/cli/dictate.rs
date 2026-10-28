@@ -21,7 +21,9 @@ pub fn run(request: Request) -> ExitCode {
         Request::Consent => consent(),
         Request::Forget => forget(),
         // the shell's
-        Request::Toggle | Request::Cancel | Request::Status => Err(String::from("not a setup")),
+        Request::Toggle | Request::Down | Request::Up | Request::Cancel | Request::Status => {
+            Err(String::from("not a setup"))
+        }
     };
 
     match done {

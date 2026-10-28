@@ -28,6 +28,9 @@ use gate::Key;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
     Toggle,
+    // push-to-talk: down starts, up stops only the recording that down started
+    Down,
+    Up,
     Cancel,
     Status,
     Key,
@@ -39,6 +42,8 @@ impl Request {
     pub fn parse(arguments: &[&str]) -> Option<Request> {
         match arguments {
             ["toggle"] => Some(Request::Toggle),
+            ["down"] => Some(Request::Down),
+            ["up"] => Some(Request::Up),
             ["cancel"] => Some(Request::Cancel),
             ["status"] => Some(Request::Status),
             ["key"] => Some(Request::Key),
@@ -125,5 +130,20 @@ fn kind(error: &ureq::Error) -> String {
         ureq::Error::Tls(_) | ureq::Error::Rustls(_) => String::from("TLS error"),
         ureq::Error::BodyExceedsLimit(_) => String::from("answer too large"),
         _ => String::from("other transport error"),
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::Request;
+
+    #[test]
+    fn down_and_up_parse_and_nothing_else_does() {
+        assert_eq!(Request::parse(&["down"]), Some(Request::Down));
+        assert_eq!(Request::parse(&["up"]), Some(Request::Up));
+        assert_eq!(Request::parse(&["toggle"]), Some(Request::Toggle));
+        assert!(Request::parse(&["down", "up"]).is_none());
+        assert!(Request::parse(&["press"]).is_none());
+        assert!(!Request::Down.local());
     }
 }

@@ -64,6 +64,16 @@ pub const ALL: &[Module] = &[
                 },
             },
             Verb {
+                name: "peek",
+                about: "Hold the focused island's Peek",
+                usage: || String::from("peek down|up"),
+                parse: |arguments| match arguments {
+                    ["down"] => Ok(Call::Island(Command::PeekDown)),
+                    ["up"] => Ok(Call::Island(Command::PeekUp)),
+                    _ => Err(Unparsed::Usage),
+                },
+            },
+            Verb {
                 name: "config",
                 about: "Reload, validate, print or change the config",
                 usage: || String::from("config reload|validate"),
@@ -1540,8 +1550,9 @@ notifications dnd on until <HH:MM>
             about: "Dictate: speech to text through the Gemini API",
             usage: || {
                 String::from(
-                    "dictate toggle|cancel|status|key|consent|forget
+                    "dictate toggle|down|up|cancel|status|key|consent|forget
   toggle: starts recording, or stops it and transcribes; needs a key and your consent; refused while the session is locked
+  down: starts only while idle, the same gates as toggle; up stops and transcribes only the recording that down started. up with no down does nothing, and up does not stop a toggle
   cancel: before the stop, drops the recording; after it the upload is under way and cannot be recalled, so this only discards what comes back
   status: how it stands, and whether the key and the consent are in place
   key: reads the Gemini API key from stdin (typed hidden at a terminal) into the Secret Service

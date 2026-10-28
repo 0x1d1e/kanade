@@ -241,6 +241,10 @@ pub enum Input {
 
     // a Critical Activity displaces an open Surface
     Preempt,
+
+    // `peek down` / `peek up`. Up returns only what down raised, never a pointer Peek
+    Hold,
+    Release,
 }
 
 impl Input {
@@ -283,6 +287,9 @@ struct Island {
      * any change to that ends it, so nothing pinned outlives the Peek or Surface it kept open
      */
     pinned: bool,
+
+    // `peek down` raised this, so `peek up` ends only that and a pointer leaving does not
+    held_peek: bool,
 }
 
 /*
@@ -290,7 +297,7 @@ struct Island {
  * opened on and the one it collapsed, as they were before the first of the AutoExpands pending
  */
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Prior(Vec<(String, Option<Raised>, bool)>);
+pub struct Prior(Vec<(String, Option<Raised>, bool, bool)>);
 
 impl Prior {
     // the islands either changed, each as `self` found it, the earlier
@@ -313,7 +320,7 @@ impl Prior {
     pub fn opens(&self, surface: Surface) -> bool {
         self.0
             .iter()
-            .any(|(_, raised, _)| *raised == Some(Raised::Expanded(surface)))
+            .any(|(_, raised, _, _)| *raised == Some(Raised::Expanded(surface)))
     }
 }
 
@@ -548,13 +555,31 @@ impl Presentations {
 
             (Input::Collapse | Input::Preempt, Presentation::Expanded(_)) => island.raise(None),
 
-            // the strip is Rest while the pointer is on it, so it waits for the pointer alone
-            (Input::Collapse | Input::Unhover, Presentation::Tray(_)) => island.raise(None),
+            // the strip is Rest while the pointer is on it, so it waits for the pointer alone.
+            // A hold's time Peek waits for `peek up`, not for the pointer
+            (Input::Collapse | Input::Unhover, Presentation::Tray(_)) if !island.held_peek => {
+                island.raise(None)
+            }
             (Input::Hover(_), Presentation::Rest) => island.raise(Some(Raised::Tray)),
 
-            // a pinned Peek waits for Escape or another right click, not for the pointer
+            // a pinned Peek waits for Escape or another right click, not for the pointer.
+            // A hold's Peek waits for `peek up`
             (Input::Collapse, Presentation::Peek) if island.pinned => island.raise(None),
-            (Input::Unhover, Presentation::Peek) if !island.pinned => island.raise(None),
+            (Input::Unhover, Presentation::Peek) if !island.pinned && !island.held_peek => {
+                island.raise(None)
+            }
+
+            // an open Surface, or a Peek the pointer already holds, falls through and is not taken
+            (Input::Hold, Presentation::Compact | Presentation::Split | Presentation::Rest) => {
+                if let Some(id) = island.primary.clone() {
+                    island.raise(Some(Raised::Peek(id)));
+                } else {
+                    island.raise(Some(Raised::Tray));
+                }
+
+                island.held_peek = true;
+            }
+            (Input::Release, _) if island.held_peek => island.raise(None),
 
             // only an island with a primary has a larger small form to peek into
             (Input::Hover(segment), Presentation::Compact | Presentation::Split) => {
@@ -574,6 +599,11 @@ impl Presentations {
             }
             (Input::RightClick(_), Presentation::Peek | Presentation::Expanded(_)) => {
                 island.pinned = !island.pinned;
+
+                // a pin owns it now, so `peek up` must not close it
+                if island.pinned {
+                    island.held_peek = false;
+                }
             }
 
             _ => {}
@@ -617,7 +647,14 @@ impl Presentations {
             .filter(|&(name, island)| {
                 name == monitor || matches!(island.raised, Some(Raised::Expanded(_)))
             })
-            .map(|(name, island)| (name.clone(), island.raised.clone(), island.pinned))
+            .map(|(name, island)| {
+                (
+                    name.clone(),
+                    island.raised.clone(),
+                    island.pinned,
+                    island.held_peek,
+                )
+            })
             .collect();
 
         self.expand(monitor, surface);
@@ -634,7 +671,7 @@ impl Presentations {
             return;
         }
 
-        for (monitor, raised, pinned) in prior.0 {
+        for (monitor, raised, pinned, held) in prior.0 {
             let island = self.island(&monitor);
             let raised = raised.filter(|raised| match raised {
                 Raised::Peek(id) => island.shows(id),
@@ -644,6 +681,7 @@ impl Presentations {
             let expanded = matches!(raised, Some(Raised::Expanded(_)));
 
             island.pinned = pinned && raised.is_some();
+            island.held_peek = held && matches!(raised, Some(Raised::Peek(_)));
             island.raised = raised;
 
             if expanded {
@@ -732,6 +770,27 @@ impl Island {
     fn raise(&mut self, raised: Option<Raised>) {
         self.raised = raised;
         self.pinned = false;
+        self.held_peek = false;
+    }
+}
+
+impl Presentations {
+    // `peek down` would raise something: nothing is already raised
+    pub fn can_hold(&self, monitor: &str) -> bool {
+        !self.overview
+            && self
+                .islands
+                .get(monitor)
+                .is_none_or(|island| island.raised.is_none())
+    }
+
+    // `peek down` raised what this island shows, so `peek up` has something to return
+    pub fn holding(&self, monitor: &str) -> bool {
+        !self.overview
+            && self
+                .islands
+                .get(monitor)
+                .is_some_and(|island| island.held_peek)
     }
 }
 
@@ -763,6 +822,48 @@ mod tests {
         }
 
         presentations.get(MONITOR)
+    }
+
+    // `peek down` shows what a hover would, and `peek up` returns only that
+    #[test]
+    fn a_hold_peeks_what_a_hover_would_and_up_returns_only_that() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_shown(MONITOR, Some(id(Kind::Media)), None);
+        presentations.input(MONITOR, Input::Hold);
+        assert_eq!(presentations.get(MONITOR), Peek);
+        assert!(presentations.holding(MONITOR));
+        presentations.input(MONITOR, Input::Release);
+        assert_eq!(presentations.get(MONITOR), Compact);
+        assert!(!presentations.holding(MONITOR));
+
+        // a pointer Peek is not taken, and up does not collapse it
+        presentations.input(MONITOR, Input::Hover(Primary));
+        assert_eq!(presentations.get(MONITOR), Peek);
+        presentations.input(MONITOR, Input::Hold);
+        assert!(!presentations.holding(MONITOR));
+        presentations.input(MONITOR, Input::Release);
+        assert_eq!(presentations.get(MONITOR), Peek);
+
+        // an open Surface is left as it is
+        presentations.input(MONITOR, Input::Open(Media));
+        let open = presentations.get(MONITOR);
+        assert_eq!(open, Expanded(Media));
+        presentations.input(MONITOR, Input::Hold);
+        presentations.input(MONITOR, Input::Release);
+        assert_eq!(presentations.get(MONITOR), open);
+
+        // the time Peek at Rest, which the pointer leaving does not end
+        let mut rest = Presentations::default();
+
+        rest.input(MONITOR, Input::Release);
+        assert_eq!(rest.get(MONITOR), Rest);
+        rest.input(MONITOR, Input::Hold);
+        assert_eq!(rest.get(MONITOR), Presentation::Tray(0));
+        rest.input(MONITOR, Input::Unhover);
+        assert_eq!(rest.get(MONITOR), Presentation::Tray(0));
+        rest.input(MONITOR, Input::Release);
+        assert_eq!(rest.get(MONITOR), Rest);
     }
 
     // the pointer on the island at Rest shows the time's form, a slot per tray item up to the cap
