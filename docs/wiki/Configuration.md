@@ -193,7 +193,7 @@ media = false
 weather = false
 # the next event's time on the desktop, from the calendar; nothing while the calendar Module is off or there is no event; takes no click, per output
 agenda = false
-# the next event's title on the Desk agenda; off, the line is only the time, per output
+# the next event's title on the Desk agenda; off, the line is the time and the countdown; the title only when this is on, per output
 agenda_titles = false
 # the playing track's title and artist on the desktop; off, neither is shown, and the player is not read for them; needs the media Module, per output
 media_titles = false

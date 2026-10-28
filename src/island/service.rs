@@ -1167,6 +1167,20 @@ impl IslandService {
      * opening one collapses any other. The primary of a Presentation is the Frame's
      */
     fn sync(&mut self, now: Instant) {
+        // Scope::Output is dropped from the shared untouched frame (`frame` passes ""). Name the
+        // output first, or that island never gets the notice and a later hover clones the empty state.
+        let outputs: Vec<String> = self
+            .arbiter
+            .activities()
+            .filter_map(Activity::output)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect();
+
+        for output in &outputs {
+            self.island(output);
+        }
+
         let id = |activity: &Option<Activity>| activity.as_ref().map(Activity::id).cloned();
 
         let untouched = self.arbiter.frame(
@@ -1734,6 +1748,7 @@ mod tests {
     use crate::island::activity::fixture;
     use crate::island::activity::{Detail, Lifetime, Priority, Track, Workspace};
     use crate::island::geometry::{DEFAULT_LARGEST, REST};
+    use crate::island::satellites::Mark;
 
     const MONITOR: &str = "eDP-1";
 
@@ -3530,6 +3545,57 @@ mod tests {
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
         assert_eq!(island.presentation(OTHER), Presentation::Compact);
         assert_eq!(island.presentation("DP-1"), Presentation::Rest);
+    }
+
+    // Scope::Output never reaches the shared untouched frame, so the output has to be named
+    // before sync or the satellite is missing until something touches that output
+    #[test]
+    fn an_urgent_workspace_shows_on_an_output_the_island_has_not_touched() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let urgent = Activity::new(
+            Id::new(Kind::Workspace, "urgent-3"),
+            Priority::Ongoing,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::None,
+        )
+        .unwrap()
+        .on_output(OTHER);
+
+        island.post(urgent.clone(), now);
+
+        let showing = |island: &IslandService, monitor, at| {
+            island
+                .satellites(monitor)
+                .shown(at)
+                .into_iter()
+                .filter_map(|shown| match shown.mark {
+                    Mark::Activity(activity) => Some(activity.id().clone()),
+                    Mark::Overflow(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let later = now + Duration::from_secs(1);
+        assert_eq!(showing(&island, OTHER, later), [urgent.id().clone()]);
+        assert!(showing(&island, MONITOR, later).is_empty());
+        assert!(showing(&island, "DP-1", later).is_empty());
+        assert!(island.frame(OTHER, later).primary.is_none());
+        assert_eq!(
+            island.frame(OTHER, later).satellites.as_slice(),
+            std::slice::from_ref(&urgent)
+        );
+        assert!(island.frame(MONITOR, later).satellites.is_empty());
+
+        // a later hover must not replace this island with the shared empty state
+        island.hover(OTHER, true, false, later);
+        assert_eq!(showing(&island, OTHER, later), [urgent.id().clone()]);
+
+        island.withdraw(urgent.id(), later);
+        let gone = later + Duration::from_secs(1);
+        assert!(showing(&island, OTHER, gone).is_empty());
+        assert!(island.frame(OTHER, gone).satellites.is_empty());
     }
 
     #[test]

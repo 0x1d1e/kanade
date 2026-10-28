@@ -2348,7 +2348,7 @@ pub const DESK: &[Setting] = &[
     Setting {
         key: "desk.agenda_titles",
         label: "Desk agenda titles",
-        help: "the next event's title on the Desk agenda; off, the line is only the time",
+        help: "the next event's title on the Desk agenda; off, the line is the time and the countdown; the title only when this is on",
         kind: Kind::Switch(Field {
             get: |config| config.desk_agenda_titles,
             set: |config, on| config.desk_agenda_titles = on,

@@ -1201,8 +1201,8 @@ pub fn screenshot_failed(why: &str) {
     IslandService::write().post(activity(SHOT, job, Vec::new()), Instant::now());
 }
 
-// the id of a screenshot niri saved; a space is outside a client's alphabet
-const SAVED: &str = "screenshot";
+// the id of a screenshot niri saved; a space is outside a client's alphabet, so no client has it
+const SAVED: &str = "screenshot saved";
 
 // how much of a path the island's title keeps; the end, where the file name is
 const PATH: usize = 80;
@@ -2113,6 +2113,9 @@ mod tests {
         );
         assert!(path_tail(&"a".repeat(200)).chars().count() <= PATH);
         assert!(path_tail(&"a".repeat(200)).ends_with('a'));
+        // a client id of "screenshot" must not replace this notice, or the other way around
+        assert!(!valid_id(SAVED));
+        assert!(valid_id("screenshot"));
     }
 
     #[test]
