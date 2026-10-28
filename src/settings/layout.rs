@@ -82,6 +82,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "wallpaper",
             "wallpaper-surface",
             "workspace",
+            "desk",
         ],
     ),
     (
@@ -274,6 +275,10 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "Feedback",
                 rows: &[Row::Key("osd.layout")],
+            },
+            Section {
+                title: "Desk",
+                rows: &[Row::Key("desk.clock"), Row::Key("desk.clock_corner")],
             },
         ],
     },

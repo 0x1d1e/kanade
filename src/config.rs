@@ -243,6 +243,10 @@ pub struct Config {
 
     // `osd.layout`: a keyboard layout switch shows as an OSD
     pub osd_layout: bool,
+    // `desk.clock`: the Desk clock shows on the desktop (ADR 0137)
+    pub desk_clock: bool,
+    // `desk.clock_corner`: where on each output the Desk clock stands
+    pub desk_clock_corner: Corner,
     // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
     pub live_stale: Duration,
     // `battery.*`: when a draining battery shows, and what a critical one does
@@ -620,6 +624,8 @@ impl Default for Config {
             notification_sounds: Sounds::default(),
             notification_rules: Vec::new(),
             osd_layout: true,
+            desk_clock: false,
+            desk_clock_corner: Corner::default(),
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
@@ -2209,6 +2215,80 @@ pub const OSD: &[Setting] = &[Setting {
         ..Tail::DEFAULT
     },
 }];
+
+// the corner of an output a Desk widget stands in
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomRight,
+}
+
+impl Corner {
+    pub const NAMES: &[&str] = &["top-left", "top-right", "bottom-left", "bottom-right"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Corner::TopLeft => "top-left",
+            Corner::TopRight => "top-right",
+            Corner::BottomLeft => "bottom-left",
+            Corner::BottomRight => "bottom-right",
+        }
+    }
+
+    pub fn named(name: &str) -> Corner {
+        match name {
+            "top-left" => Corner::TopLeft,
+            "top-right" => Corner::TopRight,
+            "bottom-left" => Corner::BottomLeft,
+            _ => Corner::BottomRight,
+        }
+    }
+
+    pub fn top(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::TopRight)
+    }
+
+    pub fn left(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::BottomLeft)
+    }
+}
+
+pub const DESK: &[Setting] = &[
+    Setting {
+        key: "desk.clock",
+        label: "Desk clock",
+        help: "the time and date in large plain text on the desktop, under every window, one per output; click-through",
+        kind: Kind::Switch(Field {
+            get: |config| config.desk_clock,
+            set: |config, on| config.desk_clock = on,
+        }),
+        tail: Tail {
+            hint: Some("Show a clock on the desktop"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.clock_corner",
+        label: "Desk clock corner",
+        help: "the corner of the output the Desk clock stands in",
+        kind: Kind::Choice(
+            Choices::named(Corner::NAMES),
+            Field {
+                get: |config| config.desk_clock_corner.name(),
+                set: |config, name| config.desk_clock_corner = Corner::named(name),
+            },
+        ),
+        tail: Tail {
+            hint: Some("Where the Desk clock stands"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+];
 
 pub const WINDOWS: &[Setting] = &[Setting {
     key: "windows.apps",
@@ -4668,6 +4748,8 @@ mod tests {
                 "notifications.sound_normal",
                 "notifications.sound_critical",
                 "notifications.rules",
+                "desk.clock",
+                "desk.clock_corner",
                 "controls.tiles",
                 "wallpaper.directory",
                 "wallpaper.per_monitor",
@@ -4747,7 +4829,9 @@ mod tests {
                 "rest.battery",
                 "rest.peek.battery",
                 "rest.peek.weather",
-                "rest.peek.agenda"
+                "rest.peek.agenda",
+                "desk.clock",
+                "desk.clock_corner"
             ]
         );
 

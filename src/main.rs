@@ -10,6 +10,7 @@ mod cli;
 mod clock;
 mod cluster;
 mod config;
+mod desk;
 mod dock;
 mod doctor;
 mod face;

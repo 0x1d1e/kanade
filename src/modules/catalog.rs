@@ -30,8 +30,8 @@ use crate::sources::{
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    appearance, autohide, banners, cli, clock, cluster, config, dock, gesture, hooks, idle, ipc,
-    lock, reload, settings, shadow, supervise, surfaces, ui, view,
+    appearance, autohide, banners, cli, clock, cluster, config, desk, dock, gesture, hooks, idle,
+    ipc, lock, reload, settings, shadow, supervise, surfaces, ui, view,
 };
 
 use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -632,6 +632,19 @@ notifications dnd on until <HH:MM>
 
             app.window_per_monitor(banners::window)
         },
+    },
+    // the Desk (ADR 0137): faces of Services on the desktop; reads none while its keys are off
+    Module {
+        name: "desk",
+        about: "Read-only faces of Services on the desktop, under every window",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::DESK,
+        hooks: Hooks::NONE,
+        verbs: &[],
+        start: |app| app.window_per_monitor(desk::window),
     },
     // the three share one system bus watcher, which follows only the daemons of those that are on
     Module {
