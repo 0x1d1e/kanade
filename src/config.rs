@@ -249,6 +249,14 @@ pub struct Config {
     pub desk_clock_corner: Corner,
     // `desk.media`: the player's previous, play-pause and next buttons on the Desk (ADR 0137)
     pub desk_media: bool,
+    // `desk.weather`: temperature and condition on the Desk, from the weather Service (ADR 0137)
+    pub desk_weather: bool,
+    // `desk.agenda`: the next event's time on the Desk (ADR 0137)
+    pub desk_agenda: bool,
+    // `desk.agenda_titles`: the next event's title, off so the agenda line has no title (ADR 0137)
+    pub desk_agenda_titles: bool,
+    // `desk.media_titles`: the track's title and artist on the Desk (ADR 0137)
+    pub desk_media_titles: bool,
     // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
     pub live_stale: Duration,
     // `battery.*`: when a draining battery shows, and what a critical one does
@@ -629,6 +637,10 @@ impl Default for Config {
             desk_clock: false,
             desk_clock_corner: Corner::default(),
             desk_media: false,
+            desk_weather: false,
+            desk_agenda: false,
+            desk_agenda_titles: false,
+            desk_media_titles: false,
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
@@ -2277,7 +2289,7 @@ pub const DESK: &[Setting] = &[
     Setting {
         key: "desk.clock_corner",
         label: "Desk clock corner",
-        help: "the corner of the output the Desk stands in, the clock and the media buttons",
+        help: "the corner of the output the Desk stands in",
         kind: Kind::Choice(
             Choices::named(Corner::NAMES),
             Field {
@@ -2294,13 +2306,69 @@ pub const DESK: &[Setting] = &[
     Setting {
         key: "desk.media",
         label: "Desk media buttons",
-        help: "previous, play or pause and next buttons for the player on the desktop, under every window, one set per output; only the buttons take the pointer, and no title or artist is shown; needs the media Module",
+        help: "previous, play or pause and next buttons for the player on the desktop, under every window, one set per output; only the buttons take the pointer; needs the media Module",
         kind: Kind::Switch(Field {
             get: |config| config.desk_media,
             set: |config, on| config.desk_media = on,
         }),
         tail: Tail {
             hint: Some("Show media buttons on the desktop"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.weather",
+        label: "Desk weather",
+        help: "the temperature and condition on the desktop, from the forecast already fetched; nothing while the weather Module is off or there is no forecast; takes no click",
+        kind: Kind::Switch(Field {
+            get: |config| config.desk_weather,
+            set: |config, on| config.desk_weather = on,
+        }),
+        tail: Tail {
+            hint: Some("Show the weather on the desktop"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.agenda",
+        label: "Desk agenda",
+        help: "the next event's time on the desktop, from the calendar; nothing while the calendar Module is off or there is no event; takes no click",
+        kind: Kind::Switch(Field {
+            get: |config| config.desk_agenda,
+            set: |config, on| config.desk_agenda = on,
+        }),
+        tail: Tail {
+            hint: Some("Show the next event's time on the desktop"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.agenda_titles",
+        label: "Desk agenda titles",
+        help: "the next event's title on the Desk agenda; off, the line is only the time",
+        kind: Kind::Switch(Field {
+            get: |config| config.desk_agenda_titles,
+            set: |config, on| config.desk_agenda_titles = on,
+        }),
+        tail: Tail {
+            hint: Some("Show event titles on the Desk"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.media_titles",
+        label: "Desk media titles",
+        help: "the playing track's title and artist on the desktop; off, neither is shown, and the player is not read for them; needs the media Module",
+        kind: Kind::Switch(Field {
+            get: |config| config.desk_media_titles,
+            set: |config, on| config.desk_media_titles = on,
+        }),
+        tail: Tail {
+            hint: Some("Show the track title and artist on the desktop"),
             per_output: true,
             ..Tail::DEFAULT
         },
@@ -4768,6 +4836,10 @@ mod tests {
                 "desk.clock",
                 "desk.clock_corner",
                 "desk.media",
+                "desk.weather",
+                "desk.agenda",
+                "desk.agenda_titles",
+                "desk.media_titles",
                 "controls.tiles",
                 "wallpaper.directory",
                 "wallpaper.per_monitor",
@@ -4850,7 +4922,11 @@ mod tests {
                 "rest.peek.agenda",
                 "desk.clock",
                 "desk.clock_corner",
-                "desk.media"
+                "desk.media",
+                "desk.weather",
+                "desk.agenda",
+                "desk.agenda_titles",
+                "desk.media_titles"
             ]
         );
 

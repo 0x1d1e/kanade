@@ -863,6 +863,19 @@ fn publish(players: &Players, chosen: Option<&Seen>) {
     if Remote::read().keys != keys {
         Remote::write().keys = keys;
     }
+
+    // title and artist, not the player's own name; the Desk reads this only with its switch on
+    let caption = chosen
+        .and_then(|seen| players.open.get(&seen.key))
+        .map(|player| playback::Caption {
+            title: player.title.clone(),
+            artist: player.artist.clone(),
+        })
+        .unwrap_or_default();
+
+    if *playback::Caption::read() != caption {
+        *playback::Caption::write() = caption;
+    }
 }
 
 /*

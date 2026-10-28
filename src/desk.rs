@@ -1,8 +1,9 @@
 //! The Desk (ADR 0137): read-only faces of Services drawn as plain text on the desktop, in a
 //! window of its own on each output, under every other window. The Desk is the shell's whatever
-//! core is chosen, so it lives outside `island/`. It has the clock, which takes no pointer, and the
-//! media buttons, the only part of the window that does: its input region is those three buttons
-//! and every other click goes to what lies below. Title and artist are not drawn.
+//! core is chosen, so it lives outside `island/`. The clock, weather, agenda and track line take
+//! no pointer. The media buttons are the only part of the window that does: its input region is
+//! those three buttons and every other click goes to what lies below. A face whose switch is off
+//! reads no Service. Event titles and the track's title and artist need their own switches.
 
 use kanade_runtime::service::Service;
 use kanade_runtime::ui::{Role, Semantics};
@@ -15,11 +16,14 @@ use crate::config::{self, Corner};
 use crate::icon::Icon;
 use crate::island::geometry::Rect;
 use crate::later::Later;
+use crate::sources::calendar;
 use crate::sources::media::{self, Transport};
 use crate::sources::niri::Niri;
-use crate::sources::playback::{Keys, Remote};
+use crate::sources::playback::{Caption, Keys, Remote};
+use crate::sources::reminders;
+use crate::sources::weather::Weather;
 use crate::theme::DISABLED;
-use crate::{clock, theme, view};
+use crate::{clock, modules, theme, view};
 
 // whether niri's overview is open; the Desk is hidden while it is
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -51,8 +55,9 @@ const MARGIN: i32 = 48;
 
 const WIDTH: f32 = 420.0;
 
-// the clock's room, and the media buttons' row under it
+// the clock's room, a plain line under it, and the media buttons' row under those
 const CLOCK_HEIGHT: f32 = 150.0;
+const LINE: f32 = 28.0;
 const ROW: f32 = 56.0;
 
 // a button, its glyph, and the room between two
@@ -68,13 +73,92 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     // reading subscribes this window to the config
     let config = config::on(&monitor.name);
     let corner = config.desk_clock_corner;
+    // every face off, it reads no Service: no clock, so no frame each minute
+    if !faces_on(&config) {
+        return shell(corner, 1.0).visible(false);
+    }
 
-    // the clock's room and the buttons' row stay whether or not a player is open, so a player
-    // opening or closing moves nothing
+    // niri's overview is its own picture of the desktop: no Desk in it, and no Service read
+    // for a window nobody sees
+    if Overview::read().0 {
+        return shell(corner, 1.0).visible(false);
+    }
+
+    // each face reads its Service only while its switch is on. Weather and the agenda add no
+    // poll: the forecast arrives on Weather's write, and the agenda uses the clock's minute tick
+    let weather = weather_line(&config);
+    let agenda = agenda_line(&config);
+    let titles = title_line(&config);
+    // the media Module off follows no player, so the buttons are not read and take no room
+    let media = config.desk_media && modules::on("media");
+    let keys = if media { Remote::read().keys } else { None };
+
+    let drawn = config.desk_clock
+        || weather.is_some()
+        || agenda.is_some()
+        || titles.is_some()
+        || keys.is_some();
+
+    if !drawn {
+        return shell(corner, 1.0).visible(false);
+    }
+
+    // the buttons' row stays while a player may open, so that does not move the lines above
+    let reserve_media = media;
     let height = if config.desk_clock { CLOCK_HEIGHT } else { 0.0 }
-        + if config.desk_media { ROW } else { 0.0 };
+        + if weather.is_some() { LINE } else { 0.0 }
+        + if agenda.is_some() { LINE } else { 0.0 }
+        + if titles.is_some() { LINE } else { 0.0 }
+        + if reserve_media { ROW } else { 0.0 };
 
-    let window = LayerWindow::new()
+    let mut faces: Vec<Box<dyn Widget>> = Vec::new();
+
+    if config.desk_clock {
+        faces.push(Box::new(clock_face(corner, &config)));
+    }
+    if let Some(line) = weather {
+        faces.push(Box::new(plain(line, corner)));
+    }
+    if let Some(line) = agenda {
+        faces.push(Box::new(plain(line, corner)));
+    }
+    if let Some(line) = titles {
+        faces.push(Box::new(plain(line, corner)));
+    }
+
+    let mut window = shell(corner, height);
+
+    if reserve_media {
+        match keys {
+            Some(keys) => {
+                faces.push(Box::new(media_row(keys)));
+                window = window.input_region(media_areas(corner, height, keys));
+            }
+
+            // the row's room, so the lines above do not move when a player opens
+            None => faces.push(Box::new(Rectangle::new().width(1.0).height(ROW))),
+        }
+    }
+
+    let column = Column::new(faces).width(Size::Parent).height(Size::Parent);
+
+    window.child(if corner.left() {
+        column.align(Start)
+    } else {
+        column.align(End)
+    })
+}
+
+fn faces_on(config: &config::Config) -> bool {
+    config.desk_clock
+        || config.desk_media
+        || config.desk_weather
+        || config.desk_agenda
+        || config.desk_media_titles
+}
+
+fn shell(corner: Corner, height: f32) -> LayerWindow {
+    LayerWindow::new()
         .width(WIDTH)
         .height(height.max(1.0))
         .anchor_vertical(if corner.top() {
@@ -97,58 +181,86 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .space(Zone::Ignore)
         .keyboard(Keyboard::None)
         .namespace("kanade-desk")
-        .click_through();
+        .click_through()
+}
 
-    // every face off, it reads no Service: no clock, so no frame each minute
-    if !config.desk_clock && !config.desk_media {
-        return window.visible(false);
+// temperature and condition; nothing, and Weather unread, while the Module or the switch is off
+fn weather_line(config: &config::Config) -> Option<String> {
+    if !config.desk_weather || !modules::on("weather") {
+        return None;
     }
 
-    // niri's overview is its own picture of the desktop: no Desk in it, and no clock to tick
-    // for a window nobody sees
-    if Overview::read().0 {
-        return window.visible(false);
+    let weather = Weather::read();
+    let current = &weather.forecast.as_ref()?.current;
+
+    Some(format!(
+        "{} {}",
+        config.units.temperature(current.temperature),
+        current.condition.name()
+    ))
+}
+
+// the next event, without its title unless that switch is on. Arms the clock's minute tick, the
+// same one the clock face uses, so the line can change as the event draws near; no poll of its own
+fn agenda_line(config: &config::Config) -> Option<String> {
+    if !config.desk_agenda || !modules::on("calendar") {
+        return None;
     }
 
-    // none while no player is open, or the media Module is off
-    let keys = if config.desk_media {
-        Remote::read().keys
+    let now = clock::unix_seconds();
+    let _ = clock::now(config.clock);
+    let events = calendar::upcoming(clock::today());
+    let next = events.iter().find(|event| {
+        !event.all_day && event.span.1.max(event.span.0 + 1) > now
+    })?;
+    let at = clock::time(next.start.time(), config.clock);
+
+    if !config.desk_agenda_titles {
+        let (left, _) = reminders::countdown(next.span.0, now);
+        return Some(format!("{at}, {left}"));
+    }
+
+    let title = next.title.trim();
+
+    if title.is_empty() {
+        Some(at)
     } else {
-        None
-    };
+        Some(format!("{at} {title}"))
+    }
+}
 
-    // the clock alone, or the buttons while a player is open; nothing else to show
-    if !config.desk_clock && keys.is_none() {
-        return window.visible(false);
+// title and artist; the player is unread while the switch or the media Module is off
+fn title_line(config: &config::Config) -> Option<String> {
+    if !config.desk_media_titles || !modules::on("media") {
+        return None;
     }
 
-    let mut faces: Vec<Box<dyn Widget>> = Vec::new();
+    let playing = Caption::read();
+    let title = playing.title.trim();
+    let artist = playing.artist.trim();
 
-    if config.desk_clock {
-        faces.push(Box::new(clock_face(corner, &config)));
+    match (title.is_empty(), artist.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(title.to_owned()),
+        (true, false) => Some(artist.to_owned()),
+        (false, false) => Some(format!("{title} — {artist}")),
     }
+}
 
-    let mut window = window;
+fn plain(line: String, corner: Corner) -> impl Widget + use<> {
+    let text = Text::new(line)
+        .size(DATE)
+        .color(theme::ON_SCENE)
+        .weight(theme::text::MEDIUM);
+    let column = Column::new(vec![Box::new(text)])
+        .width(Size::Parent)
+        .height(LINE);
 
-    if config.desk_media {
-        match keys {
-            Some(keys) => {
-                faces.push(Box::new(media_row(keys)));
-                window = window.input_region(media_areas(corner, height, keys));
-            }
-
-            // the row's room, so the clock does not move when a player opens
-            None => faces.push(Box::new(Rectangle::new().width(1.0).height(ROW))),
-        }
-    }
-
-    let column = Column::new(faces).width(Size::Parent).height(Size::Parent);
-
-    window.child(if corner.left() {
+    if corner.left() {
         column.align(Start)
     } else {
         column.align(End)
-    })
+    }
 }
 
 // previous, play or pause, next; each faded and dead when the player cannot

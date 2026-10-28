@@ -57,6 +57,22 @@ impl Service for Remote {
     fn listen() {}
 }
 
+// the active player's title and artist, for the Desk when `desk.media_titles` is on (ADR 0137).
+// Written by `media::follow` when it changes; empty when no player is open. Never logged
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Caption {
+    pub title: String,
+    pub artist: String,
+}
+
+impl Service for Caption {
+    fn new() -> Self {
+        Caption::default()
+    }
+
+    fn listen() {}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keys {
     pub playing: bool,

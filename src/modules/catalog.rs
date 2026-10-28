@@ -638,7 +638,7 @@ notifications dnd on until <HH:MM>
         name: "desk",
         about: "Faces of Services on the desktop, under every window",
         requires: &[CORE],
-        optional: &["media"],
+        optional: &["media", "weather", "calendar"],
         warns: None,
         needs: &[Need {
             on: Provider::Niri,

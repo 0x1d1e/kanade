@@ -281,7 +281,11 @@ pub const PAGES: &[Page] = &[
                 rows: &[
                     Row::Key("desk.clock"),
                     Row::Key("desk.clock_corner"),
+                    Row::Key("desk.weather"),
+                    Row::Key("desk.agenda"),
+                    Row::Key("desk.agenda_titles"),
                     Row::Key("desk.media"),
+                    Row::Key("desk.media_titles"),
                 ],
             },
         ],
