@@ -26,6 +26,17 @@ A coding agent runs for minutes at a time and asks for the user at points the us
 
 **A hook per agent as a Module, or a plugin.** One reader of one document does not need a Module of its own; `live` owns the verbs, and `docs/wiki/Agent-hooks.md` shows another agent how to use them.
 
+## Amendment: an opt-in permission decider
+
+The default `activity hook claude` is unchanged: it still returns within its 2 s bound, exits 0 or 1, never 2, and still sets no buttons. `PermissionRequest` still only sets the detail to `Waiting for you`.
+
+`activity hook claude decide` is a separate argv, used only as the replacement for the `PermissionRequest` hook entry, with a longer Claude timeout (90 s). The shell still never exits 2. This process does:
+
+- If the focused window's app id is a best-effort match for Claude or Codex, from one `Windows` ask of the list niri already has, it exits 0 and shows nothing. A terminal whose title mentions the agent is not that match: the match is the app id.
+- Otherwise it posts Deny, Allow and Always on the session's Live Activity, the three labels ADR 0110 allows, and sets the detail to the command, one line, cut. The command is never logged. `ui.describe` redacts that detail unless the mode is content. The pills stay until the press, the Activity ends, or the wait ends.
+- It waits with the existing `pressed-wait`, 60 s. Allow exits 0. Deny exits 2. No answer exits 2. A prompt that was not shown does not allow the command either.
+- Always remembers that tool name for this process only, not on disk, and not the command. A later `PermissionRequest` for the same tool name exits 0 with no prompt.
+
 ## Consequences
 
 - ADR 0042's note that nothing throttles reposts is superseded: a client redraws the Island at most four times a second per Activity.

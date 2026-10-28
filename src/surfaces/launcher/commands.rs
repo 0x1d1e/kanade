@@ -438,7 +438,9 @@ pub fn denied(words: &[&str]) -> bool {
 
     match call {
         Call::Ui(_)
-        | Call::Live(live::Request::Run { .. } | live::Request::Hook(_))
+        | Call::Live(
+            live::Request::Run { .. } | live::Request::Hook(_) | live::Request::Decide(_),
+        )
         | Call::Session(Leave::Ending(_))
         | Call::Dmenu(_)
         | Call::Gesture(_)

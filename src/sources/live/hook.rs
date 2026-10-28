@@ -8,6 +8,8 @@
 //! Code takes as a block. No shell, or the `live` Module off, is no error: the agent runs on
 //! machines where Kanade does not. What the document says is never logged; the title and the
 //! detail are cut as any other, by the shell.
+//!
+//! `decide` is the opt-in permission decider, a separate argv. The default hook does not call it.
 
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
@@ -121,21 +123,23 @@ fn plan(agent: Agent, document: &[u8]) -> Result<Option<Plan>, String> {
         return Err(String::from("the hook event has no session_id"));
     }
 
-    let project = event
-        .cwd
-        .as_deref()
+    Ok(Some(Plan {
+        id: id(agent, &event.session_id),
+        title: titled(agent, event.cwd.as_deref()),
+        action,
+    }))
+}
+
+fn titled(agent: Agent, cwd: Option<&str>) -> String {
+    let project = cwd
         .and_then(|cwd| cwd.trim_end_matches('/').rsplit('/').next())
         .map(|name| line(&[name], TITLE))
         .filter(|name| !name.is_empty());
 
-    Ok(Some(Plan {
-        id: id(agent, &event.session_id),
-        title: match project {
-            Some(project) => line(&[&format!("{}: {project}", agent.name())], TITLE),
-            None => String::from(agent.name()),
-        },
-        action,
-    }))
+    match project {
+        Some(project) => line(&[&format!("{}: {project}", agent.name())], TITLE),
+        None => String::from(agent.name()),
+    }
 }
 
 // what a session waits for the user with
@@ -246,6 +250,11 @@ pub fn run(agent: Agent) -> ExitCode {
             None => Ok(()),
         });
 
+    status(told)
+}
+
+// 0 or 1, never 2: the default hook does not block the agent
+fn status(told: Result<(), String>) -> ExitCode {
     match told {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
@@ -253,6 +262,258 @@ pub fn run(agent: Agent) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// how long the user may take to press; Claude's timeout on this hook entry must be longer
+const DECIDE: Duration = Duration::from_secs(60);
+
+// a tool name, cut as the shell cuts the one it remembers
+const TOOL: usize = 64;
+
+// what a permission event asks the user, or nothing when the event is not one
+#[derive(Debug, PartialEq, Eq)]
+struct Ask {
+    id: String,
+    title: String,
+    tool: Option<String>,
+    command: String,
+}
+
+// the command, one line, cut; a sibling field of `tool_input` is not the command
+fn command_line(input: Option<&crate::sources::json::Json>, tool: Option<&str>) -> String {
+    let command = input.and_then(|input| {
+        input
+            .get("command")
+            .and_then(crate::sources::json::Json::as_str)
+            .or_else(|| input.as_str())
+    });
+    let words: Vec<&str> = match command {
+        Some(command) if !command.is_empty() => vec![command],
+        Some(_) | None => tool.into_iter().collect(),
+    };
+    let line = line(&words, DETAIL);
+
+    if line.is_empty() {
+        String::from("Permission")
+    } else {
+        line
+    }
+}
+
+fn tool_key(name: &str) -> Option<String> {
+    let name = line(&[name], TOOL);
+
+    (!name.is_empty()).then_some(name)
+}
+
+// `document` as a permission to decide; none when it is some other event, an error when it is not
+// an event or a permission with no session
+fn permission(agent: Agent, document: &[u8]) -> Result<Option<Ask>, ()> {
+    #[derive(Deserialize)]
+    struct Named {
+        hook_event_name: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Permission {
+        session_id: String,
+        cwd: Option<String>,
+        tool_name: Option<String>,
+        tool_input: Option<crate::sources::json::Json>,
+    }
+
+    let named: Named = serde_json::from_slice(document).map_err(|_| ())?;
+
+    if named.hook_event_name != "PermissionRequest" {
+        return Ok(None);
+    }
+
+    let event: Permission = serde_json::from_slice(document).map_err(|_| ())?;
+
+    if event.session_id.is_empty() {
+        return Err(());
+    }
+
+    let tool = event.tool_name.as_deref().and_then(tool_key);
+
+    Ok(Some(Ask {
+        id: id(agent, &event.session_id),
+        title: titled(agent, event.cwd.as_deref()),
+        command: command_line(event.tool_input.as_ref(), tool.as_deref()),
+        tool,
+    }))
+}
+
+// best-effort: the focused window's app id names Claude or Codex, not a terminal that happens to
+// show one
+fn agent_app(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+
+    id.contains("claude") || id.contains("codex")
+}
+
+fn agent_focused(reply: &crate::sources::json::Json) -> bool {
+    use crate::sources::json::{self, Json};
+
+    reply
+        .get("Windows")
+        .and_then(json::array)
+        .is_some_and(|windows| {
+            windows.iter().any(|window| {
+                window.get("is_focused").and_then(Json::as_bool) == Some(true)
+                    && window
+                        .get("app_id")
+                        .and_then(Json::as_str)
+                        .is_some_and(agent_app)
+            })
+        })
+}
+
+fn window_is_the_agents() -> bool {
+    crate::sources::niri::ask("\"Windows\"")
+        .ok()
+        .is_some_and(|reply| agent_focused(&reply))
+}
+
+// allow is 0; deny, no answer, and anything else is 2, which Claude Code takes as a block
+fn decision(key: &str) -> ExitCode {
+    match key {
+        "allow" | "always" => ExitCode::SUCCESS,
+        _ => ExitCode::from(2),
+    }
+}
+
+enum Answer {
+    Done(String),
+    NotLive,
+    Absent,
+}
+
+fn ask(words: &[&str], patience: Duration) -> Result<Answer, String> {
+    let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+
+    match cli::call_within(&words, patience) {
+        Ok(Reply::Done(text)) => Ok(Answer::Done(text)),
+        Err(why) if why == cli::NO_SHELL => Ok(Answer::Absent),
+        Ok(Reply::Refused(why)) if why == cli::module_off("live") => Ok(Answer::Absent),
+        Ok(Reply::Refused(why)) if why.starts_with(NOT_LIVE) => Ok(Answer::NotLive),
+        Ok(Reply::Refused(why) | Reply::Unknown(why)) | Err(why) => Err(why),
+    }
+}
+
+fn deny(line: &str) -> ExitCode {
+    drop(writeln!(io::stderr().lock(), "{line}"));
+    ExitCode::from(2)
+}
+
+// whether this process's shell already kept the tool name; a missing shell is not a skip
+fn already_allowed(tool: &str) -> Result<bool, ()> {
+    match ask(&["activity", "remembered", tool], PATIENCE) {
+        Ok(Answer::Done(yes)) => Ok(yes == "yes"),
+        Ok(Answer::Absent) => Err(()),
+        _ => Ok(false),
+    }
+}
+
+// posts the command and the three pills; true when this call started the Activity
+fn show(ask_for: &Ask) -> Result<bool, &'static str> {
+    let id = ask_for.id.as_str();
+    let mut started = false;
+
+    match ask(&["activity", "detail", id, &ask_for.command], PATIENCE) {
+        Ok(Answer::NotLive) => {
+            match ask(&["activity", "start", id, &ask_for.title], PATIENCE) {
+                Ok(Answer::Done(_)) => started = true,
+                _ => return Err("kanade: the prompt could not be shown"),
+            }
+
+            if !matches!(
+                ask(&["activity", "detail", id, &ask_for.command], PATIENCE),
+                Ok(Answer::Done(_))
+            ) {
+                return Err("kanade: the prompt could not be shown");
+            }
+        }
+        Ok(Answer::Done(_)) => {}
+        _ => return Err("kanade: the prompt could not be shown"),
+    }
+
+    match ask(
+        &[
+            "activity",
+            "actions",
+            id,
+            "deny=Deny",
+            "allow=Allow",
+            "always=Always",
+        ],
+        PATIENCE,
+    ) {
+        Ok(Answer::Done(_)) => Ok(started),
+        _ => Err("kanade: the prompt could not be shown"),
+    }
+}
+
+// the command leaves the Island with the prompt: pills off, and the line back to a wait, or the
+// Activity ended when this prompt was the only reason it was live
+fn clear(ask_for: &Ask, started: bool) {
+    let id = ask_for.id.as_str();
+
+    drop(ask(&["activity", "actions", id], PATIENCE));
+
+    if started {
+        drop(ask(&["activity", "end", id], PATIENCE));
+    } else {
+        drop(ask(&["activity", "detail", id, WAITING], PATIENCE));
+    }
+}
+
+// `kanade activity hook claude decide`: the shell never exits 2; this process does when the
+// command is not allowed. The command is shown, never logged.
+pub fn decide(agent: Agent) -> ExitCode {
+    let document = match read(io::stdin().lock()) {
+        Ok(document) => document,
+        Err(_) => return deny("kanade: the hook event could not be read"),
+    };
+
+    let ask_for = match permission(agent, &document) {
+        Ok(None) => return ExitCode::SUCCESS,
+        Ok(Some(ask_for)) => ask_for,
+        Err(()) => return deny("kanade: not a permission request"),
+    };
+
+    if let Some(tool) = ask_for.tool.as_deref() {
+        match already_allowed(tool) {
+            Ok(true) => return ExitCode::SUCCESS,
+            Ok(false) => {}
+            Err(()) => return deny("kanade: no shell is running"),
+        }
+    }
+
+    if window_is_the_agents() {
+        return ExitCode::SUCCESS;
+    }
+
+    let started = match show(&ask_for) {
+        Ok(started) => started,
+        Err(line) => return deny(line),
+    };
+    let pressed = ask(&["activity", "pressed-wait", &ask_for.id], DECIDE);
+
+    clear(&ask_for, started);
+
+    let key = match pressed {
+        Ok(Answer::Done(key)) => key,
+        _ => String::new(),
+    };
+
+    if key == "always"
+        && let Some(tool) = &ask_for.tool
+    {
+        drop(ask(&["activity", "remember", tool], PATIENCE));
+    }
+
+    decision(&key)
 }
 
 #[cfg(test)]
@@ -412,5 +673,82 @@ mod tests {
     fn a_document_is_read_to_a_limit() {
         assert_eq!(read(&b"{}"[..]).expect("small").len(), 2);
         assert!(read(io::repeat(b' ')).is_err());
+    }
+
+    #[test]
+    fn the_default_hook_exits_0_or_1_and_a_permission_does_not_wait() {
+        assert_ne!(status(Ok(())), ExitCode::from(2));
+        assert_ne!(status(Err(String::from("refused"))), ExitCode::from(2));
+
+        let plan = planned(
+            r#"{"session_id":"abc-123","cwd":"/home/k/kanade","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}"#,
+        )
+        .expect("an event")
+        .expect("a plan");
+        let mut said = Vec::new();
+
+        assert_eq!(plan.action, Action::Detail(String::from(WAITING)));
+        assert_eq!(
+            carry_out(&plan, &mut |words| {
+                said.push(words.join(" "));
+                Ok(Reply::Done(String::new()))
+            }),
+            Ok(())
+        );
+        assert_eq!(said, ["activity detail claude-abc-123 Waiting for you"]);
+        assert!(
+            said.iter()
+                .all(|line| !line.contains("wait") && !line.contains("actions"))
+        );
+    }
+
+    #[test]
+    fn a_decider_allows_only_allow_and_always_and_keeps_the_command_out_of_the_line() {
+        assert_eq!(decision("allow"), ExitCode::SUCCESS);
+        assert_eq!(decision("always"), ExitCode::SUCCESS);
+        assert_eq!(decision("deny"), ExitCode::from(2));
+        assert_eq!(decision(""), ExitCode::from(2));
+        assert_eq!(decision("allow-please"), ExitCode::from(2));
+
+        let input = serde_json::json!({
+            "command": "rm -rf /",
+            "env": "SECRET"
+        });
+        let command = command_line(Some(&input), Some("Bash"));
+
+        assert_eq!(command, "rm -rf /");
+        assert!(!command.contains("SECRET"));
+
+        let event = br#"{"hook_event_name":"PermissionRequest","session_id":"abc","cwd":"/tmp/kanade","tool_name":"Bash","tool_input":{"command":"echo secret","env":"SECRET"}}"#;
+        let ask = permission(Agent::Claude, event)
+            .expect("a permission")
+            .expect("an ask");
+
+        assert_eq!(ask.command, "echo secret");
+        assert_eq!(ask.tool.as_deref(), Some("Bash"));
+        assert!(!ask.command.contains("SECRET"));
+        assert_eq!(
+            permission(
+                Agent::Claude,
+                br#"{"hook_event_name":"Stop","session_id":"abc"}"#
+            ),
+            Ok(None::<Ask>)
+        );
+        assert!(permission(Agent::Claude, b"not json").is_err());
+        assert!(agent_app("Claude"));
+        assert!(agent_app("com.openai.codex"));
+        assert!(!agent_app("kitty"));
+
+        let windows = serde_json::json!({
+            "Windows": [
+                {"app_id": "kitty", "is_focused": false, "title": "claude"},
+                {"app_id": "claude", "is_focused": true, "title": "secret"}
+            ]
+        });
+
+        assert!(agent_focused(&windows));
+        assert!(!agent_focused(&serde_json::json!({
+            "Windows": [{"app_id": "kitty", "is_focused": true, "title": "Claude Code"}]
+        })));
     }
 }

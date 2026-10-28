@@ -41,7 +41,26 @@ What it does and does not do:
 - A tool, wait or end event for a session that is not live changes nothing, so a late event never brings an ended session back. Restarting Kanade mid-turn loses the Activity until your next prompt. A turn you interrupt sends no `Stop`; `SessionEnd`, or `live.stale` (30 min), ends it.
 - The `Waiting for you` line stays until the next tool or the end, as no event says you answered.
 - Many calls a second are held to about 4 posts a second per session, so a busy agent does not redraw the Island for each.
-- The hook is bounded so it cannot hold the agent: it waits at most 2 s in all, connecting, writing and reading the answer together, even when it has to say three things to show a failure. It exits 0 when it told the shell, when the event needs nothing shown, and when no shell is running or `live` is off (Claude Code runs on machines without Kanade). It exits 1, with one line on stderr that holds none of the document, for something not a Claude Code event, an event it does not map, or a refusal like the 8 live. It never exits 2, which Claude Code takes as a block; Claude Code shows a non-zero exit as a hook error and goes on.
+- The hook is bounded so it cannot hold the agent: it waits at most 2 s in all, connecting, writing and reading the answer together, even when it has to say three things to show a failure. It exits 0 when it told the shell, when the event needs nothing shown, and when no shell is running or `live` is off (Claude Code runs on machines without Kanade). It exits 1, with one line on stderr that holds none of the document, for something not a Claude Code event, an event it does not map, or a refusal like the 8 live. It never exits 2, which Claude Code takes as a block; Claude Code shows a non-zero exit as a hook error and goes on. It sets no buttons.
+
+### Permission decisions
+
+The hook above never answers a permission. To decide one on the Island, replace only the `PermissionRequest` entry:
+
+```json
+"PermissionRequest": [{ "hooks": [{ "type": "command", "command": "kanade activity hook claude decide", "timeout": 90 }] }]
+```
+
+Leave the other events on `kanade activity hook claude`. Do not point `decide` at them: it is for `PermissionRequest` only. A different event exits 0 and changes nothing.
+
+`decide` still does not make the shell exit 2. This process does, and only when the command is not allowed:
+
+- If the focused window's app id matches Claude or Codex (a best-effort match, from one ask of niri's window list), it exits 0 and shows nothing. Claude's or Codex's own prompt is already in front. A terminal is not that match, even when its title says the agent.
+- Otherwise the session's Activity shows the command, one line, and three pills: Deny, Allow, Always. The command is never logged. `kanade ui describe` says `<redacted>` for that line unless describe is in content mode.
+- It waits up to 60 s for the press. Allow exits 0. Deny exits 2. No answer exits 2, so a prompt nobody answered does not allow the command. A prompt that could not be shown does not allow it either.
+- Always remembers the tool's name until Kanade exits, not the command, and not on disk. The next permission for that tool name exits 0 with no prompt.
+
+The pills show on Peek, as any Activity's actions do, and stay until the press, the Activity ends, or the 60 s ends. The command leaves the Island with the prompt.
 
 ## Other agents
 
@@ -64,6 +83,6 @@ key=$(kanade activity wait agent-1 --timeout 60)        # prints allow or deny; 
 kanade activity actions agent-1                         # take them off
 ```
 
-The agent does the work for the key it reads. A pressed button shows `...` until the agent's next `detail`, `progress`, `end`, `fail` or `actions`, or 10 s. They end with the Activity. The buttons show on Peek only and answer to the pointer; no key reaches them yet. Labels are cut to 24 characters and are never `Cancel`, `Now`, `Dismiss`, `Stop` or `Confirm`. `activity run ... --action cancel=<label>` ends the command with SIGTERM sent to the command itself, not its process group, so a `sh -c` wrapper dies and what it started may live on. The Claude Code hook (`activity hook claude`) sets none: Claude Code's own permission prompt stays where it is.
+The agent does the work for the key it reads. A pressed button shows `...` until the agent's next `detail`, `progress`, `end`, `fail` or `actions`, or 10 s. They end with the Activity. The buttons show on Peek only and answer to the pointer; no key reaches them yet. Labels are cut to 24 characters and are never `Cancel`, `Now`, `Dismiss`, `Stop` or `Confirm`. `activity run ... --action cancel=<label>` ends the command with SIGTERM sent to the command itself, not its process group, so a `sh -c` wrapper dies and what it started may live on. The Claude Code hook (`activity hook claude`) sets none: Claude Code's own permission prompt stays where it is. The opt-in `activity hook claude decide` is the exception, and only on `PermissionRequest`.
 
 An id is 1 to 64 letters, digits, `.`, `_` or `-`; give each session its own. Whatever the agent's hook feeds in must come from its documentation. Kanade reads only Claude Code's own events and does not guess at other formats.

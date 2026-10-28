@@ -1,6 +1,7 @@
 //! The form of a live Activity from `kanade activity` (ADR 0042): its mark, its title, how far along
 //! it is, and on Peek its detail with a bar. One with no amount shows no bar, as it cannot say.
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Color, Column, End, Padding, Parent, Rectangle, Row, Start, Text, Widget, children,
 };
@@ -76,7 +77,7 @@ pub(super) fn live(
         let mut parts = children![icon.on(18.0, ink)];
         parts.extend(percent.map(|percent| label(percent, theme::island().on_surface)));
 
-        return Some(stacked(parts));
+        return Some(noted(stacked(parts), job));
     }
 
     let (side, size, inset, number) = match presentation {
@@ -180,7 +181,7 @@ pub(super) fn live(
         ));
     }
 
-    Some(
+    Some(noted(
         sized(presentation)
             .padding(Padding {
                 top: 0.0,
@@ -190,5 +191,17 @@ pub(super) fn live(
             })
             .align_child(Start, Center)
             .child(Row::new(row).width(Parent).gap(gap).align(Center)),
-    )
+        job,
+    ))
+}
+
+// the detail is what a program sent, so `ui.describe` redacts it unless content mode
+fn noted(node: Rectangle, job: &Job) -> Rectangle {
+    let line = line(job);
+
+    if line.is_empty() {
+        node
+    } else {
+        node.semantics(|| Semantics::new(Role::Item, "detail").content(line))
+    }
 }

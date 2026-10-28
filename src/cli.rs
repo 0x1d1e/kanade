@@ -544,6 +544,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return live::hook(agent);
     }
 
+    // the opt-in decider: the shell still never exits 2; this process may
+    if let Call::Live(live::Request::Decide(agent)) = asked {
+        return live::decide(agent);
+    }
+
     // the lines come from stdin, never the arguments
     if let Call::Dmenu(asked) = asked {
         if !asked.choices.is_empty() {

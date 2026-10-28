@@ -40,7 +40,7 @@ use crate::island::activity::{
     Action, Activity, Detail, Ended, Id, Interrupt, Job, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::service::IslandService;
-pub use hook::{Agent, run as hook};
+pub use hook::{Agent, decide, run as hook};
 
 mod hook;
 
@@ -166,6 +166,19 @@ pub enum Request {
 
     // the client's own: one hook event of an agent on stdin, told as the verbs above
     Hook(Agent),
+
+    // the client's own: `activity hook claude decide`, a permission decider (ADR 0058)
+    Decide(Agent),
+
+    // a tool name `always` allowed, for this process only; the command is never kept
+    Remember {
+        tool: String,
+    },
+
+    // whether `remember` kept this tool name
+    Remembered {
+        tool: String,
+    },
 }
 
 impl Request {
@@ -246,7 +259,14 @@ impl Request {
                     command: command.iter().map(|word| (*word).to_owned()).collect(),
                 })
             }
+            ["hook", agent, "decide"] => Some(Request::Decide(Agent::parse(agent)?)),
             ["hook", agent] => Some(Request::Hook(Agent::parse(agent)?)),
+            ["remember", tool] => Some(Request::Remember {
+                tool: (*tool).to_owned(),
+            }),
+            ["remembered", tool] => Some(Request::Remembered {
+                tool: (*tool).to_owned(),
+            }),
             _ => None,
         }
     }
@@ -280,7 +300,8 @@ seconds at most). The actions end with the Activity
   <command>: run with the Activity live, ended as done on exit status 0 and failed on any other, \
 which kanade exits with; an action keyed 'cancel' ends the command with SIGTERM
   hook: reads one Claude Code hook event as JSON on stdin and shows the session as a live Activity \
-(`docs/wiki/Agent-hooks.md`); it exits 0 or 1, never 2, which Claude Code takes as a block"
+(`docs/wiki/Agent-hooks.md`); it exits 0 or 1, never 2, which Claude Code takes as a block. \
+`hook claude decide` is the opt-in permission decider, a replacement for that one hook entry"
     )
 }
 
@@ -813,6 +834,40 @@ static CHANGED: Condvar = Condvar::new();
 // after another on one id, the first of them answered when a press does
 static PRESS_WAIT: Mutex<Vec<(String, IpcReply)>> = Mutex::new(Vec::new());
 
+// tool names an `always` press kept, for this process only, not on disk; the command is never stored
+const REMEMBERED: usize = 64;
+const TOOL: usize = 64;
+static ALLOWED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+// `name` as the tool key that is remembered, or none when it is empty once cut
+fn tool_name(name: &str) -> Option<String> {
+    let name = line(&[name], TOOL);
+
+    (!name.is_empty()).then_some(name)
+}
+
+// keep `name` until this process ends; a full list drops the oldest, and a repeat is not stored twice
+fn remember(name: &str) -> Result<(), String> {
+    let Some(name) = tool_name(name) else {
+        return Err(String::from("no tool name"));
+    };
+    let mut allowed = ALLOWED.locked();
+
+    if !allowed.iter().any(|kept| kept == &name) {
+        if allowed.len() == REMEMBERED {
+            allowed.remove(0);
+        }
+
+        allowed.push(name);
+    }
+
+    Ok(())
+}
+
+fn remembered(name: &str) -> bool {
+    tool_name(name).is_some_and(|name| ALLOWED.locked().iter().any(|kept| kept == &name))
+}
+
 /*
  * a `pressed-wait`, the call behind `activity wait`: no press is waiting, so the reply is held
  * until one arrives (`act`) or the Activity is no longer live to press. Answered at once when a
@@ -896,10 +951,22 @@ pub fn request(request: Request) -> Result<String, String> {
         }
         Request::Pressed { id } => return board.pressed(&id, now),
         Request::List => return Ok(board.list().join("\n")),
+        Request::Remember { tool } => {
+            remember(&tool)?;
+            return Ok(String::new());
+        }
+        Request::Remembered { tool } => {
+            return Ok(if remembered(&tool) {
+                String::from("yes")
+            } else {
+                String::new()
+            });
+        }
         // these run in the client; a `pressed-wait` is answered by `held`, before `run`
         Request::Run { .. }
         | Request::Wait { .. }
         | Request::Hook(_)
+        | Request::Decide(_)
         | Request::PressedWait { .. } => {
             return Err(String::from(
                 "`activity run`, `wait` and `hook` run in the client",
@@ -1542,6 +1609,29 @@ mod tests {
             read(Ok(Reply::Done(String::from("yes")))),
             Ok(Some(String::from("yes")))
         );
+    }
+
+    #[test]
+    fn an_always_keeps_the_tool_name_only_and_only_in_this_process() {
+        assert_eq!(
+            Request::parse(&["hook", "claude", "decide"]),
+            Some(Request::Decide(Agent::Claude))
+        );
+        assert_eq!(Request::parse(&["hook", "claude", "other"]), None);
+        assert!(remember("Bash").is_ok());
+        assert!(remembered("Bash"));
+        assert!(!remembered("rm -rf /"));
+        assert!(remember("").is_err());
+        assert!(!remembered(""));
+
+        for index in 0..REMEMBERED {
+            assert!(remember(&format!("tool-{index}")).is_ok());
+        }
+
+        // the cap drops the oldest, and still never grows past it
+        assert!(!remembered("Bash"));
+        assert!(remembered("tool-0"));
+        assert_eq!(ALLOWED.locked().len(), REMEMBERED);
     }
 
     #[test]
