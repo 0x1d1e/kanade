@@ -6,8 +6,10 @@
 //!
 //! The desktop writes the list itself, as GTK apps close a document; Kanade only reads it.
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, atomic};
 use std::thread;
 use std::time::UNIX_EPOCH;
@@ -25,6 +27,9 @@ const MOST: u64 = 2 * 1024 * 1024;
 
 // the most files the shelf keeps
 pub const CAP: usize = 64;
+
+// the most candidates its list is scanned for: a list naming more is not stat'ed further
+const SCAN: usize = 1024;
 
 // one recent file, as a row shows it: its name, and the folder it is in
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,9 +136,18 @@ fn read(xbel: &Path, skip: &[PathBuf]) -> Vec<Recent> {
         return Vec::new();
     }
 
-    let Ok(bytes) = fs::read(xbel) else {
+    /*
+     * read at most one byte past the guard, so a file that grows after the check is still not read
+     * whole: the shelf is empty rather than a growing file read to its end
+     */
+    let Ok(file) = fs::File::open(xbel) else {
         return Vec::new();
     };
+    let mut bytes = Vec::new();
+
+    if file.take(MOST + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > MOST {
+        return Vec::new();
+    }
 
     shelf(&String::from_utf8_lossy(&bytes), skip)
 }
@@ -166,17 +180,27 @@ fn contained() -> Vec<PathBuf> {
 
 /*
  * the shelf a list's text names: every `file://` address it holds, in the order they appear, with
- * the ones that are still files on this machine and not Kanade's own; `skip` is what is left out
+ * the ones that are still files on this machine and not Kanade's own; `skip` is what is left out.
+ * Each path is read with its `.` and `..` taken literally before it is kept, so a list that names
+ * one file two ways is one row, and the list is scanned for at most `SCAN` candidates
  */
 fn shelf(text: &str, skip: &[PathBuf]) -> Vec<Recent> {
     let mut files: Vec<Recent> = Vec::new();
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut scanned = 0;
 
     for path in hrefs(text).filter_map(|href| local(&decoded(href))) {
-        if skip.iter().any(|dir| path.starts_with(dir))
-            || files.iter().any(|file| file.path == path)
-        {
+        let path = normalized(&path);
+
+        if skip.iter().any(|dir| path.starts_with(dir)) || !seen.insert(path.clone()) {
             continue;
         }
+
+        if scanned == SCAN {
+            break;
+        }
+
+        scanned += 1;
 
         if let Some(file) = recent(&path) {
             files.push(file);
@@ -188,6 +212,23 @@ fn shelf(text: &str, skip: &[PathBuf]) -> Vec<Recent> {
     files.truncate(CAP);
 
     files
+}
+
+// `path` with its `.` and `..` read as parts of it, so two spellings of one place are one path
+fn normalized(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            part => out.push(part.as_os_str()),
+        }
+    }
+
+    out
 }
 
 // every `file://` address the text holds, as it is written there
@@ -422,13 +463,22 @@ mod tests {
         assert_eq!(files[CAP - 1].name, "file-1.txt");
         assert!(files.iter().all(|file| file.name != "file-0.txt"));
 
-        // the same file named twice is one row
+        // the same file named twice is one row, and so is one named two ways
         let twice = format!(
             r#"<xbel><bookmark href="file://{0}/file-1.txt"/><bookmark href="file://{0}/file-1.txt"/></xbel>"#,
             dir.display()
         );
 
         assert_eq!(shelf(&twice, &[]).len(), 1);
+
+        let indirect = format!(
+            r#"<xbel><bookmark href="file://{0}/sub/../file-1.txt"/><bookmark href="file://{0}/file-1.txt"/></xbel>"#,
+            dir.display()
+        );
+        let found = shelf(&indirect, &[]);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, dir.join("file-1.txt"));
 
         let _ = fs::remove_dir_all(&dir);
     }
