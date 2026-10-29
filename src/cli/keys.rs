@@ -83,6 +83,19 @@ fn whole(range: Range) -> Json {
     json!({ "type": "integer", "minimum": range.least, "maximum": range.most })
 }
 
+// one Desk face's place: whole pixels from the output's top left corner (ADR 0143)
+fn spot() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "x": { "type": "integer", "minimum": -100000, "maximum": 100000 },
+            "y": { "type": "integer", "minimum": -100000, "maximum": 100000 },
+        },
+        "required": ["x", "y"],
+        "additionalProperties": false,
+    })
+}
+
 // one key's schema: what it takes as its Kind checks it, its help and the default it has
 fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
     let mut leaf = match &setting.kind {
@@ -138,6 +151,14 @@ fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
             "additionalProperties": false,
         }),
         Kind::Rules(_) => json!({ "type": "array", "items": { "type": "object" } }),
+        Kind::DeskPlaces(_) => json!({
+            "type": "object",
+            "properties": config::DESK_FACES
+                .iter()
+                .map(|face| ((*face).to_owned(), spot()))
+                .collect::<Map<_, _>>(),
+            "additionalProperties": false,
+        }),
         Kind::Quicklinks(_) => json!({ "type": "array", "items": { "type": "object" } }),
     };
 

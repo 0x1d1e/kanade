@@ -1,24 +1,28 @@
 //! The Desk (ADR 0137): faces of Services drawn as plain text on the desktop, in a window of its
 //! own on each output, under every other window. The Desk is the shell's whatever core is chosen,
 //! so it lives outside `island/`. The clock, weather, agenda and track line take no pointer. The
-//! media buttons and the notes card are the only parts of the window that do: its input region is
-//! those three buttons, the card, and nothing else, so every other click goes to what lies below.
-//! A face whose switch is off reads no Service. Event titles and the track's title and artist need
-//! their own switches. The notes card is the one face typed into in place (ADR 0140): it asks for
-//! the keyboard only while the pointer is on it or it is being typed into, never Exclusive.
+//! media buttons, the notes card and each face's handle are the only parts of the window that do:
+//! its input region is those three buttons, the card, the handles, and nothing else, so every other
+//! click goes to what lies below. A face whose switch is off reads no Service. Event titles and the
+//! track's title and artist need their own switches. The notes card is the one face typed into in
+//! place (ADR 0140): it asks for the keyboard only while the pointer is on it or it is being typed
+//! into, never Exclusive. A face stands where `desk.place` puts it, else in the corner stack, and a
+//! handle moves it (ADR 0143).
 
 pub mod notes;
+pub mod place;
 
 use kanade_runtime::service::Service;
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Button, Center, Color, Column, Cursor, End, Horizontal, InputArea, Keyboard, Layer,
-    LayerWindow, Margin, Monitor, Rectangle, Row, Size, Start, Text, Vertical, Widget, Zone,
-    children,
+    Button, Center, Color, Column, Cursor, End, Horizontal, InputArea, Key, Keyboard, Layer,
+    LayerWindow, Monitor, Rectangle, Row, Size, Stack, Start, Text, Vertical, Widget, WindowSize,
+    Zone, children,
 };
 
 use self::notes::Notes;
-use crate::config::{self, Corner};
+use self::place::Places;
+use crate::config::{self, Corner, Spot};
 use crate::icon::Icon;
 use crate::island::geometry::Rect;
 use crate::later::Later;
@@ -56,9 +60,6 @@ pub fn follow_overview() {
     }
 }
 
-// from the output's edges to the text
-const MARGIN: i32 = 48;
-
 const WIDTH: f32 = 420.0;
 
 // the clock's room, a plain line under it, and the media buttons' row under those
@@ -89,19 +90,16 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     // reading subscribes this window to the config
     let config = config::on(&monitor.name);
     let corner = config.desk_clock_corner;
+    let output = (monitor.width.max(1) as f32, monitor.height.max(1) as f32);
     // every face off, it reads no Service: no clock, so no frame each minute
     if !faces_on(&config) {
-        notes::close();
-
-        return shell(corner, 1.0).visible(false);
+        return hidden(corner, &monitor.name);
     }
 
     // niri's overview is its own picture of the desktop: no Desk in it, and no Service read
     // for a window nobody sees
     if Overview::read().0 {
-        notes::close();
-
-        return shell(corner, 1.0).visible(false);
+        return hidden(corner, &monitor.name);
     }
 
     // the card off, nothing is typed into it: what was typed is kept, and the file is not read
@@ -114,6 +112,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let weather = weather_line(&config);
     let agenda = agenda_line(&config);
     let titles = title_line(&config);
+    let titled = titles.is_some();
     // the media Module off follows no player, so the buttons are not read and take no room
     let media = config.desk_media && modules::on("media");
     let keys = if media { Remote::read().keys } else { None };
@@ -151,99 +150,211 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         || card;
 
     if !drawn {
-        notes::close();
-
-        return shell(corner, 1.0).visible(false);
+        return hidden(corner, &monitor.name);
     }
 
-    // the buttons' row stays while a player may open, so that does not move the lines above
-    let reserve_media = media;
-    let height = if config.desk_clock { CLOCK_HEIGHT } else { 0.0 }
-        + if weather.is_some() { LINE } else { 0.0 }
-        + if agenda.is_some() { LINE } else { 0.0 }
-        + if titles.is_some() { LINE } else { 0.0 }
-        + if card { CARD } else { 0.0 }
-        + if reserve_media { ROW } else { 0.0 };
-
-    let mut faces: Vec<Box<dyn Widget>> = Vec::new();
+    // every face that shows, its box's height, and what draws it: the stack lays them out for the
+    // faces the config gives no place, and each is drawn in its own box of the output
+    let mut faces: Vec<(&'static str, f32, Box<dyn Widget>)> = Vec::new();
 
     if config.desk_clock {
-        faces.push(Box::new(clock_face(corner, &config)));
+        faces.push(("clock", CLOCK_HEIGHT, Box::new(clock_face(corner, &config))));
     }
     if let Some(line) = weather {
-        faces.push(Box::new(plain(line, corner)));
+        faces.push(("weather", LINE, Box::new(plain(line, corner))));
     }
     if let Some(line) = agenda {
-        faces.push(Box::new(plain(line, corner)));
-    }
-    if let Some(line) = titles {
-        faces.push(Box::new(plain(line, corner)));
+        faces.push(("agenda", LINE, Box::new(plain(line, corner))));
     }
     if card {
-        faces.push(Box::new(notes_card(
-            corner,
-            &monitor.name,
-            &held,
-            &written,
-            typed,
-        )));
+        faces.push((
+            "notes",
+            CARD,
+            Box::new(notes_card(corner, &monitor.name, &held, &written, typed)),
+        ));
+    }
+    // the buttons' row stays while a player may open, so that does not move the lines above
+    if titles.is_some() || media {
+        let height = match (titles.is_some(), media) {
+            (true, true) => LINE + ROW,
+            (true, false) => LINE,
+            (false, _) => ROW,
+        };
+
+        faces.push((
+            "media",
+            height,
+            Box::new(media_face(corner, titles, keys, media)),
+        ));
     }
 
-    let mut window = shell(corner, height);
+    let heights: Vec<f32> = faces.iter().map(|(_, height, _)| *height).collect();
+    let stacked = place::stack(corner, &heights, output, WIDTH);
+    let (rects, moving) = {
+        let places = Places::read();
+
+        let rects = faces
+            .iter()
+            .zip(&stacked)
+            .map(|((name, _, _), box_)| {
+                let stored = config.desk_place.get(*name).copied();
+
+                place::at(&places, &monitor.name, name, stored, *box_, output)
+            })
+            .collect::<Vec<Rect>>();
+
+        (rects, place::keyboard(&monitor.name))
+    };
     let mut areas: Vec<InputArea> = Vec::new();
+    let mut layers: Vec<Box<dyn Widget>> = Vec::new();
 
-    if card {
-        areas.push(view::input_area(card_rect(height, reserve_media)));
-    }
+    for ((name, _, face), rect) in faces.into_iter().zip(rects) {
+        let handle = place::handle(rect, corner);
+        let grip = grip(
+            name,
+            handle,
+            rect,
+            &monitor.name,
+            config.desk_place.get(name).copied(),
+            output,
+        );
 
-    if reserve_media {
-        match keys {
-            Some(keys) => {
-                faces.push(Box::new(media_row(keys)));
-                areas.extend(media_areas(corner, height, keys));
-            }
+        // the parts of a face that take the pointer, and nothing else of it: the handle, the card's
+        // typing area, the buttons that can act. Those that cannot are left to what lies below
+        areas.push(view::input_area(handle));
 
-            // the row's room, so the lines above do not move when a player opens
-            None => faces.push(Box::new(Rectangle::new().width(1.0).height(ROW))),
+        if name == "notes" {
+            areas.push(view::input_area(rect));
         }
+
+        if name == "media"
+            && let Some(keys) = keys
+        {
+            areas.extend(media_areas(corner, rect, titled, keys));
+        }
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(rect.width)
+                .height(rect.height)
+                .translate(rect.x, rect.y)
+                .child(Stack::new(vec![face, Box::new(grip)])),
+        ));
     }
+
+    let mut window = shell(corner);
 
     window = window.input_region(areas);
 
     /*
      * the card asks for the keyboard before the press that focuses it, since niri focuses an
      * OnDemand surface only on one, and keeps it while it is typed into; an island opened without
-     * a press holds Exclusive for that, which a Bottom layer does not need
+     * a press holds Exclusive for that, which a Bottom layer does not need. A face being moved asks
+     * for it too, for Escape alone
      */
-    if notes::keyboard(&monitor.name) {
+    if notes::keyboard(&monitor.name) || moving {
         window = window.keyboard(Keyboard::OnDemand);
     }
 
     // registered with the keyboard, as a surface's is, since the press that starts a note and the
     // keys after it arrive as the same window is rebuilt; a card that is not being typed into
     // leaves them alone
-    if card {
+    if card || moving {
         let name = monitor.name.clone();
 
         window = window.on_key(move |key| {
+            // Escape puts a face being moved back where it stood, and keeps a note being typed
+            if key == Key::Escape && place::dragging(&name) {
+                place::back(&name);
+            }
+
             notes::press(&name, key);
         });
     }
 
-    // the keyboard went elsewhere, as a click outside the card does: what was typed is kept
-    if card {
+    // the keyboard went elsewhere, as a click outside the card does: what was typed is kept, and a
+    // face whose Escape can no longer arrive is let go where it stood
+    if card || moving {
         let name = monitor.name.clone();
 
-        window = window.on_lost(move || notes::blur(&name));
+        window = window.on_lost(move || {
+            if place::dragging(&name) {
+                place::back(&name);
+            }
+
+            notes::blur(&name);
+        });
     }
 
-    let column = Column::new(faces).width(Size::Parent).height(Size::Parent);
+    window.child(Stack::new(layers).width(Size::Parent).height(Size::Parent))
+}
 
-    window.child(if corner.left() {
+/*
+ * a face's handle: the bar at its inner edge, faded so the faces stay as calm as they have always
+ * been. A press on it takes hold of the face's box, and the pointer moves the box; a press on the
+ * card elsewhere keeps typing into it
+ */
+fn grip(
+    face: &'static str,
+    handle: Rect,
+    rect: Rect,
+    monitor: &str,
+    stored: Option<Spot>,
+    output: (f32, f32),
+) -> Rectangle {
+    let name = monitor.to_owned();
+    let under = name.clone();
+    let let_go = name.clone();
+    let bar = Rectangle::new()
+        .width(place::BAR)
+        .height((handle.height * 0.6).max(place::BAR))
+        .radius(place::BAR / 2.0)
+        .fill(theme::faded(theme::ON_SCENE, DISABLED));
+
+    Rectangle::new()
+        .width(handle.width)
+        .height(handle.height)
+        .translate(handle.x - rect.x, handle.y - rect.y)
+        .cursor(Cursor::Grab)
+        .align_child(Center, Center)
+        // a press on the handle is the handle's, not the card's: it starts nothing being typed
+        .on_click(|_| {})
+        .on_hover(move |inside| place::hover(&under, inside))
+        .on_drag(move |point| place::drag(&name, face, rect, stored, output, point))
+        .on_drag_end(move || place::release(&let_go))
+        .child(bar)
+}
+
+// the media face: the track's line over the buttons' row, in the one box that moves them together
+fn media_face(
+    corner: Corner,
+    titles: Option<String>,
+    keys: Option<Keys>,
+    reserve: bool,
+) -> impl Widget + use<> {
+    let mut parts: Vec<Box<dyn Widget>> = Vec::new();
+
+    if let Some(line) = titles {
+        parts.push(Box::new(plain(line, corner)));
+    }
+
+    parts.push(match keys {
+        Some(keys) => Box::new(media_row(keys)),
+        // the row's room, so the lines above do not move when a player opens
+        None => {
+            debug_assert!(reserve);
+
+            Box::new(Rectangle::new().width(1.0).height(ROW))
+        }
+    });
+
+    let column = Column::new(parts).width(Size::Parent).height(Size::Parent);
+
+    if corner.left() {
         column.align(Start)
     } else {
         column.align(End)
-    })
+    }
 }
 
 fn faces_on(config: &config::Config) -> bool {
@@ -255,10 +366,25 @@ fn faces_on(config: &config::Config) -> bool {
         || config.desk_notes
 }
 
-fn shell(corner: Corner, height: f32) -> LayerWindow {
+// no Desk on this output for now: a face being moved goes with it, and its place stays as it was
+fn hidden(corner: Corner, monitor: &str) -> LayerWindow {
+    notes::close();
+
+    // a write only when there is one: a hidden Desk that wrote each frame would draw each frame
+    if place::dragging(monitor) {
+        place::back(monitor);
+    }
+
+    // a leave that never came, as the window went: the keyboard is no longer wanted for a handle
+    place::hover(monitor, false);
+
+    shell(corner).visible(false)
+}
+
+fn shell(corner: Corner) -> LayerWindow {
     LayerWindow::new()
-        .width(WIDTH)
-        .height(height.max(1.0))
+        .width(WindowSize::Full)
+        .height(WindowSize::Full)
         .anchor_vertical(if corner.top() {
             Vertical::Top
         } else {
@@ -268,12 +394,6 @@ fn shell(corner: Corner, height: f32) -> LayerWindow {
             Horizontal::Left
         } else {
             Horizontal::Right
-        })
-        .margin(Margin {
-            top: MARGIN,
-            right: MARGIN,
-            bottom: MARGIN,
-            left: MARGIN,
         })
         .layer(Layer::Bottom)
         .space(Zone::Ignore)
@@ -463,17 +583,6 @@ fn clipped(note: &str) -> String {
     short
 }
 
-// where the pointer types into the card, in the window's own space: the card's box, under the
-// Desk's other lines and above the buttons' row
-fn card_rect(height: f32, media: bool) -> Rect {
-    Rect {
-        x: 0.0,
-        y: height - if media { ROW } else { 0.0 } - CARD,
-        width: WIDTH,
-        height: CARD,
-    }
-}
-
 // previous, play or pause, next; each faded and dead when the player cannot. A press here is a
 // click elsewhere than the notes card, so it ends the typing the card took
 fn media_row(keys: Keys) -> Row {
@@ -540,11 +649,15 @@ fn button(icon: Icon, name: &'static str, transport: Transport, able: bool) -> R
     })
 }
 
-// where the pointer is taken: the buttons that can act, in the window's own space. Those that cannot
-// are left to what lies below
-fn media_areas(corner: Corner, height: f32, keys: Keys) -> Vec<InputArea> {
-    let x = if corner.left() { 0.0 } else { WIDTH - BUTTONS };
-    let y = height - ROW + (ROW - BUTTON) / 2.0;
+// where the buttons that can act take the pointer, in the window's own space: those that cannot are
+// left to what lies below
+fn media_areas(corner: Corner, rect: Rect, titled: bool, keys: Keys) -> Vec<InputArea> {
+    let x = if corner.left() {
+        rect.x
+    } else {
+        rect.x + WIDTH - BUTTONS
+    };
+    let y = rect.y + if titled { LINE } else { 0.0 } + (ROW - BUTTON) / 2.0;
 
     [keys.can_previous, keys.can_play_pause, keys.can_next]
         .into_iter()

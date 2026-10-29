@@ -201,6 +201,10 @@ media_titles = false
 # your notes on the desktop, newest last, in $XDG_STATE_HOME/kanade/desk-notes; a click on the card types into it in place and Escape keeps it; off, the card is not drawn and the file is not read, per output
 notes = false
 
+[desk.place]
+# face = where it stands on the output, its top left corner in px from the output's top left: clock, weather, agenda, media or notes; a face given no place stands in the corner desk.clock_corner says, and dragging a face's handle sets this, per output
+# clock = { x = 40, y = 40 }
+
 [controls]
 # the switches the Controls Surface shows, in order, each "name" or "name:size" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit, power-profile; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them
 tiles = ["wifi", "bluetooth", "caffeine", "dnd", "night-light", "focus"]

@@ -1825,6 +1825,9 @@ fn control(
         Kind::Quicklinks(_) => unreachable!("launcher.quicklinks is set in config files only"),
         Kind::Argv(_) => unreachable!("hooks are set in config files only"),
         Kind::Names(..) => unreachable!("focus.auto is set in config files only"),
+        Kind::DeskPlaces(_) => {
+            unreachable!("desk.place is set in config files and by dragging a face's handle")
+        }
     }
 }
 

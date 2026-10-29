@@ -158,6 +158,8 @@ pub const MODULES: &str = "modules";
 // still accepted in the config schema
 pub const EXTERNAL_KEYS: &[&str] = &[
     "dock.pinned",
+    // set in a config file, or by dragging a face's handle, not by a click
+    "desk.place",
     "gestures",
     "notifications.sound_low",
     "notifications.sound_normal",

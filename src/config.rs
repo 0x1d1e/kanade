@@ -263,6 +263,9 @@ pub struct Config {
     pub desk_media_titles: bool,
     // `desk.notes`: the notes card under the Desk's lines, typed in place (ADR 0140)
     pub desk_notes: bool,
+    // `desk.place`: where each face stands on an output, in px from its top left corner; a face
+    // given none stands in the corner `desk_clock_corner` says (ADR 0143)
+    pub desk_place: BTreeMap<&'static str, Spot>,
     // `screen-time.limit`: focused minutes before one notice that day; 0 is off (ADR 0138)
     pub screen_time_limit: Duration,
     // `screen-time.titles`: keep the focused window's title in the private file; off (ADR 0138)
@@ -656,6 +659,7 @@ impl Default for Config {
             desk_agenda_titles: false,
             desk_media_titles: false,
             desk_notes: false,
+            desk_place: BTreeMap::new(),
             screen_time_limit: Duration::ZERO,
             screen_time_titles: false,
             live_stale: Duration::from_secs(30 * 60),
@@ -1214,6 +1218,10 @@ pub enum Kind {
     // a table of Module name = true or false, merged by name; the Field holds the ones off
     Modules(Field<Vec<&'static str>>),
 
+    // a table of Desk face name = where it stands, `{ x = 100, y = 200 }`, merged over the layers
+    // below by face
+    DeskPlaces(Field<BTreeMap<&'static str, Spot>>),
+
     // a list of notification rules, each a table; a layer replaces the list below
     Rules(Field<Vec<Rule>>),
 
@@ -1436,6 +1444,30 @@ impl Kind {
 
                 (field.set)(config, off);
             }
+            Kind::DeskPlaces(field) => {
+                let expected = || {
+                    format!(
+                        "expected a table of {} = {{ x = 100, y = 200 }}",
+                        quoted(DESK_FACES)
+                    )
+                };
+                let table = value.as_table().ok_or_else(expected)?;
+                let mut places = (field.get)(config);
+
+                // checked whole first, so a bad face keeps all of its file's below
+                let mut given = BTreeMap::new();
+                for (face, value) in table {
+                    let named = DESK_FACES
+                        .iter()
+                        .find(|&&known| known == face)
+                        .ok_or_else(|| format!("unknown face {face:?}, {}", expected()))?;
+
+                    given.insert(*named, Spot::read(face, value)?);
+                }
+
+                places.extend(given);
+                (field.set)(config, places);
+            }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
             Kind::Quicklinks(field) => {
                 let mut links = quicklinks_cfg::read_all(value)?;
@@ -1538,6 +1570,12 @@ impl Kind {
                     .map(|name| (name.to_owned(), Value::Boolean(false)))
                     .collect(),
             ),
+            Kind::DeskPlaces(field) => Value::Table(
+                (field.get)(config)
+                    .into_iter()
+                    .map(|(face, spot)| (face.to_owned(), spot.value()))
+                    .collect(),
+            ),
             Kind::Rules(field) => {
                 Value::Array((field.get)(config).iter().map(Rule::value).collect())
             }
@@ -1586,6 +1624,13 @@ impl Kind {
             | Kind::Words(field) => field.copy(from, to),
             Kind::AppIds(field) | Kind::Gestures(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
+            // an output's own places stand over the ones the layers below gave, face by face
+            Kind::DeskPlaces(field) => {
+                let mut places = (field.get)(to);
+
+                places.extend((field.get)(from));
+                (field.set)(to, places);
+            }
             Kind::Rules(field) => field.copy(from, to),
             Kind::Quicklinks(field) => field.copy(from, to),
             Kind::Argv(field) => field.copy(from, to),
@@ -1596,7 +1641,10 @@ impl Kind {
 
     // a table of its own keys, which a file writes as `[key]`
     pub fn table(&self) -> bool {
-        matches!(self, Kind::AppIds(_) | Kind::Gestures(_) | Kind::Modules(_))
+        matches!(
+            self,
+            Kind::AppIds(_) | Kind::Gestures(_) | Kind::Modules(_) | Kind::DeskPlaces(_)
+        )
     }
 }
 
@@ -2308,6 +2356,63 @@ impl Corner {
     }
 }
 
+// the Desk's faces, as `desk.place` names them, in the order the corner stack draws them
+pub const DESK_FACES: &[&str] = &["clock", "weather", "agenda", "notes", "media"];
+
+// where a Desk face stands on one output: its top left corner, in whole logical pixels from the
+// output's own (ADR 0143). A face given none stands in the corner stack
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spot {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Spot {
+    // as far from an output's corner as a place may be, which is past any output's size
+    const FAR: i64 = 100_000;
+
+    pub fn new(x: i32, y: i32) -> Self {
+        Spot { x, y }
+    }
+
+    // `{ x = 100, y = 200 }`, and nothing else
+    fn read(face: &str, value: &Value) -> Result<Self, String> {
+        let table = value
+            .as_table()
+            .ok_or_else(|| format!("{face}: expected {{ x = 100, y = 200 }}"))?;
+        let whole = |key: &str| {
+            table
+                .get(key)
+                .and_then(Value::as_integer)
+                .filter(|at| (-Self::FAR..=Self::FAR).contains(at))
+                .map(|at| at as i32)
+                .ok_or_else(|| {
+                    format!(
+                        "{face}: expected {key} as whole px, {}-{} away",
+                        -Self::FAR,
+                        Self::FAR
+                    )
+                })
+        };
+        let (x, y) = (whole("x")?, whole("y")?);
+
+        if let Some(key) = table.keys().find(|key| !matches!(key.as_str(), "x" | "y")) {
+            return Err(format!("{face}: {key} means nothing here, only x and y"));
+        }
+
+        Ok(Spot { x, y })
+    }
+
+    pub fn value(self) -> Value {
+        let mut table = toml::Table::new();
+
+        table.insert(String::from("x"), Value::Integer(i64::from(self.x)));
+        table.insert(String::from("y"), Value::Integer(i64::from(self.y)));
+
+        Value::Table(table)
+    }
+}
+
 pub const DESK: &[Setting] = &[
     Setting {
         key: "desk.clock",
@@ -2420,6 +2525,21 @@ pub const DESK: &[Setting] = &[
         }),
         tail: Tail {
             hint: Some("Show notes you can type on the desktop"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.place",
+        label: "Desk face places",
+        help: "face = where it stands on the output, its top left corner in px from the output's top left: clock, weather, agenda, media or notes; a face given no place stands in the corner desk.clock_corner says, and dragging a face's handle sets this",
+        kind: Kind::DeskPlaces(Field {
+            get: |config| config.desk_place.clone(),
+            set: |config, place| config.desk_place = place,
+        }),
+        tail: Tail {
+            hint: None,
+            example: Some("{ clock = { x = 40, y = 40 } }"),
             per_output: true,
             ..Tail::DEFAULT
         },
@@ -5017,6 +5137,7 @@ mod tests {
                 "desk.agenda_titles",
                 "desk.media_titles",
                 "desk.notes",
+                "desk.place",
                 "controls.tiles",
                 "wallpaper.directory",
                 "wallpaper.per_monitor",
@@ -5108,15 +5229,22 @@ mod tests {
                 "desk.agenda",
                 "desk.agenda_titles",
                 "desk.media_titles",
-                "desk.notes"
+                "desk.notes",
+                "desk.place"
             ]
         );
 
-        // `Config::on` copies an output's value over whole, and `pending` reads only the global one
+        // `Config::on` copies an output's value over the layer below, whole unless the kind merges
+        // its table face by face, and `pending` reads only the global one
         for setting in settings().filter(|setting| setting.tail.per_output) {
             assert!(
-                !setting.kind.table() && !setting.tail.restart,
+                !setting.tail.restart,
                 "{} cannot be per output",
+                setting.key
+            );
+            assert!(
+                !setting.kind.table() || matches!(setting.kind, Kind::DeskPlaces(_)),
+                "{} would stand over the layer below whole",
                 setting.key
             );
         }
@@ -5141,6 +5269,67 @@ mod tests {
         );
         assert!(setting.tail.per_output);
         assert!(!setting.tail.restart);
+    }
+
+    // "desk.place": a face's place is read as `face = { x, y }`, an output's own stands over the
+    // layer below face by face, and a face the Desk has not is refused, keeping the rest
+    #[test]
+    fn desk_places_name_the_faces_that_stand_and_no_others() {
+        let (config, problems) =
+            one("[desk.place]\nclock = { x = 40, y = 500 }\nnotes = { x = 10, y = 20 }");
+
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(config.desk_place["clock"], Spot::new(40, 500));
+        assert_eq!(config.desk_place["notes"], Spot::new(10, 20));
+        assert_eq!(config.on("eDP-1").desk_place, config.desk_place);
+        assert!(Config::default().desk_place.is_empty());
+
+        // an output's own place stands over the global one, and the faces it does not name stay
+        let (config, problems) = layers(
+            &[
+                "[desk.place]\nclock = { x = 40, y = 500 }\nnotes = { x = 10, y = 20 }",
+                "[output.\"eDP-1\".desk.place]\nclock = { x = 1, y = 2 }",
+            ],
+            MIGRATIONS,
+        );
+
+        for problems in &problems {
+            assert!(problems.is_empty(), "{problems:?}");
+        }
+
+        let output = config.on("eDP-1");
+
+        assert_eq!(output.desk_place["clock"], Spot::new(1, 2));
+        assert_eq!(output.desk_place["notes"], Spot::new(10, 20));
+        assert_eq!(config.desk_place["clock"], Spot::new(40, 500));
+        assert_eq!(
+            config.on("HDMI-A-1").desk_place["clock"],
+            Spot::new(40, 500)
+        );
+
+        // a face the Desk has not refuses the table whole, so no half-read places stand
+        let (config, problems) =
+            one("[desk.place]\nclok = { x = 1, y = 2 }\nagenda = { x = 3, y = 4 }");
+
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].0, 1);
+        assert!(
+            problems[0]
+                .1
+                .starts_with("desk.place: unknown face \"clok\"")
+        );
+
+        assert!(config.desk_place.is_empty(), "{:?}", config.desk_place);
+
+        // and a place that is no whole px is one the drag never writes, and the file may not give
+        let (_, problems) = one("[desk.place]\nclock = { x = 1.5, y = 2 }");
+
+        assert_eq!(problems.len(), 1, "{problems:?}");
+
+        assert_eq!(
+            problems[0].1,
+            "desk.place: clock: expected x as whole px, -100000-100000 away"
+        );
     }
 
     #[test]

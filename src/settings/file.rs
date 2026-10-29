@@ -424,6 +424,43 @@ mod tests {
         );
     }
 
+    // a Desk face's place, as dragging its handle keeps it: written under the output's own table,
+    // and read back as the config reads it
+    #[test]
+    fn a_desk_face_place_is_written_under_its_output() {
+        let text = set(
+            "",
+            &Config::default(),
+            "output.eDP-1.desk.place.clock",
+            "{ x = 690, y = 390 }",
+        )
+        .unwrap();
+
+        assert_eq!(
+            body(&text),
+            body(&format!(
+                "schema_version = {}\n[output.\"eDP-1\".desk.place]\nclock = {{ x = 690, y = 390 }}",
+                config::SCHEMA_VERSION
+            ))
+        );
+
+        // the place over the layer below, and the ones the output gives that the file keeps
+        let text = set(
+            &text,
+            &Config::default(),
+            "output.eDP-1.desk.place.notes",
+            "{ x = 10, y = 20 }",
+        )
+        .unwrap();
+
+        assert_eq!(
+            body(&text)["output"]["eDP-1"]["desk"]["place"],
+            "{ clock = { x = 690, y = 390 }, notes = { x = 10, y = 20 } }"
+                .parse::<Value>()
+                .unwrap()
+        );
+    }
+
     #[test]
     fn removing_keeps_the_rest() {
         let text = change_one(
