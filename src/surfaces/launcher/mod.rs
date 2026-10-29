@@ -2996,7 +2996,7 @@ mod tests {
         }
     }
 
-    // the empty query lists the four sections in the plan's order, a heading over each, and a
+    // the empty query lists the five sections in ADR 0128's order, a heading over each, and a
     // section that found nothing shows none
     #[test]
     fn sections_list_in_order_under_a_heading_each() {
