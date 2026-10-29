@@ -114,6 +114,10 @@ pub struct Config {
     // a wallpaper picked in the shell is set on the monitor it was picked on, or on all of them
     pub wallpaper_per_monitor: bool,
 
+    // `wallpaper.moving`: an animated GIF or APNG is drawn by the shell rather than left to awww,
+    // which shows its first picture (ADR 0144)
+    pub wallpaper_moving: bool,
+
     // `calendar.paths`: the iCalendar files and directories the calendar reads, else the default
     // directory (ADR 0015)
     pub calendars: Vec<String>,
@@ -592,6 +596,7 @@ impl Default for Config {
             wallpapers: None,
             transition: Transition::default(),
             wallpaper_per_monitor: true,
+            wallpaper_moving: false,
             calendars: Vec::new(),
             reminder: 0,
             subscriptions: Vec::new(),
@@ -2740,6 +2745,19 @@ pub const WALLPAPER: &[Setting] = &[
         ),
         tail: Tail {
             hint: Some("How the wallpaper changes to a new image"),
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "wallpaper.moving",
+        label: "Moving wallpapers",
+        help: "on, a moving image picked as the wallpaper is drawn by Kanade, at the speed it was made at, and pauses while the session is locked, niri's overview is open or a fullscreen window covers its monitor; off, awww shows such a file as its first picture",
+        kind: Kind::Switch(Field {
+            get: |config| config.wallpaper_moving,
+            set: |config, on| config.wallpaper_moving = on,
+        }),
+        tail: Tail {
+            hint: Some("Draw animated GIFs and APNGs as they were made"),
             ..Tail::DEFAULT
         },
     },
@@ -5142,6 +5160,7 @@ mod tests {
                 "wallpaper.directory",
                 "wallpaper.per_monitor",
                 "wallpaper.transition",
+                "wallpaper.moving",
                 "wallpaper.transition_duration",
                 "launcher.actions",
                 "launcher.commands",

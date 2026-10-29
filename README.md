@@ -58,7 +58,7 @@ Expanding the Island opens one of its dedicated Surfaces, navigable by keyboard 
 - **Weather**: Current conditions alongside hourly and multi-day forecasts retrieved from Open-Meteo.
 - **Timer**: Quick countdown timer, stopwatch, and configurable pomodoro intervals with automatic phase transitions.
 - **Capture**: Full-screen, output, or region screenshots, screen color picker, and output, area, or window screen recording.
-- **Wallpapers**: Visual wallpaper browser and selector driven by awww, integrating with Matugen for dynamic palette generation.
+- **Wallpapers**: Visual wallpaper browser and selector driven by awww, integrating with Matugen for dynamic palette generation; with `wallpaper.moving` on, an animated GIF or APNG picked as the wallpaper is drawn by Kanade itself, at its own speed, pausing while the session is locked, niri's overview is open or a fullscreen window covers its output.
 - **Keys**: Searchable cheatsheet of active niri keybindings and Kanade shell shortcuts.
 - **Session**: Lock, logout, suspend, reboot, and power off controls with a grace-period countdown and inhibitor warnings.
 - **Tray**: StatusNotifierItem system tray host exposing application status icons and sub-surface menus.
@@ -85,7 +85,7 @@ Beyond the Island, Kanade coordinates the surrounding desktop environment:
 
 - **niri specific**: Kanade is designed specifically for niri, integrating with its IPC socket, window layout, and layer-shell protocols. Hyprland and Sway are unsupported.
 - **No permanent status bar**: Kanade does not offer a static tray strip or permanent resource meters (such as continuous CPU, RAM, or network graphs). Information surfaces only when an Activity demands attention or when explicitly summoned.
-- **Not a wallpaper renderer**: Kanade manages wallpaper selection and palette extraction through awww and Matugen, but does not draw desktop wallpapers directly.
+- **Not a video wallpaper renderer**: Kanade manages wallpaper selection and palette extraction through awww and Matugen, and draws desktop wallpapers through it; only an animated GIF or APNG picked with `wallpaper.moving` on is drawn by Kanade itself.
 
 ## Quick Start & Installation
 

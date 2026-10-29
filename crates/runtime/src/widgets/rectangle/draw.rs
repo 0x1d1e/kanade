@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::animation::moving;
 use crate::graphics::{Area, Corners, Renderer, image};
@@ -118,9 +119,14 @@ fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: Cor
 }
 
 fn paint_image(fill: &Image, renderer: &mut Renderer, area: Area, radius: Corners) {
-    // still decoding, or unreadable
-    let Some(image) = image::load(&fill.path, fill.thumbnail) else {
-        return;
+    let image = match &fill.picture {
+        Some(picture) => Arc::clone(picture),
+
+        // still decoding, or unreadable
+        None => match image::load(&fill.path, fill.thumbnail) {
+            Some(image) => image,
+            None => return,
+        },
     };
 
     let image_width = image.width() as f32;

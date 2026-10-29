@@ -40,7 +40,7 @@ pub use app::App;
 pub use full::Full;
 pub use graphics::font::{install as install_face, installed as installed_face};
 pub use graphics::image::{
-    Format as ImageFormat, ImageState, MOST_PIXELS, decode as decode_image, draw_svg,
+    Bitmap, Format as ImageFormat, ImageState, MOST_PIXELS, decode as decode_image, draw_svg,
     format as image_format,
 };
 pub use graphics::{Cap, Color, Gradient, Weight};

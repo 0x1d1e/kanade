@@ -67,6 +67,15 @@ impl Bitmap {
         }
     }
 
+    // the same pixels one picture hands to several windows, drawn without a copy each time
+    pub fn shared(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+        }
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }

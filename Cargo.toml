@@ -56,6 +56,8 @@ simd-adler32 = "0.3"
 # the runtime already builds them; how light the wallpaper behind the lock screen is (ADR 0024)
 png = "0.18"
 zune-jpeg = "0.5"
+# the shots of an animated wallpaper, read in pure Rust: the GIF decoder (ADR 0144)
+gif = "0.14"
 # calloop already builds it; src/clock.rs's timerfd, signals, terminal mode and evdev ioctls, with no
 # hand-kept ABI
 rustix = { version = "1", default-features = false, features = ["std", "fs", "time", "process"] }

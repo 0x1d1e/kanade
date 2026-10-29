@@ -468,6 +468,7 @@ pub const PAGES: &[Page] = &[
                 rows: &[
                     Row::Key("wallpaper.directory"),
                     Row::Key("wallpaper.per_monitor"),
+                    Row::Key("wallpaper.moving"),
                     Row::Key("wallpaper.transition"),
                     Row::Key("wallpaper.transition_duration"),
                 ],

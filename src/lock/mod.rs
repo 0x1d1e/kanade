@@ -30,7 +30,7 @@ use crate::config::{self, Config};
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::modules;
-use crate::sources::{dictation, recording, sleep};
+use crate::sources::{dictation, recording, sleep, wallpaper_moving};
 
 mod keyboard;
 mod password;
@@ -984,6 +984,10 @@ fn say(requests: &Requests) {
     if *Said::read() != said {
         *Said::write() = said;
     }
+
+    // whether the session is locked changed, as it does here and nowhere else: a moving wallpaper
+    // draws no shot while it is (ADR 0144)
+    wallpaper_moving::paused();
 }
 
 #[cfg(test)]

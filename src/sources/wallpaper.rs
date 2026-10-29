@@ -29,7 +29,7 @@ use kanade_runtime::{MOST_PIXELS, MutexExt, queue::Queue, service::Service};
 // what the lock screen decodes, svg told by name and the rest by how they start
 pub use kanade_runtime::{ImageFormat as Format, image_format as format};
 
-use super::wake;
+use super::{wake, wallpaper_moving};
 use crate::backoff::Backoff;
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
@@ -584,6 +584,12 @@ pub fn serve() {
             if shown.is_ok() && modules::on("lock") {
                 look();
             }
+        }
+
+        // awww's still is what shows until a moving file's first shot, and again if it cannot be
+        // decoded; a still file stops whatever played (ADR 0144)
+        if shown.is_ok() {
+            wallpaper_moving::play(path.clone(), output.clone());
         }
 
         // on another output than the palette's, it is the look of awww's cache that says it unchanged

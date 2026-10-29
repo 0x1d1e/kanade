@@ -2,8 +2,8 @@
 
 use std::time::Instant;
 
-use kanade_runtime::Monitors;
 use kanade_runtime::service::{self, Service};
+use kanade_runtime::{Monitors, Toplevels};
 
 use crate::cli::{Call, Verb};
 use crate::clock::WallClock;
@@ -27,8 +27,8 @@ use crate::sources::{
     lyrics, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, screen_time, seat,
-    session, sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows,
-    workspace,
+    session, sleep, subscriptions, system, timer, tray, wake, wallpaper, wallpaper_moving, weather,
+    windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, desk, dock, gesture, hooks, idle,
@@ -908,7 +908,17 @@ notifications dnd on until <HH:MM>
             supervise::spawn("wallpaper-shown", wallpaper::watch);
             // fills an empty folder once, from the Favorites list: done, not stopped
             supervise::spawn_once("wallpaper-seed", wallpaper::seed);
-            app
+
+            // a moving wallpaper is drawn by the shell itself, over the still awww drew (ADR 0144)
+            supervise::spawn("wallpaper-moving", wallpaper_moving::run);
+
+            // what holds a moving wallpaper back: the lock, niri's overview, a fullscreen window
+            service::watch::<Niri>(wallpaper_moving::follow);
+            service::watch::<fullscreen::Fullscreen>(wallpaper_moving::follow);
+            service::watch::<Toplevels>(wallpaper_moving::follow);
+            service::watch::<wallpaper_moving::Resting>(wallpaper_moving::paused);
+
+            app.window_per_monitor(wallpaper_moving::window)
         },
     },
     Module {

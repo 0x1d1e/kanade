@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::graphics::Area;
-use crate::graphics::image::{self, ImageState};
+use crate::graphics::image::{self, Bitmap, ImageState};
 
 pub struct Image {
     pub(crate) path: PathBuf,
@@ -9,6 +10,9 @@ pub struct Image {
 
     // the size it is shrunk to cover when decoded, none keeps every pixel
     pub(crate) thumbnail: Option<(u32, u32)>,
+
+    // pixels a caller already decoded, drawn as they are and no file read
+    pub(crate) picture: Option<Arc<Bitmap>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +33,7 @@ impl Image {
             path: path.into(),
             fit: Fit::Cover,
             thumbnail: None,
+            picture: None,
         }
     }
 
@@ -37,6 +42,7 @@ impl Image {
             path: path.into(),
             fit: Fit::Contain,
             thumbnail: None,
+            picture: None,
         }
     }
 
@@ -45,6 +51,20 @@ impl Image {
             path: path.into(),
             fit: Fit::Stretch,
             thumbnail: None,
+            picture: None,
+        }
+    }
+
+    /*
+     * pixels the caller decoded itself, drawn at once with no file to read: a
+     * picture whose frames arrive one at a time hands over each as it comes
+     */
+    pub fn bitmap(picture: Arc<Bitmap>) -> Self {
+        Self {
+            path: PathBuf::new(),
+            fit: Fit::Cover,
+            thumbnail: None,
+            picture: Some(picture),
         }
     }
 
@@ -74,6 +94,10 @@ impl Image {
      * one loading is drawn again once it is done
      */
     pub fn state(&self) -> ImageState {
+        if self.picture.is_some() {
+            return ImageState::Ready;
+        }
+
         image::state(&self.path, self.thumbnail)
     }
 }
