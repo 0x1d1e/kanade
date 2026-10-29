@@ -16,6 +16,8 @@ use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
 pub struct Quicklink {
     pub title: String,
     pub target: Target,
+    // the typed query is one more argv word; only an argv target takes one
+    pub passes_query: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,22 +33,32 @@ impl LauncherProvider for Quicklinks<'_> {
         self.0
             .iter()
             .filter_map(|link| {
-                let fit = if query.is_empty() {
-                    Some(Fit::Prefix)
+                let fit = if link.passes_query {
+                    // the query is the argument, so the row takes any text; its name still
+                    // ranks it when the text fits, else it waits at the end
+                    if query.is_empty() {
+                        return None;
+                    }
+                    provider::fit(query, &link.title).unwrap_or(Fit::Anywhere)
+                } else if query.is_empty() {
+                    Fit::Prefix
                 } else {
-                    provider::fit(query, &link.title)
-                }?;
+                    provider::fit(query, &link.title)?
+                };
 
-                Some(answer(link, fit))
+                Some(answer(link, fit, query))
             })
             .collect()
     }
 }
 
-fn answer(link: &Quicklink, fit: Fit) -> Answer {
+fn answer(link: &Quicklink, fit: Fit, query: &str) -> Answer {
     let (detail, action) = match &link.target {
         Target::Url(url) => (String::new(), Action::Browse(url.clone())),
-        Target::Argv(argv) => (String::new(), Action::Quicklink(argv.clone())),
+        Target::Argv(argv) => (
+            String::new(),
+            Action::Quicklink(command(argv, link.passes_query, query)),
+        ),
     };
 
     Answer {
@@ -56,6 +68,17 @@ fn answer(link: &Quicklink, fit: Fit) -> Answer {
         mark: Mark::Icon(Icon::Forward),
         action,
     }
+}
+
+// the argv a row runs: a passing row's typed query is one more word, never split
+fn command(argv: &[String], passes_query: bool, query: &str) -> Vec<String> {
+    let mut words = argv.to_vec();
+
+    if passes_query && !query.is_empty() {
+        words.push(query.to_owned());
+    }
+
+    words
 }
 
 // runs the argv directly, no shell, off the view thread
@@ -159,14 +182,35 @@ pub fn read_all(value: &Value) -> Result<Vec<Quicklink>, String> {
             ));
         };
 
+        let passes_query = match table.get("passes_query") {
+            Some(value) => value.as_bool().ok_or_else(|| {
+                format!(
+                    "quicklink {}: \"passes_query\" must be true or false",
+                    at + 1
+                )
+            })?,
+            None => false,
+        };
+
+        if passes_query && !matches!(target, Target::Argv(_)) {
+            return Err(format!(
+                "quicklink {}: \"passes_query\" needs an \"argv\"",
+                at + 1
+            ));
+        }
+
         // refuse unknown keys
         for key in table.keys() {
-            if key != "title" && key != "url" && key != "argv" {
+            if key != "title" && key != "url" && key != "argv" && key != "passes_query" {
                 return Err(format!("quicklink {}: unknown key {key:?}", at + 1));
             }
         }
 
-        links.push(Quicklink { title, target });
+        links.push(Quicklink {
+            title,
+            target,
+            passes_query,
+        });
     }
 
     Ok(links)
@@ -192,6 +236,10 @@ pub fn value(links: &[Quicklink]) -> Value {
                     }
                 }
 
+                if link.passes_query {
+                    table.insert("passes_query".into(), Value::Boolean(true));
+                }
+
                 Value::Table(table)
             })
             .collect(),
@@ -206,6 +254,7 @@ mod tests {
         Quicklink {
             title: title.into(),
             target: Target::Url(url.into()),
+            passes_query: false,
         }
     }
 
@@ -213,6 +262,15 @@ mod tests {
         Quicklink {
             title: title.into(),
             target: Target::Argv(argv.iter().map(|s| String::from(*s)).collect()),
+            passes_query: false,
+        }
+    }
+
+    fn script(title: &str, argv: &[&str]) -> Quicklink {
+        Quicklink {
+            title: title.into(),
+            target: Target::Argv(argv.iter().map(|s| String::from(*s)).collect()),
+            passes_query: true,
         }
     }
 
@@ -363,12 +421,103 @@ argv = []
         );
     }
 
+    // a passing row appends the typed query as one final argv word, unchanged
+    #[test]
+    fn a_passing_row_appends_the_query_as_one_word() {
+        let argv = [String::from("lookup")];
+
+        assert_eq!(
+            command(&argv, true, "two words $(x)"),
+            ["lookup", "two words $(x)"]
+        );
+    }
+
+    // a plain row keeps its words, and a passing row with nothing typed has no word to add
+    #[test]
+    fn command_leaves_a_plain_or_empty_query_alone() {
+        let argv = [String::from("code")];
+
+        assert_eq!(command(&argv, false, "two words"), ["code"]);
+        assert_eq!(command(&argv, true, ""), ["code"]);
+    }
+
+    // with nothing typed a passing row is hidden rather than run without its argument
+    #[test]
+    fn a_passing_row_is_hidden_with_no_query() {
+        let links = [script("Look up", &["lookup"])];
+        let provider = Quicklinks(&links);
+
+        assert!(provider.find("").is_empty());
+    }
+
+    // a typed query reaches a passing row whole, even when it does not fit its title
+    #[test]
+    fn a_typed_query_reaches_the_action_whole() {
+        let links = [script("Look up", &["lookup"])];
+        let provider = Quicklinks(&links);
+        let found = provider.find("two words $(x)");
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].fit, Fit::Anywhere);
+        assert!(matches!(&found[0].action, Action::Quicklink(argv)
+                if argv == &["lookup", "two words $(x)"]));
+    }
+
+    // a query that fits a passing row's title ranks it as that fit
+    #[test]
+    fn a_fitting_query_keeps_its_fit() {
+        let links = [script("Look up", &["lookup"])];
+        let provider = Quicklinks(&links);
+        let found = provider.find("look");
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].fit, Fit::Prefix);
+    }
+
+    // a plain argv keeps its words when a query is typed
+    #[test]
+    fn a_plain_argv_ignores_the_query() {
+        let links = [link_argv("Editor", &["code"])];
+        let provider = Quicklinks(&links);
+        let found = provider.find("Editor");
+
+        assert_eq!(found.len(), 1);
+        assert!(matches!(&found[0].action, Action::Quicklink(argv) if argv == &["code"]));
+    }
+
+    #[test]
+    fn passes_query_needs_an_argv() {
+        let toml = r#"[[links]]
+title = "Bad"
+url = "https://example.com"
+passes_query = true
+"#;
+        let value = document(toml);
+        let err = read_all(value.get("links").unwrap()).unwrap_err();
+
+        assert!(err.contains("needs an \"argv\""), "{err}");
+    }
+
+    #[test]
+    fn parse_passing_row() {
+        let toml = r#"[[links]]
+title = "Look up"
+argv = ["lookup"]
+passes_query = true
+"#;
+        let value = document(toml);
+        let links = read_all(value.get("links").unwrap()).unwrap();
+
+        assert_eq!(links, [script("Look up", &["lookup"])]);
+    }
+
     // value round-trips through read_all
     #[test]
     fn value_round_trips() {
         let links = vec![
             link_url("GitHub", "https://github.com"),
             link_argv("Editor", &["code", "--new-window"]),
+            script("Look up", &["lookup"]),
         ];
         let val = value(&links);
         let parsed = read_all(&val).unwrap();

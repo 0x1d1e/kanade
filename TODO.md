@@ -348,33 +348,33 @@ Quick, high fit:
 - [x] niri IPC events: `ScreenshotCaptured` (path on the island, no thumbnail), `TouchpadToggled` (OSD), `WorkspaceUrgencyChanged` (Satellite on that output). `Request::OverviewState` was already shipped as `OverviewOpenedOrClosed` (ADR 0038); not reimplemented. Src: `niri/niri-ipc/src/lib.rs`.
 - [x] Press/release binds: `kanade peek down|up` holds the focused island's Peek; `kanade dictate down|up` is push-to-talk. Tap Super opening the Launcher stays a niri bind to `kanade launcher toggle`. Kanade grabs no key. Src: `niri/docs/wiki/Configuration:-Key-Bindings.md`.
 - [x] Agent permission prompts on the Island: Claude Code and Codex hooks drive a sticky Activity showing the command with Deny / Allow / Always, silent while that agent's window is focused. Src: `isle/crates/isle-daemon/src/agents`, `isle/docs/product-spec.md:362-400`. Check ADR 0058 first. M. Done: `kanade activity hook claude decide`, opt-in, the default hook unchanged (ADR 0058).
-- [x] AI plan usage Activity: 5-hour and weekly limit rings, a warning near the limit. Src: `isle/crates/isle-daemon/src/usage.rs`. S-M. Not taken: needs OAuth/HTTP; no local numbers without a secret.
-- [x] Hover polish: 3D perspective tilt and a one-shot light sweep; metaball merge for Satellites and Split. Src: `Vitreus/liquid.wgsl`, `Vitreus/cursortrail/goo.wgsl`, `liquid-glass-studio/src/shaders/fragment-main.glsl`, `caelestia/shell/plugin/src/Caelestia/Blobs`. S-M. Not taken: hover polish and glass frost (ADR 0121).
+- [ ] AI plan usage Activity: 5-hour and weekly limit rings, a warning near the limit. Src: `isle/crates/isle-daemon/src/usage.rs`. S-M. Parked as needing OAuth/HTTP; no local numbers without a secret.
+- [ ] Hover polish: 3D perspective tilt and a one-shot light sweep; metaball merge for Satellites and Split. Src: `Vitreus/liquid.wgsl`, `Vitreus/cursortrail/goo.wgsl`, `liquid-glass-studio/src/shaders/fragment-main.glsl`, `caelestia/shell/plugin/src/Caelestia/Blobs`. S-M. Parked with glass frost (ADR 0121).
 - [x] Cheap services, S each:
   - [x] Synced lyrics in the media Surface. Src: `DankMaterialShell/quickshell/Services/LyricsService.qml`, `iNiR/services/LyricsService.qml`. Shipped: ADR 0063 / `src/sources/lyrics.rs`.
   - [x] Per-track accent colour. Src: `DankMaterialShell` `MediaAccentService.qml`, `TrackArtService.qml`. Shipped: `src/sources/media.rs`.
   - [x] Meeting Join alert from the calendar. Src: `isle/crates/isle-daemon/src/meeting.rs`. Shipped: `src/sources/reminders.rs`.
-  - [x] Polkit agent as an auth Activity. Src: `iNiR` and `DankMaterialShell` `PolkitService.qml`. Not taken: credentials stay external.
+  - [ ] Polkit agent as an auth Activity. Src: `iNiR` and `DankMaterialShell` `PolkitService.qml`. Parked as keeping credentials external.
 
 Medium:
 
-- [x] Wallpaper owned by the shell: video or GIF wallpaper paused when occluded, iris transitions from the Island, shader transitions shared with the lock. Src: `k4/README` ("Wallpapers that move"), `SekaiPop/sekaipop/shaders`. M. Not taken: shell-owned video wallpaper would replace awww.
+- [ ] Wallpaper owned by the shell: video or GIF wallpaper paused when occluded, iris transitions from the Island, shader transitions shared with the lock. Src: `k4/README` ("Wallpapers that move"), `SekaiPop/sekaipop/shaders`. M. Parked because shell-owned video wallpaper would replace awww.
 - [ ] Settings pending/undo model: modified, added and removed states, revert closures, Discard / Save. Also niri's include-file strategy, writing only Kanade's own kdl files. Src: `hyprmod/hyprmod/core/{pending,ownership,undo,change_tracking}.py`, `niri-settings/README.md`. Check ADR 0119. M.
 - [x] Launcher providers interface with frecency, and a dmenu stdin mode; Quicklinks (ADR 0127, 0139). Src: `noctalia/src/launcher/*_provider.cpp`, `usage_tracker.cpp`, `dmenu_ipc.cpp`. Done: the provider trait with Fit ranking and learned scores (ADR 0127), the `kanade dmenu` choose mode, and config-backed Quicklinks (`launcher.quicklinks`, ADR 0139).
-- [ ] Raycast-style script commands: run a user's shell line or script file, with an argument of the typed query, from the Launcher. Plugin-adjacent (a runner surface, not a config list), so deferred from Quicklinks. Needs its own bounds before it can ship (ADR 0019, 0112). Src: `oma-cast`, Raycast. M.
-- [x] Glass frost modes (auto, smoke, milk), frost only where the backdrop is busy. Src: `pleamar/src/lens.rs`, `backdrop.wgsl`. M. Not taken: hover polish and glass frost (ADR 0121).
-- [x] Render-thread per-property springs, so a logic stall never blocks morph frames and an interrupt turns without a jolt. Keep as a morph invariant. Src: `pleamar/src/render.rs`. M. Not taken: optimization.
-- [x] In-process PipeWire spectrum replacing cava, plus notification and OSD sounds. Src: `noctalia/src/pipewire`. Notification sounds exist (ADR 0118); unverified overlap. M. Not taken: optimization; sounds ADR 0118.
+- [x] Raycast-style script commands: run a user's shell line or script file, with an argument of the typed query, from the Launcher. Src: `oma-cast`, Raycast. M. Done: `launcher.quicklinks` rows with `passes_query = true` pass the typed query as one final argv word, no shell, hidden while the query is empty; a program, never a shell line or script file (ADR 0139).
+- [ ] Glass frost modes (auto, smoke, milk), frost only where the backdrop is busy. Src: `pleamar/src/lens.rs`, `backdrop.wgsl`. M. Parked with hover polish (ADR 0121).
+- [ ] Render-thread per-property springs, so a logic stall never blocks morph frames and an interrupt turns without a jolt. Keep as a morph invariant. Src: `pleamar/src/render.rs`. M. Parked as optimization.
+- [ ] In-process PipeWire spectrum replacing cava, plus notification and OSD sounds. Src: `noctalia/src/pipewire`. Notification sounds exist (ADR 0118); unverified overlap. M. Parked as optimization; sounds ADR 0118.
 - [ ] Built-in screenshot, region picker and annotation editor on the runtime pipeline. Src: `noctalia/src/capture`, `iNiR/modules/regionSelector`. Capture Surface and the region overlay exist; unverified overlap. H.
 - [x] Window/Layers toolbox in `kanade doctor`. Src: `niri-settings` toolbox; `Request::Layers`, `PickWindow`. S-M. Done: `niri windows` and `niri layers` lines in `kanade doctor`.
 - [x] Digital wellbeing / screen time Surface. Src: `DankMaterialShell` `WellbeingService.qml`, `iNiR/services/ScreenTime.qml`. M. Done: ADR 0138, the `screen-time` Module, off unless turned on.
-- [x] Files tray with drag-out on the Island. Src: `isle/crates/isle-shelf`. M-L. Not taken: not a file manager (ADR 0137).
-- [x] Bar-to-Dock "drop" morph; reuse for Island-to-Dock or a core switch. Src: `k4/README` ("Dual mode"). M. Not taken: v0.1 Island only; no core switch / bar-to-dock.
+- [ ] Files tray with drag-out on the Island. Src: `isle/crates/isle-shelf`. M-L. Parked as not a file manager (ADR 0137).
+- [ ] Bar-to-Dock "drop" morph; reuse for Island-to-Dock or a core switch. Src: `k4/README` ("Dual mode"). M. Parked because v0.1 is Island only; no core switch / bar-to-dock.
 
 Big, low priority:
 
-- [x] Plugin system: a Luau/script API described as data, with a commit-pinned registry, lockfile and permissions. Src: `noctalia/src/scripting`, `docs/plugin-api.json`, `plugin_lint`; `k4/plugins/registro.json`, `DankMaterialShell/core/internal/plugins`. H. Not taken: no plugin API.
+- [ ] Plugin system: a Luau/script API described as data, with a commit-pinned registry, lockfile and permissions. Src: `noctalia/src/scripting`, `docs/plugin-api.json`, `plugin_lint`; `k4/plugins/registro.json`, `DankMaterialShell/core/internal/plugins`. H. Parked as no plugin API.
 - [ ] Daemon and thin UI split with a subscription router. A boundary idea only. Src: `DankMaterialShell/core/internal/server/router.go`. H.
 - [ ] Desktop widgets: live-edit grid, desktop clock, cards and notes, widget kinds. Src: `SekaiPop` services `EditGrid`, `Vitreus` `desktopclock`/`desktopcards`/`desktopnotes`, `lucid/README:433-500`. Overlaps the Desk (ADR 0137); unverified. L.
-- [x] Baked, cached 3D scene as wallpaper or lock backdrop. Src: `DEsk/src/room.glsl`, `DEsk/docs/design.md` section 1. L. Not taken: not this pass.
+- [ ] Baked, cached 3D scene as wallpaper or lock backdrop. Src: `DEsk/src/room.glsl`, `DEsk/docs/design.md` section 1. L. Parked as not this pass.
 - [ ] Lower: hook runner hardening (`silere-shell/docs/scripting.md:125-161`); signed updates with rollback (`silere-shell/security/update-signers`); live reload keeps the last good state (`pleamar` README). Hooks and reload exist (`src/hooks.rs`); unverified overlap.

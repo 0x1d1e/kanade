@@ -2938,7 +2938,7 @@ pub const LAUNCHER: &[Setting] = &[
     Setting {
         key: "launcher.quicklinks",
         label: "Quicklinks",
-        help: "your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell, a leading `~/` in a word being your home directory; a layer replaces the list below; file only",
+        help: "your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell, a leading `~/` in a word being your home directory; `passes_query = true` adds the typed query as one last word and hides the row until something is typed; a layer replaces the list below; file only",
         kind: Kind::Quicklinks(Field {
             get: |config| config.quicklinks.clone(),
             set: |config, links| config.quicklinks = links,
@@ -2946,7 +2946,7 @@ pub const LAUNCHER: &[Setting] = &[
         tail: Tail {
             hint: None,
             example: Some(
-                "[{ title = \"GitHub\", url = \"https://github.com\" }, { title = \"Notes\", argv = [\"kitty\", \"-e\", \"vim\", \"~/notes.md\"] }]",
+                "[{ title = \"GitHub\", url = \"https://github.com\" }, { title = \"Notes\", argv = [\"kitty\", \"-e\", \"vim\", \"~/notes.md\"] }, { title = \"Look up\", argv = [\"lookup\"], passes_query = true }]",
             ),
             ..Tail::DEFAULT
         },
