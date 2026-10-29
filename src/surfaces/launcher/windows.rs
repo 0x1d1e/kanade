@@ -167,6 +167,7 @@ impl LauncherProvider for Titles<'_> {
 
                 Some(Answer {
                     fit,
+                    filler: false,
                     title: shown.clone(),
                     detail: if shown == &entry.app {
                         String::new()

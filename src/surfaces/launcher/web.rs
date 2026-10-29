@@ -76,6 +76,7 @@ pub fn offers(query: &str, openable: impl FnOnce() -> bool) -> Vec<Answer> {
     vec![
         Answer {
             fit: Fit::Answer,
+            filler: false,
             title: format!("Search Google for \u{201c}{query}\u{201d}"),
             detail: String::from("Sends it to Google in the default browser"),
             mark: Mark::Icon(Icon::Search),
@@ -83,6 +84,7 @@ pub fn offers(query: &str, openable: impl FnOnce() -> bool) -> Vec<Answer> {
         },
         Answer {
             fit: Fit::Answer,
+            filler: false,
             title: format!("Open \u{201c}{query}\u{201d} in the browser"),
             detail: String::from("The default browser opens it as an address"),
             mark: Mark::Icon(Icon::Forward),

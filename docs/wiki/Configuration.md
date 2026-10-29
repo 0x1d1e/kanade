@@ -220,7 +220,7 @@ actions = true
 commands = true
 # "island" opens the Launcher in the Island's own body; "detached" opens it in a window of its own, centred on the focused output
 style = "island"
-# your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell, a leading `~/` in a word being your home directory; `passes_query = true` adds the typed query as one last word and hides the row until something is typed; a layer replaces the list below; file only
+# your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell, a leading `~/` in a word being your home directory; `passes_query = true` adds the typed query as one last word and hides the row until something is typed, and a row that fits nothing does not hide the web's rows; a layer replaces the list below; file only
 # quicklinks = [{ title = "GitHub", url = "https://github.com" }, { argv = ["kitty", "-e", "vim", "~/notes.md"], title = "Notes" }, { argv = ["lookup"], passes_query = true, title = "Look up" }]
 
 [calendar]

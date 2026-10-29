@@ -90,6 +90,11 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Answer {
     pub fit: Fit,
+
+    // offered for any text though it does not match it: a row waiting at the end, not an answer
+    // to the query, so it does not keep the web's rows away (ADR 0139)
+    pub filler: bool,
+
     pub title: String,
 
     // a second line, empty for none

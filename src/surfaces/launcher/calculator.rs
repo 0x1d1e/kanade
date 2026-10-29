@@ -19,6 +19,7 @@ impl LauncherProvider for Calculator {
 
         vec![Answer {
             fit: Fit::Answer,
+            filler: false,
             title: value.clone(),
             detail: String::from("Calculator"),
             mark: Mark::Tile(String::from("=")),

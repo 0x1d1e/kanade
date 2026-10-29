@@ -191,6 +191,7 @@ impl LauncherProvider for Choices<'_> {
 
                 Some(Answer {
                     fit,
+                    filler: false,
                     title: choice.shown.clone(),
                     detail: String::new(),
                     mark: Mark::Tile(

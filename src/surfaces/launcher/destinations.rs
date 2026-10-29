@@ -266,6 +266,7 @@ impl LauncherProvider for Destinations {
                     usage.score(&key, now),
                     Answer {
                         fit,
+                        filler: false,
                         title: title.to_owned(),
                         detail: detail.to_owned(),
                         mark: Mark::Icon(icon),
@@ -299,6 +300,7 @@ fn pages(query: &str) -> impl Iterator<Item = Answer> {
 
         Some(Answer {
             fit,
+            filler: false,
             title,
             detail: page.summary.to_owned(),
             mark: Mark::Icon(page.icon),
@@ -334,6 +336,7 @@ fn placed(query: &str) -> impl Iterator<Item = Answer> {
 
         Some(Answer {
             fit,
+            filler: false,
             title: setting.label.to_owned(),
             detail: format!("Settings - {}", placed.title),
             mark: Mark::Icon(placed.icon),

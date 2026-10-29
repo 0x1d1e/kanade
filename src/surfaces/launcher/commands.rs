@@ -339,6 +339,7 @@ impl Commands {
                         Answer {
                             // never over an app or a destination of the name
                             fit: fit.max(BEST),
+                            filler: false,
                             title: command.title.to_owned(),
                             detail: command.detail.to_owned(),
                             mark: Mark::Icon(command.icon),

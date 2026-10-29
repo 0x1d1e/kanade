@@ -63,6 +63,8 @@ fn answer(link: &Quicklink, fit: Fit, query: &str) -> Answer {
 
     Answer {
         fit,
+        // a passing row that its title does not fit waits for any text, so it is no answer to it
+        filler: link.passes_query && fit == Fit::Anywhere,
         title: link.title.clone(),
         detail,
         mark: Mark::Icon(Icon::Forward),

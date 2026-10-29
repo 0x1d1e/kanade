@@ -1290,10 +1290,12 @@ fn destination(flags: [bool; 18]) -> Destinations {
 }
 
 /*
- * what a typed query lists: what the providers found, or, when none of them found anything, the
- * web's two rows. The fallback lives here, off the providers' own list, so a provider can never
- * answer it and the web can never outrank an answer (ADR 0130). `openable` is asked only when
- * something is offered, so a query the providers answer reads no PATH
+ * what a typed query lists: what the providers found, or, when none of them actually fits it, the
+ * web's two rows after any filler. The fallback lives here, off the providers' own list, so a
+ * provider can never answer it and the web can never outrank an answer (ADR 0130). A filler is a
+ * row offered for any text, like a passing quicklink its title does not fit, so it is no answer and
+ * does not keep the web away (ADR 0139). `openable` is asked only when the web is offered, so a
+ * query the providers answer reads no PATH
  */
 fn offered(
     query: &str,
@@ -1301,9 +1303,15 @@ fn offered(
     read: bool,
     openable: impl FnOnce() -> bool,
 ) -> Vec<Answer> {
-    match ranked.is_empty() && read {
-        true => web::offers(query, openable),
-        false => ranked,
+    let answered = ranked.iter().any(|answer| !answer.filler);
+
+    match answered || !read {
+        true => ranked,
+        false => {
+            let mut offered = ranked;
+            offered.extend(web::offers(query, openable));
+            offered
+        }
     }
 }
 
@@ -2989,6 +2997,7 @@ mod tests {
     fn answer(title: &str) -> Answer {
         Answer {
             fit: Fit::Prefix,
+            filler: false,
             title: title.to_owned(),
             detail: String::new(),
             mark: Mark::Tile(title.to_owned()),
@@ -3138,6 +3147,45 @@ mod tests {
             offered("nothing matches this", Vec::new(), false, || true),
             Vec::new(),
             "the web waits for the desktop scan"
+        );
+    }
+
+    // a filler is offered for any text but fits none of it, so it does not stand in for an answer:
+    // the web's rows still follow it (ADR 0139), while a real fit keeps them away as before
+    #[test]
+    fn a_filler_row_does_not_keep_the_web_away() {
+        let quicklinks = [Quicklink {
+            title: String::from("Look up"),
+            target: quicklinks::Target::Argv(vec![String::from("lookup")]),
+            passes_query: true,
+        }];
+        let provider = Quicklinks(&quicklinks);
+        let ranked = provider::ranked(&[&provider], "https://example.com");
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].fit, Fit::Anywhere);
+        assert!(ranked[0].filler);
+
+        let web = offered("https://example.com", ranked, true, || true);
+        assert_eq!(web.len(), 3, "the passing row and the web's two");
+        assert!(matches!(web[0].action, Action::Quicklink(_)));
+        assert!(
+            web[1..]
+                .iter()
+                .all(|answer| matches!(answer.action, Action::Browse(_)))
+        );
+
+        // a prefix app match is a real answer, so no web row joins it
+        let apps = [app("files")];
+        let provider = AppsProvider(&apps);
+        let ranked = provider::ranked(&[&provider], "files");
+
+        assert!(ranked.iter().all(|answer| answer.fit == Fit::Prefix));
+        assert!(!ranked.iter().any(|answer| answer.filler));
+        assert_eq!(
+            offered("files", ranked.clone(), true, || true),
+            ranked,
+            "a fit keeps the web away"
         );
     }
 

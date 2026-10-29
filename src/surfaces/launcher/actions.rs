@@ -197,6 +197,7 @@ mod tests {
     fn answer(action: Action) -> Answer {
         Answer {
             fit: crate::surfaces::launcher::provider::Fit::Exact,
+            filler: false,
             title: String::from("Firefox"),
             detail: String::new(),
             mark: crate::surfaces::launcher::provider::Mark::Tile(String::from("F")),

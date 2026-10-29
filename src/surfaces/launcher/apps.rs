@@ -104,6 +104,7 @@ pub(super) fn mark(app: &App) -> Mark {
 pub(super) fn answer(app: &App, fit: Fit) -> Answer {
     Answer {
         fit,
+        filler: false,
         title: app.name.clone(),
         detail: String::new(),
         mark: mark(app),
@@ -157,6 +158,7 @@ impl Actions<'_> {
                     usage.score(&recents::app(&app.id), now),
                     Answer {
                         fit,
+                        filler: false,
                         title: action.name.clone(),
                         detail: app.name.clone(),
                         mark: mark(app),
