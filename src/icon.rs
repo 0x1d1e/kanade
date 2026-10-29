@@ -61,6 +61,7 @@ const CHECK: &str = include_str!("icons/check.svg");
 const CLIPBOARD: &str = include_str!("icons/clipboard.svg");
 const TEXT: &str = include_str!("icons/text.svg");
 const PICTURE: &str = include_str!("icons/picture.svg");
+const FOLDER: &str = include_str!("icons/folder.svg");
 const PIN: &str = include_str!("icons/pin.svg");
 const PINNED: &str = include_str!("icons/pinned.svg");
 const CALENDAR: &str = include_str!("icons/calendar.svg");
@@ -162,10 +163,11 @@ pub(crate) enum Icon {
     // the one chosen of a list, like the default device
     Check,
 
-    // the clipboard history, and the kinds of what it keeps: lines of text, a picture
+    // the clipboard history, and the kinds of what it keeps: lines of text, a picture, a folder
     Clipboard,
     Text,
     Picture,
+    Folder,
 
     // an entry of the history kept past the bounds: a pin outlined to pin it, filled while pinned
     Pin,
@@ -320,6 +322,7 @@ impl Icon {
             Icon::Clipboard => &[CLIPBOARD],
             Icon::Text => &[TEXT],
             Icon::Picture => &[PICTURE],
+            Icon::Folder => &[FOLDER],
             Icon::Pin => &[PIN],
             Icon::Pinned => &[PINNED],
             Icon::Calendar => &[CALENDAR],

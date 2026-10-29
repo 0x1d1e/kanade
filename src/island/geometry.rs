@@ -607,7 +607,8 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
             | Surface::Welcome
             | Surface::Strip
             | Surface::Emoji
-            | Surface::ScreenTime,
+            | Surface::ScreenTime
+            | Surface::Files,
         ) => largest,
     }
 }

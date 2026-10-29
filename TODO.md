@@ -370,7 +370,7 @@ Medium:
 - [ ] Built-in screenshot, region picker and annotation editor on the runtime pipeline. Src: `noctalia/src/capture`, `iNiR/modules/regionSelector`. Capture Surface and the region overlay exist; unverified overlap. H.
 - [x] Window/Layers toolbox in `kanade doctor`. Src: `niri-settings` toolbox; `Request::Layers`, `PickWindow`. S-M. Done: `niri windows` and `niri layers` lines in `kanade doctor`.
 - [x] Digital wellbeing / screen time Surface. Src: `DankMaterialShell` `WellbeingService.qml`, `iNiR/services/ScreenTime.qml`. M. Done: ADR 0138, the `screen-time` Module, off unless turned on.
-- [ ] Files tray with drag-out on the Island. Src: `isle/crates/isle-shelf`. M-L. Parked as not a file manager (ADR 0137).
+- [x] Files tray with drag-out on the Island. Src: `isle/crates/isle-shelf`. M-L. Done as a shelf, not a tray and not a manager: the `files` Surface (`files-surface`) lists the desktop's recent files read-only, from `recently-used.xbel`, opened by `xdg-open` and by `kanade files` (ADR 0141). Drag-out, delete, rename, move and copy are refused there on purpose, so the item closes without them.
 - [ ] Bar-to-Dock "drop" morph; reuse for Island-to-Dock or a core switch. Src: `k4/README` ("Dual mode"). M. Parked because v0.1 is Island only; no core switch / bar-to-dock.
 
 Big, low priority:

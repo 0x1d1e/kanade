@@ -1450,6 +1450,34 @@ notifications dnd on until <HH:MM>
             app
         },
     },
+    // the desktop's recent files as a shelf, read on request and never managed (ADR 0141)
+    Module {
+        name: "files-surface",
+        about: "The desktop's recent files, as a shelf",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[Need {
+            on: Provider::Program(surfaces::launcher::web::OPEN),
+            without: "no opening a recent file or its folder",
+        }],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "files",
+            about: "Open the recent files Surface",
+            usage: || String::from("files open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Files, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            surfaces::files::start();
+            app
+        },
+    },
     // every emoji as a grid, with the ones used lately in a row above them
     Module {
         name: "emoji-surface",

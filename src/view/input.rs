@@ -172,7 +172,8 @@ pub fn key(monitor: &str, key: Key) {
             || (modules::on("clipboard-surface") && surfaces::clipboard::key(monitor, key))
             || (modules::on("wallpaper-surface") && surfaces::wallpapers::key(monitor, key))
             || (modules::on("keys-surface") && surfaces::keys::key(monitor, key))
-            || (modules::on("screen-time") && surfaces::screen_time::key(monitor, key));
+            || (modules::on("screen-time") && surfaces::screen_time::key(monitor, key))
+            || (modules::on("files-surface") && surfaces::files::key(monitor, key));
 
         if !used {
             stray(monitor, key);
@@ -181,7 +182,8 @@ pub fn key(monitor: &str, key: Key) {
 }
 
 /*
- * the Launcher and the Clipboard take typing, the Calendar a few letters, and they consume their
+ * the Launcher, the Clipboard and the Files take typing, the Calendar a few letters, and they
+ * consume their
  * keys first, so a character typed into any other held island the pointer never reached was meant
  * for the window beneath: the island lets go of the keyboard before a Space or Enter presses
  * anything

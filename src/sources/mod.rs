@@ -54,6 +54,7 @@ pub mod screen_time;
 pub mod seat;
 pub mod secrets;
 pub mod session;
+pub mod shelf;
 pub mod sleep;
 pub mod sound;
 pub mod subscriptions;

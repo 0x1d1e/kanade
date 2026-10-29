@@ -29,6 +29,7 @@ pub enum Destination {
     Strip,
     Emoji,
     ScreenTime,
+    Files,
 
     // Settings, on the page of this name
     Settings(&'static str),
@@ -55,6 +56,7 @@ impl Destination {
             Destination::Strip => "strip",
             Destination::Emoji => "emoji",
             Destination::ScreenTime => "screen time",
+            Destination::Files => "files",
             Destination::Settings(page) => page,
         }
     }
@@ -80,6 +82,7 @@ pub struct Destinations {
     pub strip: bool,
     pub emoji: bool,
     pub screen_time: bool,
+    pub files: bool,
     pub settings: bool,
 }
 
@@ -243,6 +246,14 @@ impl LauncherProvider for Destinations {
                 "Today's focused time",
                 &["screen time", "screentime", "screen-time", "wellbeing"][..],
                 Destination::ScreenTime,
+            ),
+            (
+                self.files,
+                Icon::Folder,
+                "Files",
+                "Recent files",
+                &["files", "recent", "recent files", "shelf"][..],
+                Destination::Files,
             ),
         ];
 

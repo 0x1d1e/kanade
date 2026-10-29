@@ -59,6 +59,9 @@ pub enum Surface {
 
     // today's focused time per app (ADR 0138)
     ScreenTime,
+
+    // the desktop's recent files as a shelf, opened, never managed (ADR 0141)
+    Files,
 }
 
 /*

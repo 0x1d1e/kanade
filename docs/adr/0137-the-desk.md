@@ -1,6 +1,6 @@
 # 137. The Desk: read-only faces of Services on the desktop
 
-Status: accepted. Reverses the non-goal "No desktop widgets" of `docs/archived/design.md` (§ Explicit non-goals), on purpose. Amended by [ADR 0140](0140-desk-notes-edit-in-place.md): the notes card (`desk.notes`) is typed into in place, so the Desk's window takes `Keyboard::OnDemand` while the pointer is on that card or it is being typed into; every other face, and the Desk otherwise, keeps `Keyboard::None`. Builds on [ADR 0006](0006-island-on-top-layer.md) (layers), [ADR 0004](0004-wake-sources-on-announcements.md) (idle cost) and [ADR 0028](0028-the-runtime-is-ported-from-amane.md) (the runtime owns windows). Numbers skip 0045.
+Status: accepted. Reverses the non-goal "No desktop widgets" of `docs/archived/design.md` (§ Explicit non-goals), on purpose. Amended by [ADR 0140](0140-desk-notes-edit-in-place.md): the notes card (`desk.notes`) is typed into in place, so the Desk's window takes `Keyboard::OnDemand` while the pointer is on that card or it is being typed into; every other face, and the Desk otherwise, keeps `Keyboard::None`. Amended by [ADR 0141](0141-files-is-a-shelf-not-a-manager.md): the "no file manager" this ADR keeps is kept, and the recent-files item ships as a read-only Surface of the Island (the Files shelf), not as a Desk face and not as a manager. Builds on [ADR 0006](0006-island-on-top-layer.md) (layers), [ADR 0004](0004-wake-sources-on-announcements.md) (idle cost) and [ADR 0028](0028-the-runtime-is-ported-from-amane.md) (the runtime owns windows). Numbers skip 0045.
 
 ## Context
 
@@ -8,7 +8,7 @@ The first design refused desktop widgets, to stay a shell around the Island and 
 
 ## Decision
 
-- **The non-goal is reversed.** Kanade draws things on the desktop. It still is not a desktop environment: no icons, no file manager, no panels.
+- **The non-goal is reversed.** Kanade draws things on the desktop. It still is not a desktop environment: no icons, no file manager, no panels. (The recent files are a read-only Surface of the Island, not a manager, and not a Desk face: [ADR 0141](0141-files-is-a-shelf-not-a-manager.md).)
 - **A Desk widget** is a read-only face of an existing Service, drawn as plain text on the desktop in a window of its own, one per monitor. It is not an Activity (no Arbiter, no Lifetime, nothing preempts it), not a Surface, not a Satellite and not a Pane. It reads Services and writes none. In code it is a *Desk* item, never "widget": `crates/runtime/src/widgets/` already means layout primitives.
 - **A `desk` Module**, `requires: &[CORE]`, in `src/desk.rs`. It belongs to the shell whatever core is chosen, so it lives outside `island/` and the boundary rules of `src/boundary.rs` are unchanged. It opens one window per monitor (`app.window_per_monitor`), following monitors as they come and go; the runtime closes a gone monitor's window, and the Desk keeps no per-monitor state to forget.
 - **Layer.** `Layer::Bottom`, `Zone::Ignore`, `Keyboard::None`, namespace `kanade-desk`, anchored by corner and margin (fixed size, `anchor_*` and `margin`); it reserves nothing. Bottom is under normal windows and above the wallpaper, so the Desk is the desktop a window sits on and a window hides it, as an icon would be.

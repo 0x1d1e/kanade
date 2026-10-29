@@ -894,6 +894,7 @@ fn destinations() -> Destinations {
         strip: modules::on("strip-surface"),
         emoji: modules::on("emoji-surface"),
         screen_time: modules::on("screen-time"),
+        files: modules::on("files-surface"),
         settings: modules::on("settings"),
     }
 }
@@ -1113,7 +1114,7 @@ struct Inputs {
 
     // which destinations exist, as the flags they are: `Destinations` is not compared, its file
     // not this one's
-    destinations: [bool; 18],
+    destinations: [bool; 19],
 
     // what the ranking read off the services, so a change to any of them ranks again
     radios: Radios,
@@ -1186,6 +1187,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
             destinations.strip,
             destinations.emoji,
             destinations.screen_time,
+            destinations.files,
             destinations.settings,
         ],
         radios: *radios,
@@ -1254,7 +1256,7 @@ fn rank(
 }
 
 // the destinations the flags in a ranking's inputs name
-fn destination(flags: [bool; 18]) -> Destinations {
+fn destination(flags: [bool; 19]) -> Destinations {
     let [
         wifi,
         bluetooth,
@@ -1265,7 +1267,7 @@ fn destination(flags: [bool; 18]) -> Destinations {
         session,
         timer,
         capture,
-    ] = flags[..9].try_into().expect("nine of eighteen");
+    ] = flags[..9].try_into().expect("nine of nineteen");
 
     Destinations {
         wifi,
@@ -1286,6 +1288,7 @@ fn destination(flags: [bool; 18]) -> Destinations {
         emoji: flags[15],
         screen_time: flags[16],
         settings: flags[17],
+        files: flags[18],
     }
 }
 
@@ -2463,6 +2466,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
         }
         Destination::ScreenTime => {
             IslandService::write().open(monitor, Surface::ScreenTime, Instant::now());
+            Ok(())
+        }
+        Destination::Files => {
+            IslandService::write().open(monitor, Surface::Files, Instant::now());
             Ok(())
         }
         Destination::Settings(page) => {

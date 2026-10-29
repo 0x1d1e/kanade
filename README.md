@@ -45,9 +45,9 @@ The Island adapts its geometry and contents across distinct Presentation states:
 - **Satellites**: Small secondary indicators that emerge from under the Island body for persistent, ongoing tasks like active timers, live builds, or screen recordings.
 - **Privacy cluster**: Distinct dots nested inside the trailing end of the Island body (round for microphone, square for camera, ring for screen cast). They appear whenever an application captures media through PipeWire. The Controls Surface identifies active capture applications and lets you end screen shares with Stop sharing.
 
-## The Thirteen Surfaces
+## The Surfaces
 
-Expanding the Island opens one of thirteen dedicated Surfaces, navigable by keyboard or pointer:
+Expanding the Island opens one of its dedicated Surfaces, navigable by keyboard or pointer:
 
 - **Media**: Track metadata, album artwork, timeline seeking for supported MPRIS players, and synchronized lyrics via LRCLIB or local LRC files.
 - **Notifications**: Notification center with application grouping, expandable history, Do Not Disturb toggles, and dismiss actions.
@@ -62,6 +62,7 @@ Expanding the Island opens one of thirteen dedicated Surfaces, navigable by keyb
 - **Keys**: Searchable cheatsheet of active niri keybindings and Kanade shell shortcuts.
 - **Session**: Lock, logout, suspend, reboot, and power off controls with a grace-period countdown and inhibitor warnings.
 - **Tray**: StatusNotifierItem system tray host exposing application status icons and sub-surface menus.
+- **Files**: A read-only shelf of the desktop's recent files, newest first, searched by name and folder; Enter opens the file and Right its folder. Not a file manager: nothing is deleted, renamed, moved, copied or dragged out.
 
 ## Session Shell
 

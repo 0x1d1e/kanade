@@ -108,7 +108,7 @@ pub enum Provider {
 pub const CORE: &str = "island";
 
 // each Surface the island opens, with the Module that draws it
-const SURFACES: [(Surface, &str); 17] = [
+const SURFACES: [(Surface, &str); 18] = [
     (Surface::Media, "media"),
     (Surface::Notifications, "notification-surface"),
     (Surface::Controls, "controls"),
@@ -126,6 +126,7 @@ const SURFACES: [(Surface, &str); 17] = [
     (Surface::Strip, "strip-surface"),
     (Surface::Emoji, "emoji-surface"),
     (Surface::ScreenTime, "screen-time"),
+    (Surface::Files, "files-surface"),
 ];
 
 // the Surfaces whose Module is off, which the island never opens
