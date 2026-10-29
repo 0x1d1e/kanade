@@ -435,11 +435,16 @@ impl Runner for Process {
     }
 }
 
-// whether Kanade's side of the run stopped it before the command could act
+/*
+ * whether Kanade's side of the run stopped the command before it could act: only one it never
+ * started. A run whose output was lost may have acted before it was, so it is the command's failure:
+ * `status` never calls that the last refusal
+ */
 fn classify(error: child::Error) -> Failure {
     match error {
-        child::Error::Spawn(_) | child::Error::Reader(_) => Failure::refused(error.message()),
-        child::Error::Exited(_)
+        child::Error::Spawn(_) => Failure::refused(error.message()),
+        child::Error::Reader(_)
+        | child::Error::Exited(_)
         | child::Error::TooLong(_)
         | child::Error::TimedOut(_)
         | child::Error::Aborted(_) => Failure::command(error.message()),
@@ -448,8 +453,9 @@ fn classify(error: child::Error) -> Failure {
 
 /*
  * the variables a hook's child inherits from Kanade's own environment: what finds its program and
- * its home, the session's locale and runtime directory, and the shell's own `KANADE_*`. Nothing
- * else: a hook is the user's own command, not one handed every secret Kanade was started with
+ * its home, what draws and talks to the session, the session's locale and directories, and the
+ * shell's own `KANADE_*`. Nothing else, and nothing that carries a credential: a hook is the user's
+ * own command, not one handed every secret Kanade was started with
  */
 fn inherited(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
     vars.filter(|(key, _)| allowed(key)).collect()
@@ -461,9 +467,39 @@ fn allowed(key: &OsStr) -> bool {
         return false;
     };
 
-    matches!(key, "PATH" | "HOME" | "LANG" | "XDG_RUNTIME_DIR")
+    // a credential's name keeps its variable out whatever the rest of the list says of the name
+    if withheld(key) {
+        return false;
+    }
+
+    matches!(
+        key,
+        "PATH"
+            | "HOME"
+            | "LANG"
+            | "TERM"
+            | "USER"
+            | "LOGNAME"
+            | "SHELL"
+            | "WAYLAND_DISPLAY"
+            | "DISPLAY"
+            | "XAUTHORITY"
+            | "DBUS_SESSION_BUS_ADDRESS"
+            | "PULSE_SERVER"
+            | "SSH_AUTH_SOCK"
+    ) || key.starts_with("XDG_")
         || key.starts_with("LC_")
         || key.starts_with("KANADE_")
+}
+
+// whether a variable's name says it carries a credential, which no command the config lists is given
+fn withheld(key: &str) -> bool {
+    ["AWS_", "OPENAI_", "ANTHROPIC_", "CI_", "SECRET", "PASSWORD"]
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+        || key.ends_with("_TOKEN")
+        || key.ends_with("_KEY")
+        || key.ends_with("_CREDENTIALS")
 }
 
 // where one event stands
@@ -890,7 +926,8 @@ mod tests {
         assert_eq!(hooks.summary(2), "hooks: 2 commands configured");
     }
 
-    // a hook's child gets what the allow-list names and nothing else Kanade holds
+    // a hook's child gets what the allow-list names and nothing else Kanade holds: the session's
+    // displays, bus, sound and agent, but no credential
     #[test]
     fn a_hook_inherits_only_the_listed_variables() {
         let vars = [
@@ -899,11 +936,27 @@ mod tests {
             ("LANG", "en_GB.UTF-8"),
             ("LC_ALL", "C"),
             ("LC_TIME", "en_GB.UTF-8"),
+            ("TERM", "xterm-256color"),
+            ("USER", "someone"),
+            ("LOGNAME", "someone"),
+            ("SHELL", "/bin/sh"),
+            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("DISPLAY", ":0"),
+            ("XAUTHORITY", "/run/user/1000/xauthority"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("PULSE_SERVER", "unix:/run/user/1000/pulse/native"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/ssh"),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("XDG_SESSION_TYPE", "wayland"),
             ("KANADE_FRAMES", "1"),
             ("AWS_SECRET_ACCESS_KEY", "secret"),
-            ("SSH_AUTH_SOCK", "/run/user/1000/ssh"),
-            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("AWS_SESSION_TOKEN", "token"),
+            ("OPENAI_API_KEY", "sk-secret"),
+            ("ANTHROPIC_API_KEY", "sk-secret"),
+            ("GITHUB_TOKEN", "ghp-secret"),
+            ("CI_JOB_TOKEN", "token"),
+            ("PASSWORD_STORE_DIR", "/home/someone/.password-store"),
+            ("GIT_CREDENTIALS", "secret"),
         ];
 
         let kept: Vec<String> = inherited(
@@ -922,10 +975,38 @@ mod tests {
                 "LANG",
                 "LC_ALL",
                 "LC_TIME",
+                "TERM",
+                "USER",
+                "LOGNAME",
+                "SHELL",
+                "WAYLAND_DISPLAY",
+                "DISPLAY",
+                "XAUTHORITY",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "PULSE_SERVER",
+                "SSH_AUTH_SOCK",
                 "XDG_RUNTIME_DIR",
-                "KANADE_FRAMES"
+                "XDG_SESSION_TYPE",
+                "KANADE_FRAMES",
             ]
         );
+    }
+
+    // a run whose output was lost may have acted, so it is a command's failure and never the last
+    // refusal; only a command that never started is a refusal of Kanade's
+    #[test]
+    fn only_a_run_that_never_started_is_a_refusal() {
+        assert!(classify(child::Error::Spawn(String::from("x"))).refused);
+
+        for error in [
+            child::Error::Reader(String::from("x")),
+            child::Error::Exited(String::from("x")),
+            child::Error::TooLong(String::from("x")),
+            child::Error::TimedOut(String::from("x")),
+            child::Error::Aborted(String::from("x")),
+        ] {
+            assert!(!classify(error).refused);
+        }
     }
 
     // a hook whose stderr floods is read only up to the cap, so no flood grows memory or a status
