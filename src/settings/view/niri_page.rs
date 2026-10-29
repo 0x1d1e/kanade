@@ -218,9 +218,20 @@ fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeR
     let path = item.path;
     let mut marks: Vec<Box<dyn Widget>> = Vec::new();
 
-    if shown.busy {
+    // a change is kept in the page until Save, so the row itself says it is not in the file yet
+    let mark = if shown.writing {
+        Some("Saving\u{2026}")
+    } else if shown.pending {
+        Some("Not saved")
+    } else if shown.busy {
+        Some("Saving\u{2026}")
+    } else {
+        None
+    };
+
+    if let Some(mark) = mark {
         marks.push(Box::new(
-            Text::new("Saving\u{2026}")
+            Text::new(mark)
                 .size(theme::text::LABEL_SMALL)
                 .color(roles.primary)
                 .weight(theme::text::SEMIBOLD),

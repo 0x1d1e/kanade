@@ -1,11 +1,16 @@
 //! The niri page's data and its worker (ADR 0119): which options of niri's `config.kdl` the page
-//! offers, what the file gives for each, and the queue that changes them. The engine
-//! (`niri_config`) spawns `niri validate` and waits on it, so no call to it is made on the draw
-//! thread: a press posts a job, one worker thread runs it, and the result is written into the
-//! `Settings` Service, which redraws the window. A row shows its change as pending until then.
+//! offers, what the file gives for each, and the queue that changes them. A press stages the
+//! change in memory and the row shows it as not saved; Save sends every staged change as one
+//! `apply`, which the engine validates and writes with one backup, and Discard drops them. The
+//! file is not touched until then.
+//!
+//! The engine (`niri_config`) spawns `niri validate` and waits on it, so no call to it is made on
+//! the draw thread: a press posts a job, one worker thread runs it, and the result is written into
+//! the `Settings` Service, which redraws the window. A row says Saving... until then.
 //!
 //! The values come from the engine's `read`, never from a copy of the file, and are read again
-//! after every job and, while the page shows, when the file's modification time changes.
+//! after every job and, while the page shows, when the file's modification time changes. A staged
+//! change is laid over that reading, so a row shows what Save would write.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -634,8 +639,21 @@ pub struct Shown {
     /// Whether a change to it waits for the worker.
     pub busy: bool,
 
+    /// Whether a change to it is staged, waiting for Save.
+    pub pending: bool,
+
+    /// Whether that change is on its way to the file.
+    pub writing: bool,
+
     /// Why its last change was refused.
     pub refused: Option<String>,
+}
+
+// an option of one row, changed and not written yet
+#[derive(Clone, PartialEq)]
+struct Staged {
+    row: &'static str,
+    changes: Vec<(&'static str, Option<String>)>,
 }
 
 /// What the page knows of the config, kept in the `Settings` Service.
@@ -658,6 +676,22 @@ pub struct State {
 
     // rows with a change waiting, once for each
     busy: Vec<&'static str>,
+
+    // the changes staged since the last Save or Discard, in the order their rows were changed
+    staged: Vec<Staged>,
+
+    // what those changes would leave in the file, which the rows show in its place
+    staged_values: HashMap<&'static str, Reading>,
+
+    // whether a Save waits for the worker
+    saving: bool,
+
+    // the staged changes a Save has posted, which its success takes out of `staged`; a change made
+    // to one of those rows meanwhile stays
+    in_flight: Vec<Staged>,
+
+    // what the last Save wrote, as the engine says it
+    saved: Option<String>,
 
     // why a row's last change was refused
     refused: HashMap<&'static str, String>,
@@ -739,12 +773,24 @@ impl State {
             set,
             default,
             busy: self.busy.contains(&item.path),
+            pending: self.staged.iter().any(|staged| staged.row == item.path),
+            writing: self.in_flight.iter().any(|staged| staged.row == item.path),
             refused: self.refused.get(item.path).cloned(),
         }
     }
 
     pub fn editable(&self) -> bool {
         self.loaded && self.unreadable.is_none() && self.not_editable.is_none()
+    }
+
+    /// Whether any row has a change waiting for Save.
+    pub fn has_staged(&self) -> bool {
+        !self.staged.is_empty()
+    }
+
+    /// Whether a Save waits for the worker.
+    pub fn is_saving(&self) -> bool {
+        self.saving
     }
 
     pub fn is_busy(&self, row: &str) -> bool {
@@ -756,7 +802,10 @@ impl State {
     }
 
     fn reading(&self, path: &str) -> &Reading {
-        self.values.get(path).unwrap_or(&Reading::Unset)
+        self.staged_values
+            .get(path)
+            .or_else(|| self.values.get(path))
+            .unwrap_or(&Reading::Unset)
     }
 
     /// The text, number or switch a control shows for the option.
@@ -846,11 +895,20 @@ impl State {
             return Some((String::from("Undoing\u{2026}"), false));
         }
 
-        if !self.busy.is_empty() {
+        if self.saving || !self.busy.is_empty() {
             return Some((String::from("Saving\u{2026}"), false));
         }
 
-        self.reload.clone()
+        if !self.staged.is_empty() {
+            let count = self.staged.len();
+            let changes = if count == 1 { "change" } else { "changes" };
+
+            return Some((format!("{count} {changes} not saved"), false));
+        }
+
+        self.reload
+            .clone()
+            .or_else(|| self.saved.clone().map(|said| (said, false)))
     }
 
     /// What became of the reload niri should have made of the last change: `None` when it has not
@@ -881,6 +939,7 @@ impl State {
     fn begin(&mut self, row: Option<&'static str>) {
         self.footer = None;
         self.reload = None;
+        self.saved = None;
 
         match row {
             Some(row) => {
@@ -889,6 +948,97 @@ impl State {
             }
             None => self.undoing = true,
         }
+    }
+
+    // a row's change is kept until Save, laid over what the file holds
+    fn stage(&mut self, row: &'static str, changes: Vec<(&'static str, Option<String>)>) {
+        self.footer = None;
+        self.reload = None;
+        self.saved = None;
+        self.refused.remove(row);
+
+        // a change that would leave every node as the file has it is not a change: toggling a
+        // switch back stages nothing, and the row stops saying Not saved
+        let differs = changes.iter().any(|(path, value)| {
+            let after = match value {
+                Some(value) => Reading::Own(value.clone()),
+                None => Reading::Unset,
+            };
+
+            match self.values.get(path) {
+                Some(before) => *before != after,
+                None => !matches!(after, Reading::Unset),
+            }
+        });
+        let at = self.staged.iter().position(|staged| staged.row == row);
+
+        match (differs, at) {
+            (false, Some(at)) => {
+                self.staged.remove(at);
+            }
+            (false, None) => {}
+            (true, Some(at)) => self.staged[at].changes = changes,
+            (true, None) => self.staged.push(Staged { row, changes }),
+        }
+
+        self.restage();
+        self.generation += 1;
+    }
+
+    // what the staged changes leave, which `reading` shows in place of the file's values
+    fn restage(&mut self) {
+        self.staged_values.clear();
+
+        for staged in &self.staged {
+            for (path, value) in &staged.changes {
+                let reading = match value {
+                    Some(value) => Reading::Own(value.clone()),
+                    None => Reading::Unset,
+                };
+
+                self.staged_values.insert(path, reading);
+            }
+        }
+    }
+
+    // the changes every staged row holds, for the Save that writes them as one; none if nothing is
+    // staged or a Save is already on its way, and the rows say Saving... until the result comes back
+    fn flush(&mut self) -> Option<Vec<(&'static str, Option<String>)>> {
+        if self.staged.is_empty() || self.saving {
+            return None;
+        }
+
+        self.footer = None;
+        self.reload = None;
+        self.saved = None;
+        self.saving = true;
+        self.in_flight = self.staged.clone();
+        self.generation += 1;
+
+        Some(
+            self.staged
+                .iter()
+                .flat_map(|staged| staged.changes.iter().cloned())
+                .collect(),
+        )
+    }
+
+    // drops every staged change, and sets the rows' inputs back to what the file holds
+    fn discard(&mut self) {
+        self.in_flight.clear();
+        self.take_staged();
+        self.footer = None;
+        self.reload = None;
+        self.saved = None;
+        self.generation += 1;
+    }
+
+    fn take_staged(&mut self) {
+        for staged in std::mem::take(&mut self.staged) {
+            *self.resets.entry(staged.row).or_default() += 1;
+        }
+
+        self.staged_values.clear();
     }
 
     // a job is done: the reading it ended with, and what became of the change
@@ -901,6 +1051,45 @@ impl State {
         self.bare = done.read.bare;
         self.restart = done.read.restart;
         self.generation += 1;
+
+        if done.save {
+            self.saving = false;
+            let flushed = std::mem::take(&mut self.in_flight);
+
+            match done.outcome {
+                Some(Ok(said)) => {
+                    // the file holds what was posted; a row changed while it was written stays
+                    // staged, as its change is not in the file
+                    for staged in flushed {
+                        if let Some(at) = self.staged.iter().position(|waiting| *waiting == staged)
+                        {
+                            self.staged.remove(at);
+                            *self.resets.entry(staged.row).or_default() += 1;
+                        }
+                    }
+                    self.restage();
+
+                    if !said.is_empty() {
+                        self.saved = Some(if done.written {
+                            format!("Saved: {said}")
+                        } else {
+                            said
+                        });
+                    }
+
+                    if done.written {
+                        self.undoable = true;
+                        self.undo_after = done.after;
+                        self.undo_stamp = Some(done.stamp);
+                    }
+                }
+                // a Save that failed keeps every staged change, and the file is as it was
+                Some(Err(why)) => self.footer = Some(why),
+                None => {}
+            }
+
+            return;
+        }
 
         if let Some(row) = done.row {
             if let Some(at) = self.busy.iter().position(|&busy| busy == row) {
@@ -954,18 +1143,24 @@ impl State {
             *self.resets.entry(row).or_default() += 1;
         }
         self.undoing = false;
+        self.saving = false;
+        self.in_flight.clear();
         self.footer = Some(String::from(
             "The thread editing niri's config stopped unexpectedly; try again",
         ));
         self.generation += 1;
     }
 
-    /// A window opening starts over: nothing refused, nothing to undo, nothing read.
+    /// A window opening starts over: nothing refused, nothing staged, nothing to undo, nothing read.
     pub fn reopen(&mut self) {
         self.footer = None;
         self.reload = None;
+        self.saved = None;
         self.refused.clear();
         self.undoable = false;
+        self.saving = false;
+        self.in_flight.clear();
+        self.take_staged();
         self.epoch += 1;
         self.generation += 1;
     }
@@ -1155,10 +1350,29 @@ pub fn load() {
     post(Job::Read);
 }
 
-/// Sends changes to the engine as one, with the row they are shown on. From a press.
+/// Stages a row's changes, with what the row is: nothing is written, and no backup is taken, until
+/// `save`. From a press.
 pub fn change(row: &'static str, changes: Vec<(&'static str, Option<String>)>) {
-    Settings::write().niri.begin(Some(row));
-    post(Job::Change { row, changes });
+    Settings::write().niri.stage(row, changes);
+}
+
+/// Writes every staged change as one change: one validation, one backup, one Undo.
+pub fn save() {
+    let changes = {
+        let mut settings = Settings::write();
+        settings.niri.flush()
+    };
+    let Some(changes) = changes else {
+        return;
+    };
+
+    post(Job::Save { changes });
+}
+
+/// Drops every staged change and reads the file again, so the rows show what it holds.
+pub fn discard() {
+    Settings::write().niri.discard();
+    post(Job::Read);
 }
 
 /// Undoes the last change this window made, and no other.
@@ -1191,8 +1405,7 @@ pub fn remove_rule(id: &'static str) {
 
 enum Job {
     Read,
-    Change {
-        row: &'static str,
+    Save {
         changes: Vec<(&'static str, Option<String>)>,
     },
     ApplyRule {
@@ -1233,6 +1446,9 @@ struct Read {
 struct Done {
     row: Option<&'static str>,
     undo: bool,
+
+    // whether the job was a Save of every staged change, which a success clears
+    save: bool,
     outcome: Option<Result<String, String>>,
 
     // whether the file differs after the job
@@ -1283,11 +1499,12 @@ fn post(job: Job) {
 
     if let Some(job) = job {
         let why = String::from("could not start the thread that edits niri's config");
-        let (row, undo) = row_of(&job);
+        let (row, undo, save) = row_of(&job);
 
         Settings::write().niri.done(Done {
             row,
             undo,
+            save,
             outcome: (!matches!(job, Job::Read)).then_some(Err(why.clone())),
             written: false,
             after: None,
@@ -1318,12 +1535,12 @@ fn spawn() -> Option<Sender<Job>> {
         .map(|_| sender)
 }
 
-fn row_of(job: &Job) -> (Option<&'static str>, bool) {
+fn row_of(job: &Job) -> (Option<&'static str>, bool, bool) {
     match job {
-        Job::Change { row, .. } => (Some(row), false),
-        Job::ApplyRule { id } | Job::RemoveRule { id } => (Some(id), false),
-        Job::Undo { .. } => (None, true),
-        Job::Read => (None, false),
+        Job::Save { .. } => (None, false, true),
+        Job::ApplyRule { id } | Job::RemoveRule { id } => (Some(id), false, false),
+        Job::Undo { .. } => (None, true, false),
+        Job::Read => (None, false, false),
     }
 }
 
@@ -1395,6 +1612,10 @@ fn tick(mut watch: Watch) -> Option<Watch> {
     if kanade_runtime::window_open(WINDOW) {
         watch.opened = true;
     } else if watch.opened || watch.ticks >= GRACE {
+        // the window is gone: changes staged and not saved go with it, and the next window reads
+        // the file again
+        Settings::write().niri.discard();
+
         return None;
     } else {
         watch.ticks += 1;
@@ -1480,7 +1701,7 @@ fn confirm(before: ipc::ConfigLoadState) {
 
 // the result, the files it read (the config first) and the config's stamp before it was read
 fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
-    let (row, undo) = row_of(&job);
+    let (row, undo, save) = row_of(&job);
     let setup = niri_config::target(None).and_then(|file| Ok((file, niri_config::state()?)));
     let (file, state) = match setup {
         Ok(setup) => setup,
@@ -1489,6 +1710,7 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
                 Done {
                     row,
                     undo,
+                    save,
                     outcome: (!matches!(job, Job::Read)).then(|| Err(why.clone())),
                     written: false,
                     after: None,
@@ -1513,7 +1735,7 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
     let before = Stamp::of(&file);
     let outcome = match &job {
         Job::Read => None,
-        Job::Change { changes, .. } => {
+        Job::Save { changes } => {
             let changes: Vec<(&str, Option<&str>)> = changes
                 .iter()
                 .map(|(path, value)| (*path, value.as_deref()))
@@ -1533,6 +1755,7 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
         Done {
             row,
             undo,
+            save,
             outcome,
             written: before != after,
             after: if before != after {
@@ -2022,6 +2245,7 @@ mod tests {
         state.done(Done {
             row: Some("layout.gaps"),
             undo: false,
+            save: false,
             outcome: Some(Ok(String::new())),
             written: true,
             after: None,
@@ -2111,6 +2335,7 @@ mod tests {
         state.done(Done {
             row: Some("layout.gaps"),
             undo: false,
+            save: false,
             outcome: Some(Ok(String::from("layout.gaps = 12 (was 4)"))),
             written: true,
             after: Some(String::from("after")),
@@ -2125,6 +2350,7 @@ mod tests {
         state.done(Done {
             row: None,
             undo: false,
+            save: false,
             outcome: None,
             written: false,
             after: None,
@@ -2138,6 +2364,7 @@ mod tests {
         state.done(Done {
             row: None,
             undo: false,
+            save: false,
             outcome: None,
             written: false,
             after: None,
@@ -2179,6 +2406,7 @@ mod tests {
         state.done(Done {
             row: Some("layout.gaps"),
             undo: false,
+            save: false,
             outcome: Some(Ok(String::new())),
             written: false,
             after: None,
@@ -2188,6 +2416,337 @@ mod tests {
         state.reloaded(Some(true));
         state.reopen();
         assert_eq!(state.status(), None);
+    }
+
+    // the page as it stands after reading the file
+    fn loaded_state(editor: &Editor) -> State {
+        let mut state = State {
+            loaded: true,
+            ..State::default()
+        };
+
+        for item in ITEMS {
+            for path in item.paths() {
+                state.values.insert(path, editor.read(path).unwrap());
+            }
+            if editor.sets_in_config(item.path).unwrap() {
+                state.bare.insert(item.path);
+            }
+        }
+        state.rules = editor.rules().unwrap_or_default();
+
+        state
+    }
+
+    // the worker's side of a Save: what `flush` posted, applied and read back
+    fn save(state: &mut State, editor: &Editor) {
+        let changes = state.flush().unwrap();
+        let changes: Vec<(&str, Option<&str>)> = changes
+            .iter()
+            .map(|(path, value)| (*path, value.as_deref()))
+            .collect();
+        let said = editor.apply(&changes).unwrap();
+        let stamp = Stamp::of(&editor.file);
+
+        state.done(Done {
+            row: None,
+            undo: false,
+            save: true,
+            outcome: Some(Ok(said)),
+            written: true,
+            after: editor.last_change_hash().ok(),
+            stamp,
+            read: read_all(editor),
+        });
+    }
+
+    // the defect this batch fixes: a row wrote the file as it was pressed
+    #[test]
+    fn a_change_is_kept_in_the_page_until_save() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let before = fs::read(&file).unwrap();
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+
+        // nothing was written, and no backup was taken
+        assert_eq!(fs::read(&file).unwrap(), before);
+        assert!(
+            editor.backups().starts_with("no backups"),
+            "{}",
+            editor.backups()
+        );
+
+        // the row says it is not saved, and shows what Save would write
+        let shown = state.shown(item("layout.gaps").unwrap());
+        assert!(shown.pending);
+        assert_eq!(shown.current, Current::Number(24.0));
+        assert!(!shown.default);
+        assert_eq!(
+            state.status().unwrap(),
+            (String::from("1 change not saved"), false)
+        );
+    }
+
+    // the acceptance check: two rows, one write, one backup, one Undo
+    #[test]
+    fn save_writes_every_staged_row_in_one_change() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let before = fs::read(&file).unwrap();
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        state.stage(
+            "layout.border.width",
+            vec![("layout.border.width", Some(String::from("8")))],
+        );
+        assert_eq!(
+            state.status().unwrap(),
+            (String::from("2 changes not saved"), false)
+        );
+
+        save(&mut state, &editor);
+
+        // one backup, both values in the file, and nothing left staged
+        let backups = editor.backups();
+        assert_eq!(
+            backups
+                .lines()
+                .filter(|line| !line.starts_with("orig"))
+                .count(),
+            1,
+            "{backups}"
+        );
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("gaps 24") && text.contains("width 8"),
+            "{text}"
+        );
+        assert!(!state.has_staged());
+        assert!(!state.is_saving());
+        assert!(state.undoable);
+        assert!(
+            state.status().unwrap().0.starts_with("Saved: "),
+            "{:?}",
+            state.status()
+        );
+
+        // and the one Undo takes the whole change back, byte for byte
+        editor
+            .undo_only(state.undo_after.as_deref())
+            .expect("the save is the ring's newest change");
+        assert_eq!(fs::read(&file).unwrap(), before);
+    }
+
+    #[test]
+    fn discard_puts_every_row_back_to_the_file() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let before = fs::read(&file).unwrap();
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        state.stage(
+            "layout.border.width",
+            reset_changes(item("layout.border.width").unwrap()),
+        );
+
+        state.discard();
+
+        assert_eq!(fs::read(&file).unwrap(), before);
+        assert!(!state.has_staged());
+        assert_eq!(state.status(), None);
+        assert_eq!(
+            state.shown(item("layout.gaps").unwrap()).current,
+            Current::Number(16.0)
+        );
+        assert!(
+            state.shown(item("layout.border.width").unwrap()).default,
+            "a reset that was discarded leaves the row at niri's default"
+        );
+
+        // each row's input is set again from the file
+        assert!(state.resets.get("layout.gaps").copied().unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_staged_changes() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let before = fs::read(&file).unwrap();
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        state.flush().unwrap();
+
+        let why =
+            String::from("layout.gaps: set by mine.kdl, an include; Kanade edits only config.kdl");
+        state.done(Done {
+            row: None,
+            undo: false,
+            save: true,
+            outcome: Some(Err(why.clone())),
+            written: false,
+            after: None,
+            stamp: Stamp::of(&file),
+            read: read_all(&editor),
+        });
+
+        assert!(state.has_staged(), "a failed Save keeps the change");
+        assert!(state.shown(item("layout.gaps").unwrap()).pending);
+        assert!(!state.is_saving());
+        assert_eq!(state.status(), Some((why, true)));
+        assert_eq!(fs::read(&file).unwrap(), before);
+    }
+
+    // a change made while the Save before it is being written is not in that write
+    #[test]
+    fn a_row_changed_while_save_is_writing_stays_staged() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        state.stage(
+            "layout.border.width",
+            vec![("layout.border.width", Some(String::from("8")))],
+        );
+        let posted = state.flush().unwrap();
+
+        // meanwhile the border width is turned to 12; the Save in flight has 8
+        state.stage(
+            "layout.border.width",
+            vec![("layout.border.width", Some(String::from("12")))],
+        );
+
+        let changes: Vec<(&str, Option<&str>)> = posted
+            .iter()
+            .map(|(path, value)| (*path, value.as_deref()))
+            .collect();
+        let said = editor.apply(&changes).unwrap();
+        let stamp = Stamp::of(&file);
+        state.done(Done {
+            row: None,
+            undo: false,
+            save: true,
+            outcome: Some(Ok(said)),
+            written: true,
+            after: editor.last_change_hash().ok(),
+            stamp,
+            read: read_all(&editor),
+        });
+
+        // what was written is out of the page; the border width's newer change stays
+        let gaps = state.shown(item("layout.gaps").unwrap());
+        assert!(!gaps.pending && !gaps.writing);
+        assert_eq!(gaps.current, Current::Number(24.0));
+
+        let border = state.shown(item("layout.border.width").unwrap());
+        assert!(border.pending && !border.writing);
+        assert_eq!(border.current, Current::Number(12.0));
+        assert!(fs::read_to_string(&file).unwrap().contains("width 8"));
+
+        assert_eq!(
+            state.status().unwrap(),
+            (String::from("1 change not saved"), false)
+        );
+    }
+
+    // toggling a switch back before Save leaves nothing to write
+    #[test]
+    fn a_change_back_to_the_files_value_stages_nothing() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        assert!(state.has_staged());
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("16")))],
+        );
+        assert!(!state.has_staged());
+        assert!(!state.shown(item("layout.gaps").unwrap()).pending);
+        assert_eq!(state.flush(), None);
+        assert_eq!(state.status(), None);
+    }
+
+    #[test]
+    fn a_second_change_to_a_row_replaces_the_first() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("32")))],
+        );
+
+        assert_eq!(state.staged.len(), 1, "one row, one staged change");
+        assert_eq!(
+            state.shown(item("layout.gaps").unwrap()).current,
+            Current::Number(32.0)
+        );
+        assert_eq!(state.flush().unwrap().len(), 1);
+    }
+
+    // closing the window does not keep a change it never wrote
+    #[test]
+    fn a_closed_page_does_not_keep_staged_changes() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        state.reopen();
+
+        assert!(!state.has_staged());
+        assert_eq!(state.status(), None);
+        assert_eq!(
+            state.shown(item("layout.gaps").unwrap()).current,
+            Current::Number(16.0)
+        );
     }
 
     #[test]

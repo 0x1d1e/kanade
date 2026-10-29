@@ -76,7 +76,7 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Emoji | typing searches by name or shortcode, arrows and Tab move the ring over the tiles and scroll to it, Enter copies the ringed emoji and collapses the island once it is on the clipboard, or says `Not copied` and stays open; Space types |
 | Screen time | Up, Down, Tab, Home and End move the ring through today's apps and scroll to it; the wheel scrolls. Off unless the `screen-time` Module is turned on |
 | Session | arrows and Tab move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |
-| Settings | Tab and Shift+Tab move the ring through the pages, the controls and Undo, Enter or Space presses what it is on, arrows step a choice, a number or the page list (Up/Down in a number field), Escape leaves a field or the ring |
+| Settings | Tab and Shift+Tab move the ring through the pages, the controls, Undo and, while changes are staged, Discard and Save, Enter or Space presses what it is on, arrows step a choice, a number or the page list (Up/Down in a number field), Escape leaves a field or the ring |
 | Tray | arrows and Tab move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |
 | Controls | Up/Down and Tab move the ring, Left/Right move it or adjust a slider, Enter or Space presses what it is on (Stop sharing, while a screen share runs, and the pencil that arranges the tiles are the first targets, above the tiles; in the arrangement every button is a target, Escape drops the draft) |
 | Media, Controls, Weather, Session | a typed character collapses an island opened from a keybind, so it goes to the window beneath |

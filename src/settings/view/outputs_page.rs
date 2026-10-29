@@ -56,58 +56,17 @@ pub fn actions(settings: &Settings, roles: &ThemeRoles) -> Vec<Box<dyn Widget>> 
     }
 
     vec![
-        pill("revert", "Revert", false, settings, roles, outputs::revert),
-        pill("keep", "Keep", true, settings, roles, outputs::keep),
+        super::pill(
+            "revert",
+            "Revert",
+            false,
+            true,
+            settings,
+            roles,
+            outputs::revert,
+        ),
+        super::pill("keep", "Keep", true, true, settings, roles, outputs::keep),
     ]
-}
-
-fn pill(
-    node: &'static str,
-    word: &str,
-    primary: bool,
-    settings: &Settings,
-    roles: &ThemeRoles,
-    press: fn(),
-) -> Box<dyn Widget> {
-    let id = format!("outputs {node}");
-    let hovered = settings.is_hovered(&id);
-    let text = Text::new(word)
-        .size(theme::text::LABEL)
-        .color(if primary {
-            roles.on_primary
-        } else {
-            roles.on_surface
-        })
-        .weight(theme::text::SEMIBOLD);
-    let control = Rectangle::new()
-        .width(84.0)
-        .height(30.0)
-        .radius(radius::ROW)
-        .semantics(|| Semantics::new(Role::Button, node))
-        .align_child(Center, Center)
-        .child(text);
-
-    let control = if primary {
-        if hovered {
-            control.fill(hover_primary(roles))
-        } else {
-            control.fill(roles.primary)
-        }
-    } else if hovered {
-        control.fill(hover_wash(roles))
-    } else {
-        control
-    };
-
-    button_styled(
-        control,
-        id,
-        press,
-        (!primary).then(|| roles.edge()),
-        false,
-        settings,
-        roles,
-    )
 }
 
 fn plain(text: &str, roles: &ThemeRoles) -> Box<dyn Widget> {

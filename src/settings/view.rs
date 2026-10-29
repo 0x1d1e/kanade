@@ -597,14 +597,38 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     };
 
     let mut actions: Vec<Box<dyn Widget>> = Vec::new();
+    // a change not saved leaves no Undo in its place: Discard and Save take the footer
+    let staged = niri_page && settings.niri.has_staged();
     let undoable = if niri_page {
-        settings.niri.undoable
+        settings.niri.undoable && !staged
     } else {
         !settings.history.is_empty()
     };
     let undo: fn() = if niri_page { niri::undo } else { undo };
     if niri_page {
         actions.extend(outputs_page::actions(settings, roles));
+        if staged {
+            let enabled = !settings.niri.is_saving();
+
+            actions.push(pill(
+                "discard",
+                "Discard",
+                false,
+                enabled,
+                settings,
+                roles,
+                niri::discard,
+            ));
+            actions.push(pill(
+                "save",
+                "Save",
+                true,
+                enabled,
+                settings,
+                roles,
+                niri::save,
+            ));
+        }
     }
     if undoable {
         let hovered = settings.is_hovered("undo");
@@ -3210,6 +3234,69 @@ pub(super) fn button_styled(
     }
 
     outlined(control, token, resting, roles)
+}
+
+// a word pressed as a whole, filled when it is the one to take; dimmed and unreachable when not
+pub(super) fn pill(
+    node: &'static str,
+    word: &str,
+    primary: bool,
+    enabled: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+    press: fn(),
+) -> Box<dyn Widget> {
+    let id = format!("pill {node}");
+    let hovered = enabled && settings.is_hovered(&id);
+    let text = Text::new(word)
+        .size(theme::text::LABEL)
+        .color(if primary {
+            roles.on_primary
+        } else {
+            roles.on_surface
+        })
+        .weight(theme::text::SEMIBOLD);
+    let control = Rectangle::new()
+        .width(84.0)
+        .height(30.0)
+        .radius(radius::ROW)
+        .semantics(|| Semantics::new(Role::Button, node))
+        .align_child(Center, Center)
+        .child(text);
+
+    let control = if !enabled {
+        let control = if primary {
+            control.fill(roles.primary)
+        } else {
+            control
+        };
+
+        control.opacity(theme::DISABLED)
+    } else if primary {
+        if hovered {
+            control.fill(hover_primary(roles))
+        } else {
+            control.fill(roles.primary)
+        }
+    } else if hovered {
+        control.fill(hover_wash(roles))
+    } else {
+        control
+    };
+
+    if !enabled {
+        return Box::new(control);
+    }
+
+    button_styled(
+        control,
+        id,
+        press,
+        (!primary).then(|| roles.edge()),
+        false,
+        settings,
+        roles,
+    )
 }
 
 // a pressable that is its own edge, in a halo
