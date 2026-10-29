@@ -396,6 +396,10 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("dictate.insert"), Row::Key("dictate.never_in")],
             },
             Section {
+                title: "Screenshots",
+                rows: &[Row::Key("capture.annotate")],
+            },
+            Section {
                 title: "Screen recording",
                 rows: &[
                     Row::Key("recording.quality"),

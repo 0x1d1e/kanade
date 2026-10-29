@@ -243,6 +243,10 @@ subscription_interval = 60
 # °C and km/h, or °F and mph
 units = "metric"
 
+[capture]
+# a screenshot `capture screenshot` saved opens in an editor on the focused output, to draw rectangles and arrows and save a copy beside it; off, only the saved notice shows. The pointer draws; Escape closes without writing and Ctrl+Z takes back the last shape
+annotate = false
+
 [recording]
 # how much of the picture a screen recording keeps: "low", "medium", "high" or "max". Each is one fixed quantizer for the encoder in use, so a still screen costs nothing and a busy one what it needs; each step changes the size of a busy picture by about a quarter
 quality = "high"

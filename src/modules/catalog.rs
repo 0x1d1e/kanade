@@ -157,8 +157,9 @@ pub const ALL: &[Module] = &[
             });
             service::watch::<Niri>(fullscreen::follow_shown);
 
-            // a screenshot niri saved, including one Kanade did not ask for
-            niri::on_screenshot(live::screenshot_captured);
+            // a screenshot niri saved, including one Kanade did not ask for; one the annotation
+            // editor asked for opens in it, and its saved notice waits until it closes
+            niri::on_screenshot(capture::annotate::heard);
 
             // the keyboards, for the OSD's keys and lights; typing and key repeat are the runtime's
             if on("osd") {
@@ -1306,7 +1307,7 @@ notifications dnd on until <HH:MM>
                 without: "no recording a window",
             },
         ],
-        settings: config::RECORDING,
+        settings: config::CAPTURE,
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "capture",
@@ -1337,7 +1338,9 @@ notifications dnd on until <HH:MM>
             recording::reclaim();
             recording::prewarm();
             recording::overlay::spawn();
+            capture::annotate::spawn();
             app.window_per_monitor(recording::overlay::window)
+                .window_per_monitor(capture::annotate::window)
         },
     },
     // screenshots and the screen recording from the island

@@ -17,6 +17,8 @@ use std::time::Duration;
 use kanade_runtime::service::Service;
 use kanade_runtime::{IpcReply, MutexExt};
 
+pub mod annotate;
+
 use super::clipboard;
 use super::json::{self, Json};
 use super::live;
@@ -96,6 +98,10 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     let path = path
         .to_str()
         .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
+
+    // the editor opens on niri's announcement of this path, when it saves it; asked before the
+    // request, since niri may save before it answers
+    annotate::asked(path);
 
     match niri::act(&action(mode, path, window)).map_err(backend)? {
         Acted::Done => Ok(Asked::Taken(path.to_owned())),

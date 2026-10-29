@@ -19,6 +19,8 @@ Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island"
 
 `peek down` / `peek up` and `dictate down` / `up` are for niri's press and release binds. Kanade grabs no key. Tap Super opening the Launcher stays a niri bind to `kanade launcher toggle`.
 
+With `capture.annotate` on, a screenshot `capture screenshot` saved opens the annotation editor on the focused output: drag to draw a rectangle or an arrow, press Rectangle or Arrow to choose, Undo or Ctrl+Z takes the last shape back, Save writes `<stem>-annotated.png` beside the original and Escape closes without writing. Off by default in Settings' Screenshots section.
+
 Screenshots and caffeine work the same way:
 
 ```kdl
@@ -74,6 +76,7 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Window | arrows and Tab move the ring over the column controls (Consume right, Expel bottom, Maximize, Float), width presets (⅓, ½, ⅔, Preset) and workspace pills, Enter or Space presses what it is on |
 | Strip | arrows and Tab move the ring across columns and stacked tiles across workspaces on the focused monitor, Enter or Space focuses the window and collapses the island |
 | Emoji | typing searches by name or shortcode, arrows and Tab move the ring over the tiles and scroll to it, Enter copies the ringed emoji and collapses the island once it is on the clipboard, or says `Not copied` and stays open; Space types |
+| Annotate | drag draws the chosen tool from press to release, Rectangle and Arrow choose it, Undo or Ctrl+Z takes back the last shape, Save writes the copy and closes, Escape closes without writing |
 | Screen time | Up, Down, Tab, Home and End move the ring through today's apps and scroll to it; the wheel scrolls. Off unless the `screen-time` Module is turned on |
 | Files | typing searches the desktop's recent files by name and by folder, arrows, Tab, Home and End move the ring and scroll to it, Enter opens the file with `xdg-open`, Right opens the folder it is in, Ctrl+R reads the shelf again (the footer's Refresh does the same by pointer); the wheel scrolls. A shelf, not a manager: nothing is deleted, renamed, moved, copied or dragged out |
 | Session | arrows and Tab move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |

@@ -1268,6 +1268,28 @@ pub fn screenshot_failed(why: &str) {
     IslandService::write().post(activity(SHOT, job, Vec::new()), Instant::now());
 }
 
+/*
+ * why the annotation editor did not open: too large a file, an image past what the runtime draws,
+ * or a picture that cannot be read. Never the path
+ */
+pub fn annotation_failed(why: &str) {
+    let job = Job {
+        title: String::from("Annotation failed"),
+        detail: why
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect(),
+        progress: None,
+        ended: Some(Ended::Failed),
+        serial: 0,
+    };
+
+    IslandService::write().post(activity(SHOT, job, Vec::new()), Instant::now());
+}
+
 // the id of a screenshot niri saved; a space is outside a client's alphabet, so no client has it
 const SAVED: &str = "screenshot saved";
 

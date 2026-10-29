@@ -284,6 +284,9 @@ pub struct Config {
     // `recording.*`: how a screen recording is encoded (ADR 0116)
     pub recording: Recording,
 
+    // `capture.annotate`: a screenshot `capture screenshot` saved opens in the editor
+    pub capture_annotate: bool,
+
     // `controls.tiles`: which switches the Controls Surface shows, in order and size (ADR 0067)
     pub tiles: Vec<Placed>,
     // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
@@ -661,6 +664,7 @@ impl Default for Config {
             focus: Focus::default(),
             dictate: Dictate::default(),
             recording: Recording::default(),
+            capture_annotate: false,
             tiles: tiles::DEFAULT.to_vec(),
             pomodoro: Pomodoro::default(),
             hooks: Commands::default(),
@@ -3380,7 +3384,20 @@ pub const BRIGHTNESS: &[Setting] = &[Setting {
     },
 }];
 
-pub const RECORDING: &[Setting] = &[
+pub const CAPTURE: &[Setting] = &[
+    Setting {
+        key: "capture.annotate",
+        label: "Annotate screenshots",
+        help: "a screenshot `capture screenshot` saved opens in an editor on the focused output, to draw rectangles and arrows and save a copy beside it; off, only the saved notice shows. The pointer draws; Escape closes without writing and Ctrl+Z takes back the last shape",
+        kind: Kind::Switch(Field {
+            get: |config| config.capture_annotate,
+            set: |config, on| config.capture_annotate = on,
+        }),
+        tail: Tail {
+            hint: Some("Open a saved screenshot in the annotation editor"),
+            ..Tail::DEFAULT
+        },
+    },
     Setting {
         key: "recording.quality",
         label: "Recording quality",
@@ -5016,6 +5033,7 @@ mod tests {
                 "weather.location",
                 "weather.place",
                 "weather.units",
+                "capture.annotate",
                 "recording.quality",
                 "recording.encoder",
                 "recording.device",
