@@ -292,7 +292,7 @@ The directory Kanade owns (`/usr/local/share/kanade-sddm/`: `themes/<theme>/` fo
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules/catalog.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.
-- Every Module is on unless the config turns it off, but `idle`, which is off unless turned on, so an idle daemon like hypridle keeps working (ADR 0047), and `screen-time`, which is off unless turned on (ADR 0138).
+- Every Module is on unless the config turns it off, but `idle`, which is off unless turned on, so an idle daemon like hypridle keeps working (ADR 0047), `screen-time`, which is off unless turned on (ADR 0138), and `usage`, which is off unless turned on (ADR 0145).
 - **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its verbs with `module <name> is off`. A Service only it reads stays cold.
 - **Invariant:** a Module whose requirement is off, or whose requirements loop, is off too, and stderr names why. One missing an optional Module runs without it.
 - A Module whose loss is easy to miss says so at every start while off (`privacy`: no capture indicators).

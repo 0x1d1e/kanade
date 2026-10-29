@@ -27,8 +27,8 @@ use crate::sources::{
     lyrics, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, screen_time, seat,
-    session, sleep, subscriptions, system, timer, tray, wake, wallpaper, wallpaper_moving, weather,
-    windows, workspace,
+    session, sleep, subscriptions, system, timer, tray, usage, wake, wallpaper, wallpaper_moving,
+    weather, windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, desk, dock, gesture, hooks, idle,
@@ -1460,6 +1460,37 @@ notifications dnd on until <HH:MM>
         }],
         start: |app| {
             screen_time::start();
+            app
+        },
+    },
+    // Claude's plan usage as two rings on the island, off unless turned on (ADR 0145)
+    Module {
+        name: "usage",
+        about: "Claude's plan usage as two rings on the Island",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "usage",
+            about: "Refresh Claude's plan usage, or set the API key",
+            usage: || {
+                String::from(
+                    "usage
+usage key
+  key: reads the Claude plan key from stdin (typed hidden at a terminal) into $XDG_STATE_HOME/kanade/usage-key",
+                )
+            },
+            parse: |arguments| {
+                usage::Request::parse(arguments)
+                    .map(Call::Usage)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            usage::start();
             app
         },
     },

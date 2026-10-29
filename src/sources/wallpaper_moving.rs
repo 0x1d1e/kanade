@@ -221,7 +221,9 @@ pub fn run() {
             continue;
         }
 
-        if let Some(at) = due && at > Instant::now() {
+        if let Some(at) = due
+            && at > Instant::now()
+        {
             wait(Some(at));
 
             continue;

@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::activity::{Activity, Id, Interrupt, InvalidActivity, Kind, Lifetime, Priority, Scope};
 use super::presentation::Surface;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Open(Surface),
 

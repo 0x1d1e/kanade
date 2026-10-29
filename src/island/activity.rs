@@ -38,10 +38,13 @@ pub enum Kind {
 
     // today's focused time crossed its limit (ADR 0138)
     ScreenTime,
+
+    // Claude's plan usage as two rings (ADR 0145)
+    Usage,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 18] = [
+    pub const ALL: [Kind; 19] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -60,6 +63,7 @@ impl Kind {
         Kind::Reminder,
         Kind::Dictation,
         Kind::ScreenTime,
+        Kind::Usage,
     ];
 
     // as IPC names it
@@ -83,6 +87,7 @@ impl Kind {
             Kind::Reminder => "reminder",
             Kind::Dictation => "dictation",
             Kind::ScreenTime => "screen-time",
+            Kind::Usage => "usage",
         }
     }
 
@@ -239,7 +244,7 @@ pub struct Action {
  * Detail replaces the Activity, so its small form crossfades to the new one unless it stays in
  * place (`InPlace for Content`)
  */
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum Detail {
     // drawn as its Kind and key, as fake Activities are
     #[default]
@@ -281,6 +286,12 @@ pub enum Detail {
     Dictation(Dictation),
     ScreenTime(String),
 
+    // Claude's plan usage as rings and their percentages
+    Usage(Usage),
+
+    // one window at or over its limit, once per reset
+    UsageNotice(String),
+
     // a device that connected, went or took over, whatever Kind posts it
     Hardware(Hardware),
 }
@@ -306,6 +317,7 @@ impl Detail {
             Detail::Reminder(_) => Some(Kind::Reminder),
             Detail::Dictation(_) => Some(Kind::Dictation),
             Detail::ScreenTime(_) => Some(Kind::ScreenTime),
+            Detail::Usage(_) | Detail::UsageNotice(_) => Some(Kind::Usage),
             Detail::Hardware(_) => None,
         }
     }
@@ -329,6 +341,16 @@ impl Detail {
             _ => false,
         }
     }
+}
+
+// Claude's plan usage: the two windows and their utilization, 0 to 1 each
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Usage {
+    // five hours
+    pub five_hour: Option<f32>,
+
+    // seven days
+    pub seven_day: Option<f32>,
 }
 
 /*
@@ -752,7 +774,7 @@ pub struct Round {
     pub rounds: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Activity {
     id: Id,
     priority: Priority,
@@ -862,7 +884,7 @@ impl Activity {
 }
 
 // what the Arbiter decides to show on one island
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Frame {
     pub primary: Option<Activity>,
 

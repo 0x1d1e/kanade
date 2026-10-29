@@ -24,6 +24,11 @@ impl Backoff {
         self.failures > 0
     }
 
+    /// How many tries failed in a row.
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
+
     /// How long the next try waits.
     pub fn wait(&self) -> Duration {
         let doublings = self.failures.saturating_sub(1).min(16);

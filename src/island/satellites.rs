@@ -8,7 +8,7 @@ use super::activity::{Activity, Frame, Id};
 use super::motion::{Mode, Spring};
 
 // what a Satellite draws: an Activity's, or the count of the ones past the bound
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Mark {
     Activity(Activity),
     Overflow(usize),

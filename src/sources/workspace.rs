@@ -18,7 +18,7 @@ use crate::island::activity::{
 use crate::island::service::IslandService;
 
 // what the island does about a change niri made
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Change {
     Post(Activity),
     Withdraw(Id),

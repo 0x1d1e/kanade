@@ -27,7 +27,8 @@ use crate::sources::notifications::timed;
 use crate::sources::system::Switch;
 use crate::sources::{
     brightness, caffeine, capture, charge_limit, dictation, focus, google, live, media,
-    night_light, niri, osd, power, recording, reminders, subscriptions, timer, wallpaper, weather,
+    night_light, niri, osd, power, recording, reminders, subscriptions, timer, usage, wallpaper,
+    weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor, sddm, ui};
@@ -57,10 +58,11 @@ pub struct Verb {
 }
 
 // what a verb asks of the shell
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Call {
     Island(Command),
     Timer(timer::Request),
+    Usage(usage::Request),
     Live(live::Request),
     Dmenu(choose::Asked),
     ClearNotifications,
@@ -531,6 +533,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         && request.local()
     {
         return dictate::run(request);
+    }
+
+    // the key is read at a terminal, never through the socket
+    if let Call::Usage(usage::Request::Key) = asked {
+        return usage::key();
     }
 
     // the shell holds the call until a press arrives, so one ask is enough; the client's

@@ -143,7 +143,7 @@ pub enum Segment {
  * what the body shows: the Presentation, and in a small form the Activity it is the form of. Split
  * also shows the top Satellite in its trailing segment
  */
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Content {
     pub presentation: Presentation,
     pub activity: Option<Activity>,

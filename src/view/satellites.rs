@@ -187,5 +187,6 @@ pub(super) fn abbreviation(kind: Kind) -> &'static str {
         Kind::Live => "Lv",
         Kind::NightLight => "Nl",
         Kind::Reminder => "Rm",
+        Kind::Usage => "Us",
     }
 }

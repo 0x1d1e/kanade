@@ -61,6 +61,7 @@ pub mod subscriptions;
 pub mod system;
 pub mod timer;
 pub mod tray;
+pub mod usage;
 pub mod wake;
 pub mod wallpaper;
 pub mod wallpaper_moving;

@@ -1551,7 +1551,7 @@ fn response(from: Presentation, to: Presentation, timings: Timings) -> Duration 
 }
 
 // an IPC command's change, from IslandService::resolve
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Open(String, Surface),
     Collapse(String),
