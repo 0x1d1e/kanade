@@ -3951,13 +3951,14 @@ static CURRENT: LazyLock<RwLock<Effect>> = LazyLock::new(|| {
     let config = if cfg!(test) {
         Config::default()
     } else {
-        let (config, problems) = read();
+        let (config, problems, applied) = read_applied();
 
         for problem in &problems {
             eprintln!("kanade: {problem}");
         }
 
         *SKIPPED.locked() = problems;
+        *APPLIED.locked() = applied;
         config
     };
 
@@ -3971,6 +3972,19 @@ pub fn skipped() -> Vec<String> {
     LazyLock::force(&CURRENT);
 
     SKIPPED.locked().clone()
+}
+
+// the paths whose contents the config read at start applied, none of a file it could not take
+static APPLIED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/*
+ * what the config in effect at start was read from: the paths whose contents applied. A reload says
+ * its own, since only it knows what it has just applied
+ */
+pub fn applied() -> Vec<PathBuf> {
+    LazyLock::force(&CURRENT);
+
+    APPLIED.locked().clone()
 }
 
 /*
@@ -4021,7 +4035,15 @@ pub fn announce() {
  * at start each problem is skipped alone, a reload refuses the lot
  */
 pub fn read() -> (Config, Vec<String>) {
-    let (mut config, problems) = layers(true);
+    let (config, problems, _) = read_applied();
+
+    (config, problems)
+}
+
+// `read`, with the paths whose contents applied: what `crate::reload` keeps as the last good
+// config's paths, since a file the read could not take applied nothing
+pub fn read_applied() -> (Config, Vec<String>, Vec<PathBuf>) {
+    let (mut config, problems, applied) = layers_applied(true);
 
     if config.appearance.accessibility {
         let desktop = accessibility::current();
@@ -4039,7 +4061,7 @@ pub fn read() -> (Config, Vec<String>) {
         config.island.motion = motion;
     }
 
-    (config, problems)
+    (config, problems, applied)
 }
 
 /*
@@ -4048,12 +4070,34 @@ pub fn read() -> (Config, Vec<String>) {
  * with the settings file for `settings`: without it is what a value there is compared with
  */
 pub fn layers(settings: bool) -> (Config, Vec<String>) {
-    let home = env::var("HOME").ok();
-    let mut config = Config::default();
-    let mut problems = Vec::new();
+    let (config, problems, _) = layers_applied(settings);
 
-    for path in files(home.as_deref(), settings, &mut problems) {
-        let text = match fs::read_to_string(&path) {
+    (config, problems)
+}
+
+// `layers`, with the paths whose contents applied: one the read could not take, or that TOML or its
+// `schema_version` refused whole, contributed nothing and is not among them
+pub fn layers_applied(settings: bool) -> (Config, Vec<String>, Vec<PathBuf>) {
+    let home = env::var("HOME").ok();
+    let mut problems = Vec::new();
+    let files = files(home.as_deref(), settings, &mut problems);
+    let (config, applied) = layers_at(&files, home.as_deref(), &mut problems);
+
+    (config, problems, applied)
+}
+
+// `layers_applied` over the files named, in the order they apply, and what did not apply added to
+// `problems`
+fn layers_at(
+    files: &[PathBuf],
+    home: Option<&str>,
+    problems: &mut Vec<String>,
+) -> (Config, Vec<PathBuf>) {
+    let mut config = Config::default();
+    let mut applied = Vec::new();
+
+    for path in files {
+        let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
@@ -4062,12 +4106,19 @@ pub fn layers(settings: bool) -> (Config, Vec<String>) {
             }
         };
 
-        for (line, problem) in layer(&mut config, &text, MIGRATIONS, home.as_deref()) {
-            problems.push(format!("{}:{line}: {problem}", path.display()));
+        let (what, any) = layer(&mut config, &text, MIGRATIONS, home);
+
+        problems.extend(
+            what.into_iter()
+                .map(|(line, problem)| format!("{}:{line}: {problem}", path.display())),
+        );
+
+        if any {
+            applied.push(path.clone());
         }
     }
 
-    (config, problems)
+    (config, applied)
 }
 
 // the settings file, the one layer Kanade writes
@@ -4116,18 +4167,6 @@ fn files(home: Option<&str>, settings: bool, problems: &mut Vec<String>) -> Vec<
     }
 
     files
-}
-
-// the files a read reads, in the order they apply, those there now: what `crate::reload` keeps as
-// the last good config's paths
-pub fn layer_files() -> Vec<PathBuf> {
-    let home = env::var("HOME").ok();
-    let mut problems = Vec::new();
-
-    files(home.as_deref(), true, &mut problems)
-        .into_iter()
-        .filter(|file| file.is_file())
-        .collect()
 }
 
 // an XDG base directory: the variable if set to an absolute path, else its default under home
@@ -4307,15 +4346,18 @@ pub const SCHEMA_VERSION: usize = MIGRATIONS.len() + 1;
 
 /*
  * applies one file over the config and returns what in it did not apply, as `(line, what)` in line
- * order: parse, migrate, then set each key, so a later file's key replaces this one's
+ * order, and whether any of it did: parse, migrate, then set each key, so a later file's key
+ * replaces this one's. A file that is not TOML, or of a `schema_version` this build has no migration
+ * from, says how to read none of it, so nothing of it applied
  */
 fn layer(
     config: &mut Config,
     text: &str,
     migrations: &[Migration],
     home: Option<&str>,
-) -> Vec<(usize, String)> {
+) -> (Vec<(usize, String)>, bool) {
     let mut problems = Vec::new();
+    let mut applied = true;
 
     match DeTable::parse(text) {
         Ok(table) => {
@@ -4323,7 +4365,10 @@ fn layer(
 
             match migrate(&mut table, migrations) {
                 Ok(()) => apply(config, &table, "", home, &mut Scope::Global, &mut problems),
-                Err(problem) => problems = vec![problem],
+                Err(problem) => {
+                    problems = vec![problem];
+                    applied = false;
+                }
             }
         }
         Err(error) => {
@@ -4334,11 +4379,13 @@ fn layer(
                 line,
                 format!("not valid TOML, skipped this file: {message}"),
             ));
+            applied = false;
         }
     }
 
     problems.sort_by_key(|&(line, _)| line);
-    problems
+
+    (problems, applied)
 }
 
 fn line(text: &str, offset: usize) -> usize {
@@ -4521,7 +4568,7 @@ pub fn origin(setting: &Setting) -> Vec<PathBuf> {
 pub fn check(text: &str) -> Vec<(usize, String)> {
     let home = env::var("HOME").ok();
 
-    layer(&mut Config::default(), text, MIGRATIONS, home.as_deref())
+    layer(&mut Config::default(), text, MIGRATIONS, home.as_deref()).0
 }
 
 // the keys a table may set: any, or for an output the keys marked per output, noting each it sets
@@ -4692,7 +4739,7 @@ mod tests {
         let mut config = Config::default();
         let problems = texts
             .iter()
-            .map(|text| layer(&mut config, text, migrations, Some("/home/you")))
+            .map(|text| layer(&mut config, text, migrations, Some("/home/you")).0)
             .collect();
 
         (config, problems)
@@ -5869,6 +5916,51 @@ argv = ["kitty", "-e", "vim", "~/notes.md", "x~/y"]
 
         let (_, problems) = one("[modules]\nmedia = false\nmedia = true");
         assert_eq!(problems[0].0, 3);
+    }
+
+    /*
+     * the last good config's paths are the files whose contents applied: one the read could not
+     * take, and one TOML refuses whole, applied nothing, so neither is last good
+     */
+    #[test]
+    fn a_file_that_did_not_apply_is_not_last_good() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = env::temp_dir().join(format!("kanade-config-applied-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let read = dir.join("a.toml");
+        let broken = dir.join("b.toml");
+        let unreadable = dir.join("c.toml");
+        fs::write(&read, "clock = \"12h\"").unwrap();
+        fs::write(&broken, "not TOML at all <<<").unwrap();
+        fs::write(&unreadable, "clock = \"24h\"").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut problems = Vec::new();
+        let (config, applied) = layers_at(
+            &[read.clone(), broken, unreadable.clone()],
+            Some("/home/you"),
+            &mut problems,
+        );
+
+        assert_eq!(config.clock, Hours::Twelve);
+        assert_eq!(applied, [read], "only the file that read applied");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(
+            problems[0].contains("not valid TOML, skipped this file: "),
+            "{}",
+            problems[0]
+        );
+        assert!(
+            problems[1].contains(" unreadable, skipped: "),
+            "{}",
+            problems[1]
+        );
+
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     // a fake history: version 1 called hover `peek`, version 2 kept timings under `motion`

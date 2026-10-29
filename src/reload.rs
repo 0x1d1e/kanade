@@ -51,6 +51,11 @@ struct State {
     // the first problem of the refusal last shown on the island, so the same refused read is not
     // shown at each reload of an unchanged file
     noticed: Option<String>,
+
+    // the paths whose contents the config in effect applied, which is what `status` says: only a
+    // file that contributed is among them, and the file beside the other state mirrors them
+    // (`keep_last_good`)
+    last_good: Vec<PathBuf>,
 }
 
 // held for a whole reload, so the watch and an IPC reload never interleave
@@ -59,6 +64,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     error: None,
     pending: Vec::new(),
     noticed: None,
+    last_good: Vec::new(),
 });
 
 // what a reload or validate found
@@ -74,7 +80,11 @@ pub enum Outcome {
 // the watch's thread; one that cannot watch says so, and `config reload` still reloads
 pub fn spawn() {
     // the config read at start is the last good one until a reload applies another
-    keep(&config::layer_files());
+    let applied = config::applied();
+    STATE.locked().last_good = applied;
+
+    // at start, handed to the worker as every other write of it is
+    keep_last_good();
 
     supervise::spawn("config", || {
         let places = config::places();
@@ -96,13 +106,18 @@ fn rereads(running: &Config, next: &Config) -> bool {
     next.off != running.off || next.location != running.location
 }
 
-// reads every layer again and applies them if they hold no problem; says on stderr what came of it
+/*
+ * reads every layer again and applies them if they hold no problem; says on stderr what came of it.
+ * The paths whose contents applied are kept for `status`, and handed to the worker to write, so no
+ * file is written on the thread that draws a frame
+ */
 pub fn reload() -> Outcome {
     let mut state = STATE.locked();
-    let (read, problems) = config::read();
+    let (read, problems, applied) = config::read_applied();
     let running = config::get();
 
     let outcome = judge(&running, &read, problems);
+    let mut kept = false;
 
     match &outcome {
         Outcome::Valid(pending) => {
@@ -153,8 +168,10 @@ pub fn reload() -> Outcome {
             state.noticed = None;
             state.pending.clone_from(pending);
 
-            // the files this read applied, beside the other state; the config itself is not copied
-            keep(&config::layer_files());
+            // the files this read applied, of which the file beside the other state is told off
+            // this thread
+            state.last_good = applied;
+            kept = true;
 
             eprintln!("kanade: config reloaded, generation {}", state.generation);
             for key in pending {
@@ -189,6 +206,10 @@ pub fn reload() -> Outcome {
         settings::refresh();
     }
 
+    if kept {
+        keep_last_good();
+    }
+
     outcome
 }
 
@@ -219,9 +240,21 @@ fn last_good_file() -> Option<PathBuf> {
 }
 
 /*
- * the paths of the config that last applied, written only when they changed: one a line, the file
- * 0600 and replaced whole, so a crash leaves the old list or the new one. A failure is no reason to
- * fail a reload, and is said once
+ * the paths of the config that last applied, written to the state directory by the worker, never on
+ * the thread that draws a frame: `status` reads the record from memory meanwhile, and a failure to
+ * write is no reason to fail a reload, said once (`keep`)
+ */
+fn keep_last_good() {
+    kanade_runtime::worker::run(|| {
+        let files = STATE.locked().last_good.clone();
+
+        keep(&files);
+    });
+}
+
+/*
+ * the paths written only when they changed: one a line, the file 0600 and replaced whole, so a crash
+ * leaves the old list or the new one. A failure is no reason to fail a reload, and is said once
  */
 fn keep(files: &[PathBuf]) {
     let Some(path) = last_good_file() else {
@@ -253,23 +286,6 @@ fn keep_at(path: &Path, files: &[PathBuf]) -> io::Result<()> {
     atomic::write(path, text.as_bytes(), Mode::Private)
 }
 
-// the paths kept, none when nothing applied or the file cannot be read
-fn kept_last_good() -> Vec<String> {
-    last_good_file().map_or_else(Vec::new, |path| kept_at(&path))
-}
-
-// `kept_last_good`, from the file named
-fn kept_at(path: &Path) -> Vec<String> {
-    fs::read_to_string(path)
-        .map(|text| {
-            text.lines()
-                .filter(|line| !line.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 // what a reload would come to, changing nothing
 pub fn validate() -> Outcome {
     let (read, problems) = config::read();
@@ -282,10 +298,10 @@ pub fn validate() -> Outcome {
 pub fn status() -> Vec<String> {
     let state = STATE.locked();
 
-    lines(&state, &kept_last_good(), &config::skipped())
+    lines(&state, &config::skipped())
 }
 
-fn lines(state: &State, last_good: &[String], skipped: &[String]) -> Vec<String> {
+fn lines(state: &State, skipped: &[String]) -> Vec<String> {
     let mut lines = vec![format!(
         "config schema_version {}, generation {}",
         config::SCHEMA_VERSION,
@@ -294,9 +310,10 @@ fn lines(state: &State, last_good: &[String], skipped: &[String]) -> Vec<String>
 
     // the file or files that last applied, which a reload that refuses its files keeps running
     lines.extend(
-        last_good
+        state
+            .last_good
             .iter()
-            .map(|path| format!("config: last good {path}")),
+            .map(|path| format!("config: last good {}", path.display())),
     );
 
     // every reload that applied read a config with nothing to skip
@@ -559,16 +576,16 @@ mod tests {
     #[test]
     fn status_says_what_the_config_skipped_failed_and_waits_for() {
         let skipped = [String::from("a.toml:1: clok: unknown key, skipped")];
-        let last_good = [String::from("/home/a/.config/kanade/config.toml")];
         let mut state = State {
             generation: 1,
             error: None,
             pending: Vec::new(),
             noticed: None,
+            last_good: vec![PathBuf::from("/home/a/.config/kanade/config.toml")],
         };
 
         assert_eq!(
-            lines(&state, &last_good, &[]),
+            lines(&state, &[]),
             [
                 format!(
                     "config schema_version {}, generation 1",
@@ -578,7 +595,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            lines(&state, &last_good, &skipped)[2..],
+            lines(&state, &skipped)[2..],
             [
                 "config skipped at start:",
                 "  a.toml:1: clok: unknown key, skipped",
@@ -591,7 +608,7 @@ mod tests {
         state.pending = vec![String::from("modules.media")];
 
         assert_eq!(
-            lines(&state, &last_good, &skipped)[2..],
+            lines(&state, &skipped)[2..],
             [
                 "config last reload error:",
                 "  a.toml:1: x",
@@ -610,6 +627,7 @@ mod tests {
             error: None,
             pending: Vec::new(),
             noticed: None,
+            last_good: Vec::new(),
         };
 
         assert!(newly_refused(&mut state, "a.toml:3: x"));
@@ -628,11 +646,18 @@ mod tests {
             PathBuf::from("/home/a/.config/kanade/config.toml"),
             PathBuf::from("/home/a/.local/state/kanade/settings.toml"),
         ];
+        let kept = |path: &Path| -> Vec<String> {
+            fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        };
 
         keep_at(&path, &files).unwrap();
 
         assert_eq!(
-            kept_at(&path),
+            kept(&path),
             [
                 "/home/a/.config/kanade/config.toml",
                 "/home/a/.local/state/kanade/settings.toml",
@@ -645,7 +670,7 @@ mod tests {
 
         // what applies with no file of its own is nothing to keep
         keep_at(&path, &[]).unwrap();
-        assert!(kept_at(&path).is_empty());
+        assert!(kept(&path).is_empty());
 
         fs::remove_dir_all(&dir).unwrap();
     }
