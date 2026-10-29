@@ -12,6 +12,8 @@
 pub mod notes;
 pub mod place;
 
+use std::time::Instant;
+
 use kanade_runtime::service::Service;
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
@@ -24,7 +26,8 @@ use self::notes::Notes;
 use self::place::Places;
 use crate::config::{self, Corner, Spot};
 use crate::icon::Icon;
-use crate::island::geometry::Rect;
+use crate::island::geometry::{self, Rect};
+use crate::island::service::IslandService;
 use crate::later::Later;
 use crate::sources::calendar;
 use crate::sources::media::{self, Transport};
@@ -214,7 +217,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             name,
             handle,
             rect,
-            &monitor.name,
+            monitor,
             config.desk_place.get(name).copied(),
             output,
         );
@@ -290,6 +293,29 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 }
 
 /*
+ * where the Island's body stands on `monitor`, while it shows there, which a face being moved is
+ * kept out of (ADR 0143). Autohide past its edge, or nothing to show, is no Island on the output
+ */
+fn island_area(monitor: &Monitor) -> Option<Rect> {
+    if view::hides() {
+        return None;
+    }
+
+    let island = IslandService::read();
+
+    if island.overview() {
+        return None;
+    }
+
+    let canvas = view::canvas(monitor);
+    let hang = config::get().island_placement().anchor.hang();
+    let body = geometry::body(island.shape(&monitor.name, Instant::now()), hang, canvas);
+    let output = (monitor.width as f32, monitor.height as f32);
+
+    Some(geometry::placed(body, hang, canvas, output))
+}
+
+/*
  * a face's handle: the bar at its inner edge, faded so the faces stay as calm as they have always
  * been. A press on it takes hold of the face's box, and the pointer moves the box; a press on the
  * card elsewhere keeps typing into it
@@ -298,13 +324,14 @@ fn grip(
     face: &'static str,
     handle: Rect,
     rect: Rect,
-    monitor: &str,
+    monitor: &Monitor,
     stored: Option<Spot>,
     output: (f32, f32),
 ) -> Rectangle {
-    let name = monitor.to_owned();
+    let name = monitor.name.clone();
     let under = name.clone();
     let let_go = name.clone();
+    let screen = monitor.clone();
     let bar = Rectangle::new()
         .width(place::BAR)
         .height((handle.height * 0.6).max(place::BAR))
@@ -320,8 +347,17 @@ fn grip(
         // a press on the handle is the handle's, not the card's: it starts nothing being typed
         .on_click(|_| {})
         .on_hover(move |inside| place::hover(&under, inside))
-        .on_drag(move |point| place::drag(&name, face, rect, stored, output, point))
-        .on_drag_end(move || place::release(&let_go))
+        .on_drag(move |point| {
+            // where the Island stands now, read only while a drag is on: the window itself reads
+            // no Island, so an Island morph does not draw the Desk again
+            let room = place::Room {
+                output,
+                island: island_area(&screen),
+            };
+
+            place::drag(&name, face, rect, stored, room, point)
+        })
+        .on_drag_end(move |released| place::release(&let_go, released))
         .child(bar)
 }
 
@@ -338,15 +374,12 @@ fn media_face(
         parts.push(Box::new(plain(line, corner)));
     }
 
-    parts.push(match keys {
-        Some(keys) => Box::new(media_row(keys)),
+    if let Some(keys) = keys {
+        parts.push(Box::new(media_row(keys)));
+    } else if reserve {
         // the row's room, so the lines above do not move when a player opens
-        None => {
-            debug_assert!(reserve);
-
-            Box::new(Rectangle::new().width(1.0).height(ROW))
-        }
-    });
+        parts.push(Box::new(Rectangle::new().width(1.0).height(ROW)));
+    }
 
     let column = Column::new(parts).width(Size::Parent).height(Size::Parent);
 
@@ -370,13 +403,9 @@ fn faces_on(config: &config::Config) -> bool {
 fn hidden(corner: Corner, monitor: &str) -> LayerWindow {
     notes::close();
 
-    // a write only when there is one: a hidden Desk that wrote each frame would draw each frame
-    if place::dragging(monitor) {
-        place::back(monitor);
-    }
-
-    // a leave that never came, as the window went: the keyboard is no longer wanted for a handle
-    place::hover(monitor, false);
+    // a face being moved goes with the window, and a hovered handle is let go: written on a worker,
+    // since a view writes no Service, and only when there is something to clear
+    place::hide(monitor);
 
     shell(corner).visible(false)
 }
@@ -696,5 +725,18 @@ fn clock_face(corner: Corner, config: &config::Config) -> impl Widget + use<> {
         column.align(Start)
     } else {
         column.align(End)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the track's title while the media Module is off: the line stands without the buttons' row,
+    // rather than a debug build dying on a row it never reserved
+    #[test]
+    fn a_title_with_no_buttons_draws_no_row() {
+        let _ = media_face(Corner::TopLeft, Some(String::from("a track")), None, false);
+        let _ = media_face(Corner::TopLeft, None, None, true);
     }
 }

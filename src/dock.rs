@@ -1487,7 +1487,10 @@ fn covered(
                 slots,
             );
 
-            overlap(placed(reach, island_anchor, island_canvas, output), strip)
+            overlap(
+                geometry::placed(reach, island_anchor.hang(), island_canvas, output),
+                strip,
+            )
         };
 
         let covered = if hits(body) || heading.is_some_and(hits) {
@@ -1629,31 +1632,6 @@ fn island_reach(
                 height: (reach.y + reach.height).max(dot.y + dot.height) - y,
             }
         })
-}
-
-// a rect in the Island's window, on an output `output` wide and tall, as its window is anchored
-fn placed(
-    rect: Rect,
-    island: Anchor,
-    canvas: geometry::Canvas,
-    (width, height): (f32, f32),
-) -> Rect {
-    let x = match island.horizontal() {
-        Horizontal::Left => 0.0,
-        Horizontal::Middle => (width - canvas.width) / 2.0,
-        Horizontal::Right => width - canvas.width,
-    };
-    let y = match island.vertical() {
-        Vertical::Top => 0.0,
-        Vertical::Middle => (height - canvas.height) / 2.0,
-        Vertical::Bottom => height - canvas.height,
-    };
-
-    Rect {
-        x: x + rect.x,
-        y: y + rect.y,
-        ..rect
-    }
 }
 
 /*

@@ -775,6 +775,30 @@ pub fn body(shape: Shape, hang: Hang, canvas: Canvas) -> Rect {
 }
 
 /*
+ * `rect`, a rect in the Island's window, on an output `output` wide and tall, as its window hangs
+ * from the edge and side of it the `hang` names
+ */
+pub fn placed(rect: Rect, hang: Hang, canvas: Canvas, (width, height): (f32, f32)) -> Rect {
+    let x = match hang.across() {
+        Side::Start => 0.0,
+        Side::Middle => (width - canvas.width) / 2.0,
+        Side::End => width - canvas.width,
+    };
+
+    let y = match hang.edge {
+        Edge::Top => 0.0,
+        Edge::Bottom => height - canvas.height,
+        Edge::Left | Edge::Right => (height - canvas.height) / 2.0,
+    };
+
+    Rect {
+        x: x + rect.x,
+        y: y + rect.y,
+        ..rect
+    }
+}
+
+/*
  * the body plus hover padding, grown to whole pixels and kept inside the canvas;
  * whole pixels so the hover target and the Wayland input region are exactly the same area
  */

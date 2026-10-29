@@ -355,7 +355,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 drag_update(&monitor_name, monitor_size, point);
             }
         })
-        .on_drag_end(drag_finish)
+        .on_drag_end(|_| drag_finish())
         .child(scene);
 
     base.child(root)

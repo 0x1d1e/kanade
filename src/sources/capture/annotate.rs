@@ -723,7 +723,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 .on_drag_end({
                     let name = monitor.name.clone();
 
-                    move || finished(&name)
+                    move |_| finished(&name)
                 }),
         ),
         Box::new(

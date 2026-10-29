@@ -77,10 +77,10 @@ impl Rectangle {
     }
 
     /*
-     * runs when a drag ends: on mouse release, when the pointer leaves the window,
-     * or when the target goes away
+     * runs when a drag ends: `released` is true when the button came up over the window, and false
+     * when the pointer left the window or the target went away, so the button is still down
      */
-    pub fn on_drag_end(mut self, handler: impl Fn() + 'static) -> Self {
+    pub fn on_drag_end(mut self, handler: impl Fn(bool) + 'static) -> Self {
         self.handlers.drag_end = Some(Rc::new(handler));
 
         self
@@ -550,6 +550,7 @@ mod tests {
     fn a_drag_end_runs_on_release_leave_or_going_away_even_outside_rectangle() {
         let dragged_points: Rc<std::cell::RefCell<Vec<Point>>> = Rc::default();
         let ended_count: Rc<Cell<u32>> = Rc::default();
+        let released: Rc<Cell<u32>> = Rc::default();
         let frame = |present: bool| {
             let dragged_points = dragged_points.clone();
             let ended_count = ended_count.clone();
@@ -560,7 +561,17 @@ mod tests {
                     .width(50.0)
                     .height(50.0)
                     .on_drag(move |pt| dragged_points.borrow_mut().push(pt))
-                    .on_drag_end(move || ended_count.set(ended_count.get() + 1))
+                    .on_drag_end({
+                        let released = released.clone();
+
+                        move |let_go| {
+                            ended_count.set(ended_count.get() + 1);
+
+                            if let_go {
+                                released.set(released.get() + 1);
+                            }
+                        }
+                    })
                     .collect_targets(Area::new(0.0, 0.0, 50.0, 50.0), &mut targets);
             }
 
@@ -580,10 +591,10 @@ mod tests {
         assert_eq!(dragged_points.borrow().len(), 2);
         assert_eq!(ended_count.get(), 0);
 
-        assert!(pointer.stop_drag());
-        assert_eq!(ended_count.get(), 1);
-        assert!(!pointer.stop_drag());
-        assert_eq!(ended_count.get(), 1);
+        assert!(pointer.stop_drag(true));
+        assert_eq!((ended_count.get(), released.get()), (1, 1));
+        assert!(!pointer.stop_drag(true));
+        assert_eq!((ended_count.get(), released.get()), (1, 1));
 
         // start drag, move outside, and leave window
         pointer.move_to(25.0, 25.0);
@@ -593,7 +604,7 @@ mod tests {
         assert_eq!(ended_count.get(), 1);
 
         pointer.leave();
-        assert_eq!(ended_count.get(), 2);
+        assert_eq!((ended_count.get(), released.get()), (2, 1));
 
         // start drag, then target goes away in next frame
         pointer.move_to(25.0, 25.0);
@@ -601,7 +612,7 @@ mod tests {
         assert_eq!(ended_count.get(), 2);
 
         pointer.set_targets(frame(false));
-        assert_eq!(ended_count.get(), 3);
-        assert!(!pointer.stop_drag());
+        assert_eq!((ended_count.get(), released.get()), (3, 1));
+        assert!(!pointer.stop_drag(false));
     }
 }

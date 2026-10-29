@@ -221,7 +221,7 @@ impl WaylandState {
         pointer.move_to(x, y);
         pointer.press();
         pointer.start_drag();
-        pointer.stop_drag();
+        pointer.stop_drag(true);
         pointer.release(Button::Left);
 
         restore(&mut self.windows[at].pointer, (ox, oy, inside));

@@ -916,7 +916,7 @@ fn canvas_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
                 } else {
                     Cursor::Grab
                 })
-                .on_drag_end(move || {
+                .on_drag_end(move |_| {
                     outputs::drag_end(&n_end);
                 })
                 .on_drag(move |point| {

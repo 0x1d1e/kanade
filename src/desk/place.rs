@@ -15,8 +15,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::thread;
 
-use kanade_runtime::Point;
 use kanade_runtime::service::Service;
+use kanade_runtime::{Monitors, Point};
 
 use crate::config::{Corner, Spot};
 use crate::island::geometry::Rect;
@@ -28,6 +28,13 @@ pub const MARGIN: f32 = 48.0;
 // the handle's room at a face's inner edge, and the bar drawn in it
 pub const HANDLE: f32 = 24.0;
 pub const BAR: f32 = 3.0;
+
+// what a drag is kept within: the output, and the Island's area on it while it shows there
+#[derive(Debug, Clone, Copy)]
+pub struct Room {
+    pub output: (f32, f32),
+    pub island: Option<Rect>,
+}
 
 // one face being moved, or moved and just let go
 #[derive(Debug, Clone, PartialEq)]
@@ -42,8 +49,9 @@ struct Moving {
     // whether the pointer is still down on it
     held: bool,
 
-    // where in the box the pointer took hold, and where the box is now
-    grab: (f32, f32),
+    // where the pointer last was on the handle, as the handle reports it, and where the box is now:
+    // a move carries the box by how far that point has moved, never by where it is from the box
+    last: Point,
     to: Rect,
 }
 
@@ -73,7 +81,9 @@ impl Places {
 
     /*
      * a press on a face's handle, and every move after it: the first call takes hold of the box the
-     * face is drawn in, and the box follows the pointer, kept on its output
+     * face is drawn in, and each move after carries the box by how far the handle reports the
+     * pointer has moved, kept on its output and out of the Island. A face let go is no drag to go
+     * on with: the next press takes hold of the box the face is drawn in now
      */
     fn drag(
         &mut self,
@@ -81,26 +91,40 @@ impl Places {
         face: &'static str,
         drawn: Rect,
         stored: Option<Spot>,
-        output: (f32, f32),
+        room: Room,
         point: Point,
     ) {
-        let at = match self.moving(monitor) {
-            Some(at) if at.face == face => at.clone(),
-            _ => Moving {
-                face,
-                stored,
-                from: drawn,
-                held: true,
-                grab: (point.x - drawn.x, point.y - drawn.y),
-                to: drawn,
-            },
+        let held = self
+            .moving(monitor)
+            .filter(|at| at.face == face && at.held)
+            .cloned();
+
+        let Some(at) = held else {
+            self.moving.insert(
+                monitor.to_owned(),
+                Moving {
+                    face,
+                    stored,
+                    from: drawn,
+                    held: true,
+                    last: point,
+                    to: drawn,
+                },
+            );
+
+            return;
         };
-        let to = moved(at.from, at.grab, point, output);
+
+        // the handle reports its point in its own space, so only its move since the last report
+        // says how far the face travels, not where it stands in the box
+        let delta = (point.x - at.last.x, point.y - at.last.y);
+        let to = clear(shifted(at.to, delta, room.output), room.island, room.output);
 
         self.moving.insert(
             monitor.to_owned(),
             Moving {
                 held: true,
+                last: point,
                 to,
                 ..at
             },
@@ -119,6 +143,12 @@ impl Places {
     // the face goes back to where it stood before the drag
     fn back(&mut self, monitor: &str) {
         self.moving.remove(monitor);
+    }
+
+    // the Desk window went away: its face goes with it, and no handle of it is hovered
+    fn clear(&mut self, monitor: &str) {
+        self.moving.remove(monitor);
+        self.over.remove(monitor);
     }
 }
 
@@ -179,16 +209,66 @@ pub fn on_output(rect: Rect, output: (f32, f32)) -> Rect {
     }
 }
 
-// the box `from` once the pointer, holding it `grab` from its corner, is at `point`
-pub fn moved(from: Rect, grab: (f32, f32), point: Point, output: (f32, f32)) -> Rect {
+// the box `from` moved by `delta`, kept whole on the output
+pub fn shifted(from: Rect, delta: (f32, f32), output: (f32, f32)) -> Rect {
     on_output(
         Rect {
-            x: point.x - grab.0,
-            y: point.y - grab.1,
+            x: from.x + delta.0,
+            y: from.y + delta.1,
             ..from
         },
         output,
     )
+}
+
+/*
+ * `rect` kept out of the Island's `area`, when it would lie over it: the box moves the shortest way
+ * to one of the Island's sides, and stays on the output. With no side free, as an Island grown past
+ * the whole output, it stays where the pointer carries it
+ */
+fn clear(rect: Rect, area: Option<Rect>, output: (f32, f32)) -> Rect {
+    let Some(area) = area.filter(|area| over(rect, *area)) else {
+        return rect;
+    };
+
+    let ways = [
+        Rect {
+            x: area.x - rect.width,
+            ..rect
+        },
+        Rect {
+            x: area.right(),
+            ..rect
+        },
+        Rect {
+            y: area.y - rect.height,
+            ..rect
+        },
+        Rect {
+            y: area.bottom(),
+            ..rect
+        },
+    ];
+
+    let mut best: Option<(f32, Rect)> = None;
+
+    for way in ways {
+        let distance = (way.x - rect.x).abs() + (way.y - rect.y).abs();
+        let kept = on_output(way, output);
+
+        if over(kept, area) || best.is_some_and(|(least, _)| least <= distance) {
+            continue;
+        }
+
+        best = Some((distance, kept));
+    }
+
+    best.map_or(rect, |(_, kept)| kept)
+}
+
+// whether two boxes share any part of the output
+fn over(a: Rect, b: Rect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
 }
 
 /*
@@ -242,18 +322,25 @@ pub fn drag(
     face: &'static str,
     drawn: Rect,
     stored: Option<Spot>,
-    output: (f32, f32),
+    room: Room,
     point: Point,
 ) {
-    Places::write().drag(monitor, face, drawn, stored, output, point);
+    Places::write().drag(monitor, face, drawn, stored, room, point);
 }
 
 /*
  * the pointer let go: the face stays where it was let go, and its place is kept in the config on a
  * worker. A face the pointer left where it stood writes nothing, and a write that fails puts the
- * face back and says why once
+ * face back and says why once. A drag that ended otherwise, as the pointer left the window or the
+ * target went away, and one on an output that is gone, writes nothing: the face goes back
  */
-pub fn release(monitor: &str) {
+pub fn release(monitor: &str, released: bool) {
+    if !released || !Monitors::read().has(monitor) {
+        Places::write().back(monitor);
+
+        return;
+    }
+
     let Some((face, stood, spot)) = Places::write().let_go(monitor) else {
         return;
     };
@@ -275,6 +362,25 @@ pub fn release(monitor: &str) {
             Places::write().back(&name);
         }
     });
+}
+
+/*
+ * the Desk window went away, hidden or off: a face being moved goes with it and a hovered handle is
+ * no longer hovered. The write runs on a worker, since a view writes no Service, and only when
+ * there is something to clear
+ */
+pub fn hide(monitor: &str) {
+    {
+        let places = Places::read();
+
+        if places.moving(monitor).is_none() && !places.over.contains(monitor) {
+            return;
+        }
+    }
+
+    let name = monitor.to_owned();
+
+    thread::spawn(move || Places::write().clear(&name));
 }
 
 // a box's corner as the config keeps it, in whole px
@@ -322,6 +428,13 @@ mod tests {
     const MONITOR: &str = "eDP-1";
     const OTHER: &str = "HDMI-A-1";
 
+    fn room(island: Option<Rect>) -> Room {
+        Room {
+            output: OUTPUT,
+            island,
+        }
+    }
+
     fn boxes(corner: Corner) -> Vec<Rect> {
         stack(corner, &[150.0, 28.0, 28.0, 140.0, 56.0], OUTPUT, WIDTH)
     }
@@ -341,13 +454,13 @@ mod tests {
             y: drawn.y + 10.0,
         };
 
-        places.drag(MONITOR, "clock", drawn, stored, OUTPUT, hold);
+        places.drag(MONITOR, "clock", drawn, stored, room(None), hold);
         places.drag(
             MONITOR,
             "clock",
             drawn,
             stored,
-            OUTPUT,
+            room(None),
             Point {
                 x: point.0,
                 y: point.1,
@@ -427,34 +540,24 @@ mod tests {
         assert_eq!((near.x, near.y), (MARGIN, MARGIN));
     }
 
-    // the box follows the pointer from where it was taken hold of, kept whole on the output
+    // a box carried by the pointer's own move, kept whole on the output
     #[test]
     fn a_drag_carries_the_box_with_the_pointer_and_keeps_it_on_the_output() {
         let from = boxes(Corner::BottomRight)[0];
-        let grab = (10.0, 10.0);
 
-        let moved_on = moved(from, grab, Point { x: 900.0, y: 500.0 }, OUTPUT);
+        let there = shifted(from, (-40.0, -30.0), OUTPUT);
 
-        assert_eq!((moved_on.x, moved_on.y), (890.0, 490.0));
+        assert_eq!((there.x, there.y), (from.x - 40.0, from.y - 30.0));
 
         // past the output's own edges, the box stops with the margin still clear
-        for (point, at) in [
+        for (delta, at) in [
+            ((-5000.0, -5000.0), (MARGIN, MARGIN)),
             (
-                Point {
-                    x: -500.0,
-                    y: -500.0,
-                },
-                (MARGIN, MARGIN),
-            ),
-            (
-                Point {
-                    x: 5000.0,
-                    y: 5000.0,
-                },
+                (5000.0, 5000.0),
                 (OUTPUT.0 - MARGIN - WIDTH, OUTPUT.1 - MARGIN - 150.0),
             ),
         ] {
-            let held = moved(from, grab, point, OUTPUT);
+            let held = shifted(from, delta, OUTPUT);
 
             assert_eq!((held.x, held.y), at);
         }
@@ -498,6 +601,64 @@ mod tests {
         assert_eq!(at(&places, MONITOR, "clock", None, stack, OUTPUT), stack);
     }
 
+    // a drag that would end over the Island stops against its nearest side; one that starts and
+    // stays clear of it is not touched, and a place the config already gives stays where it says
+    #[test]
+    fn a_drag_keeps_out_of_the_islands_area() {
+        let mut places = Places::default();
+        let stack = boxes(Corner::BottomRight)[0];
+        let island = Rect {
+            x: 700.0,
+            y: 8.0,
+            width: 520.0,
+            height: 60.0,
+        };
+        let hold = Point {
+            x: stack.x + 10.0,
+            y: stack.y + 10.0,
+        };
+        // the pointer carries the box's top left to here, which lies over the Island
+        let under = Point { x: 800.0, y: 40.0 };
+
+        places.drag(MONITOR, "clock", stack, None, room(Some(island)), hold);
+        places.drag(MONITOR, "clock", stack, None, room(Some(island)), under);
+
+        let dragged = at(&places, MONITOR, "clock", None, stack, OUTPUT);
+
+        // the shortest way out is under the Island, its top against the Island's bottom
+        assert_eq!((dragged.x, dragged.y), (790.0, island.bottom()));
+        assert!(!over(dragged, island));
+
+        // carried clear of it, the box stands where the pointer is
+        places.drag(
+            MONITOR,
+            "clock",
+            stack,
+            None,
+            room(Some(island)),
+            Point { x: 400.0, y: 500.0 },
+        );
+
+        let free = at(&places, MONITOR, "clock", None, stack, OUTPUT);
+
+        assert_eq!((free.x, free.y), (390.0, 528.0));
+
+        // with no Island there, nor is there a side to keep out of
+        assert_eq!(clear(dragged, None, OUTPUT), dragged);
+
+        // a place the config gives is drawn as it is, even under the Island
+        let placed = at(
+            &Places::default(),
+            MONITOR,
+            "clock",
+            Some(Spot::new(800, 50)),
+            stack,
+            OUTPUT,
+        );
+
+        assert_eq!((placed.x, placed.y), (800.0, 50.0));
+    }
+
     // a release is only a place to keep when the pointer carried the face somewhere else
     #[test]
     fn a_place_is_kept_only_once_the_face_has_moved() {
@@ -510,7 +671,7 @@ mod tests {
             "clock",
             stack,
             None,
-            OUTPUT,
+            room(None),
             Point {
                 x: stack.x + 10.0,
                 y: stack.y + 10.0,
@@ -528,6 +689,64 @@ mod tests {
 
         assert_eq!(spot, Spot::new(690, 390));
         assert_ne!(spot, kept(stack));
+    }
+
+    // each report carries the box by how far the handle says the pointer moved, never by where the
+    // pointer stands in the box, and a press after a release takes hold where the face now stands
+    #[test]
+    fn a_move_carries_the_box_by_the_pointers_own_move() {
+        let mut places = Places::default();
+        let stack = boxes(Corner::BottomRight)[0];
+
+        places.drag(
+            MONITOR,
+            "clock",
+            stack,
+            None,
+            room(None),
+            Point { x: 34.0, y: 10.0 },
+        );
+        places.drag(
+            MONITOR,
+            "clock",
+            stack,
+            None,
+            room(None),
+            Point { x: 22.0, y: 10.0 },
+        );
+
+        let first = at(&places, MONITOR, "clock", None, stack, OUTPUT);
+
+        places.drag(
+            MONITOR,
+            "clock",
+            stack,
+            None,
+            room(None),
+            Point { x: 10.0, y: 10.0 },
+        );
+
+        let second = at(&places, MONITOR, "clock", None, stack, OUTPUT);
+
+        assert_eq!((first.x, first.y), (stack.x - 12.0, stack.y));
+        assert_eq!((second.x, second.y), (stack.x - 24.0, stack.y));
+
+        // the face is let go where it stands; the next press takes hold of that box, not the press
+        // before it, so nothing jumps back
+        places.let_go(MONITOR);
+
+        let drawn = at(&places, MONITOR, "clock", None, stack, OUTPUT);
+
+        places.drag(
+            MONITOR,
+            "clock",
+            drawn,
+            None,
+            room(None),
+            Point { x: 5.0, y: 5.0 },
+        );
+
+        assert_eq!(at(&places, MONITOR, "clock", None, stack, OUTPUT), drawn);
     }
 
     // a handle sits at the face's inner edge, inside its box, on the side the face draws nothing

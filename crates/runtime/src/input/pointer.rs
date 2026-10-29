@@ -62,13 +62,13 @@ impl Pointer {
             self.stop_hold();
         }
 
-        // a target that went away mid-drag ends the drag
+        // a target that went away mid-drag ends the drag, its button still down
         if self
             .dragged
             .as_ref()
             .is_some_and(|(id, _)| self.index(*id).is_none())
         {
-            self.stop_drag();
+            self.stop_drag(false);
         }
 
         // the new frame's handler for each hovered target still there that has one
@@ -177,8 +177,8 @@ impl Pointer {
         self.pressed = None;
         self.inside = false;
 
-        // the release will not reach this window, so the drag and the hold end here
-        self.stop_drag();
+        // the release will not reach this window, so the drag and the hold end here, unreleased
+        self.stop_drag(false);
         self.stop_hold();
 
         self.update_hovered(Vec::new())
@@ -291,7 +291,9 @@ impl Pointer {
         self.drag()
     }
 
-    pub fn stop_drag(&mut self) -> bool {
+    // the drag is over: `released` when the button came up over the window, false when the pointer
+    // left it or the target went away, so the button is still down
+    pub fn stop_drag(&mut self, released: bool) -> bool {
         let Some((id, captured_end)) = self.dragged.take() else {
             return false;
         };
@@ -302,7 +304,7 @@ impl Pointer {
             .or(captured_end);
 
         if let Some(end) = handler {
-            end();
+            end(released);
         }
 
         true
