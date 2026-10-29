@@ -733,10 +733,12 @@ pub struct State {
 impl State {
     /// How the option stands.
     pub fn shown(&self, item: &Item) -> Shown {
+        // the staged state, as the rows show it: a staged Reset must show niri's default again
+        // and a staged value must offer Reset
         let readings: Vec<&Reading> = item
             .paths()
             .into_iter()
-            .filter_map(|path| self.values.get(path))
+            .map(|path| self.reading(path))
             .collect();
         let owner = readings.iter().find_map(|reading| match reading {
             Reading::Included(_, file) | Reading::Overridden(_, file) => Some(owner_text(file)),
@@ -958,18 +960,22 @@ impl State {
         self.refused.remove(row);
 
         // a change that would leave every node as the file has it is not a change: toggling a
-        // switch back stages nothing, and the row stops saying Not saved
-        let differs = changes.iter().any(|(path, value)| {
-            let after = match value {
-                Some(value) => Reading::Own(value.clone()),
-                None => Reading::Unset,
-            };
+        // switch back stages nothing, and the row stops saying Not saved. While a Save is in
+        // flight the file still has what that Save posted, not what the row shows, so a row the
+        // Save is writing keeps its staged change whatever is typed back
+        let writing = self.in_flight.iter().any(|flying| flying.row == row);
+        let differs = writing
+            || changes.iter().any(|(path, value)| {
+                let after = match value {
+                    Some(value) => Reading::Own(value.clone()),
+                    None => Reading::Unset,
+                };
 
-            match self.values.get(path) {
-                Some(before) => *before != after,
-                None => !matches!(after, Reading::Unset),
-            }
-        });
+                match self.values.get(path) {
+                    Some(before) => *before != after,
+                    None => !matches!(after, Reading::Unset),
+                }
+            });
         let at = self.staged.iter().position(|staged| staged.row == row);
 
         match (differs, at) {
@@ -2677,6 +2683,78 @@ mod tests {
             state.status().unwrap(),
             (String::from("1 change not saved"), false)
         );
+    }
+
+    // the Save in flight writes what it posted, which the file does not hold yet: a row typed
+    // back to its pre-Save value keeps that change rather than dropping it and snapping to what
+    // the Save wrote
+    #[test]
+    fn a_row_typed_back_while_save_is_writing_keeps_its_change() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let mut state = loaded_state(&editor);
+
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("24")))],
+        );
+        let posted = state.flush().unwrap();
+
+        // typed back to the file's 16 while the Save of 24 is on its way
+        state.stage(
+            "layout.gaps",
+            vec![("layout.gaps", Some(String::from("16")))],
+        );
+        assert!(state.has_staged(), "the row is still the Save's to come");
+        assert!(state.shown(item("layout.gaps").unwrap()).pending);
+
+        let changes: Vec<(&str, Option<&str>)> = posted
+            .iter()
+            .map(|(path, value)| (*path, value.as_deref()))
+            .collect();
+        let said = editor.apply(&changes).unwrap();
+        let stamp = Stamp::of(&file);
+        state.done(Done {
+            row: None,
+            undo: false,
+            save: true,
+            outcome: Some(Ok(said)),
+            written: true,
+            after: editor.last_change_hash().ok(),
+            stamp,
+            read: read_all(&editor),
+        });
+
+        // the file holds 24, the row holds what was typed after it and stays to be saved
+        assert!(fs::read_to_string(&file).unwrap().contains("gaps 24"));
+        let gaps = state.shown(item("layout.gaps").unwrap());
+        assert_eq!(gaps.current, Current::Number(16.0));
+        assert!(gaps.pending && !gaps.writing);
+    }
+
+    // the row's set and default follow the staged state, so a staged Reset keeps its link and a
+    // staged value gains one
+    #[test]
+    fn a_staged_row_shows_the_staged_set_and_default() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(CONFIG);
+        let editor = dir.editor(&ok);
+        let mut state = loaded_state(&editor);
+
+        state.stage("layout.gaps", reset_changes(item("layout.gaps").unwrap()));
+        let gaps = state.shown(item("layout.gaps").unwrap());
+        assert!(!gaps.set, "a staged Reset leaves nothing to reset");
+        assert!(gaps.default, "and shows niri's default again");
+
+        state.stage(
+            "layout.border.width",
+            vec![("layout.border.width", Some(String::from("8")))],
+        );
+        let width = state.shown(item("layout.border.width").unwrap());
+        assert!(width.set, "a staged value is one Reset can take away");
+        assert!(!width.default);
     }
 
     // toggling a switch back before Save leaves nothing to write

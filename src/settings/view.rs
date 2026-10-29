@@ -3260,7 +3260,7 @@ pub(super) fn pill(
         .width(84.0)
         .height(30.0)
         .radius(radius::ROW)
-        .semantics(|| Semantics::new(Role::Button, node))
+        .semantics(move || Semantics::new(Role::Button, node).disabled(!enabled))
         .align_child(Center, Center)
         .child(text);
 
