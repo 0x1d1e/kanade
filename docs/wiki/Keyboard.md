@@ -79,5 +79,6 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Settings | Tab and Shift+Tab move the ring through the pages, the controls, Undo and, while changes are staged, Discard and Save, Enter or Space presses what it is on, arrows step a choice, a number or the page list (Up/Down in a number field), Escape leaves a field or the ring |
 | Tray | arrows and Tab move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |
 | Controls | Up/Down and Tab move the ring, Left/Right move it or adjust a slider, Enter or Space presses what it is on (Stop sharing, while a screen share runs, and the pencil that arranges the tiles are the first targets, above the tiles; in the arrangement every button is a target, Escape drops the draft) |
+| Desk notes | a click on the card starts a note and takes the keyboard; typing writes into it, Enter starts another note, Backspace takes a letter and then the note's line break, Escape leaves editing and saves; a click elsewhere, another output, the overview or the face turning off ends editing the same way. Left, Right, Tab and the shortcuts are left alone; the card never takes the keyboard on its own |
 | Media, Controls, Weather, Session | a typed character collapses an island opened from a keybind, so it goes to the window beneath |
 

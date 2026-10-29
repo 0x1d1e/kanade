@@ -294,6 +294,7 @@ pub const PAGES: &[Page] = &[
                     Row::Key("desk.agenda_titles"),
                     Row::Key("desk.media"),
                     Row::Key("desk.media_titles"),
+                    Row::Key("desk.notes"),
                 ],
             },
         ],

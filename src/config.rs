@@ -261,6 +261,8 @@ pub struct Config {
     pub desk_agenda_titles: bool,
     // `desk.media_titles`: the track's title and artist on the Desk (ADR 0137)
     pub desk_media_titles: bool,
+    // `desk.notes`: the notes card under the Desk's lines, typed in place (ADR 0140)
+    pub desk_notes: bool,
     // `screen-time.limit`: focused minutes before one notice that day; 0 is off (ADR 0138)
     pub screen_time_limit: Duration,
     // `screen-time.titles`: keep the focused window's title in the private file; off (ADR 0138)
@@ -650,6 +652,7 @@ impl Default for Config {
             desk_agenda: false,
             desk_agenda_titles: false,
             desk_media_titles: false,
+            desk_notes: false,
             screen_time_limit: Duration::ZERO,
             screen_time_titles: false,
             live_stale: Duration::from_secs(30 * 60),
@@ -2399,6 +2402,20 @@ pub const DESK: &[Setting] = &[
         }),
         tail: Tail {
             hint: Some("Show the track title and artist on the desktop"),
+            per_output: true,
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "desk.notes",
+        label: "Desk notes",
+        help: "your notes on the desktop, newest last, in $XDG_STATE_HOME/kanade/desk-notes; a click on the card types into it in place and Escape keeps it; off, the card is not drawn and the file is not read",
+        kind: Kind::Switch(Field {
+            get: |config| config.desk_notes,
+            set: |config, on| config.desk_notes = on,
+        }),
+        tail: Tail {
+            hint: Some("Show notes you can type on the desktop"),
             per_output: true,
             ..Tail::DEFAULT
         },
@@ -4935,6 +4952,7 @@ mod tests {
                 "desk.agenda",
                 "desk.agenda_titles",
                 "desk.media_titles",
+                "desk.notes",
                 "controls.tiles",
                 "wallpaper.directory",
                 "wallpaper.per_monitor",
@@ -5024,7 +5042,8 @@ mod tests {
                 "desk.weather",
                 "desk.agenda",
                 "desk.agenda_titles",
-                "desk.media_titles"
+                "desk.media_titles",
+                "desk.notes"
             ]
         );
 
@@ -5036,6 +5055,27 @@ mod tests {
                 setting.key
             );
         }
+    }
+
+    // "desk.notes": off by default, and off is a Desk with no card and no file read
+    #[test]
+    fn the_desk_notes_card_is_off_until_its_key_says_otherwise() {
+        let (config, problems) = one("desk.notes = true");
+
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(config.desk_notes);
+        assert!(!Config::default().desk_notes);
+
+        let setting = settings()
+            .find(|setting| setting.key == "desk.notes")
+            .expect("desk.notes is a setting");
+
+        assert!(
+            matches!(setting.kind, Kind::Switch(_)),
+            "desk.notes is a switch"
+        );
+        assert!(setting.tail.per_output);
+        assert!(!setting.tail.restart);
     }
 
     #[test]

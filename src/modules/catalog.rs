@@ -665,6 +665,10 @@ notifications dnd on until <HH:MM>
         start: |app| {
             service::watch::<Niri>(desk::follow_overview);
 
+            // the notes card's file is read and written by a thread of its own, so no drawing
+            // waits on the disk (ADR 0140)
+            supervise::spawn("desk-notes", desk::notes::run);
+
             app.window_per_monitor(desk::window)
         },
     },
