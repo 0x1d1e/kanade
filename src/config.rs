@@ -1430,7 +1430,20 @@ impl Kind {
                 (field.set)(config, off);
             }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
-            Kind::Quicklinks(field) => (field.set)(config, quicklinks_cfg::read_all(value)?),
+            Kind::Quicklinks(field) => {
+                let mut links = quicklinks_cfg::read_all(value)?;
+
+                // no shell is run, so a leading `~/` in a word is expanded here rather than by one
+                for link in &mut links {
+                    if let quicklinks_cfg::Target::Argv(argv) = &mut link.target {
+                        for word in argv {
+                            *word = expand(word, home);
+                        }
+                    }
+                }
+
+                (field.set)(config, links);
+            }
             Kind::Tiles(field) => {
                 let list = value
                     .as_array()
@@ -2925,7 +2938,7 @@ pub const LAUNCHER: &[Setting] = &[
     Setting {
         key: "launcher.quicklinks",
         label: "Quicklinks",
-        help: "your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell; a layer replaces the list below; file only",
+        help: "your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell, a leading `~/` in a word being your home directory; a layer replaces the list below; file only",
         kind: Kind::Quicklinks(Field {
             get: |config| config.quicklinks.clone(),
             set: |config, links| config.quicklinks = links,
@@ -5550,6 +5563,28 @@ battery = false
         assert_eq!(problems, [vec![], vec![]]);
         assert_eq!(config.quicklinks.len(), 1);
         assert_eq!(config.quicklinks[0].title, "Mail");
+    }
+
+    // no shell is run for a quicklink's argv, so a leading `~/` in a word is the home directory, as
+    // it is for a `hooks` program; only a leading one
+    #[test]
+    fn a_quicklink_argv_expands_a_leading_home() {
+        let text = r#"[[launcher.quicklinks]]
+title = "Notes"
+argv = ["kitty", "-e", "vim", "~/notes.md", "x~/y"]
+"#;
+        let (config, problems) = one(text);
+
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            matches!(
+                &config.quicklinks[0].target,
+                quicklinks_cfg::Target::Argv(argv)
+                    if argv == &["kitty", "-e", "vim", "/home/you/notes.md", "x~/y"]
+            ),
+            "{:?}",
+            config.quicklinks[0].target
+        );
     }
 
     // a path list expands `~/`, keeps each once, and a later file's replaces the one below

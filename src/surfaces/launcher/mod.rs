@@ -968,11 +968,12 @@ impl Found {
 }
 
 /*
- * the empty query's sections, in the order the plan gives them: the Recents by frecency, then
- * Kanade's Commands, the open Windows and the Apps. An answer the Recents show is taken out of the
- * section it would list in, so nothing lists twice, and a recent that no longer exists is left out
+ * the empty query's sections, in the order the plan gives them: the Recents by frecency, then the
+ * Quicklinks, Kanade's Commands, the open Windows and the Apps. An answer the Recents show is taken
+ * out of the section it would list in, so nothing lists twice, and a recent that no longer exists is
+ * left out
  */
-fn sections(apps: &[App], key: &Inputs, recording: Rec) -> Found {
+fn sections(apps: &[App], key: &Inputs, recording: Rec, quicklinks: &[Quicklink]) -> Found {
     let destinations = destination(key.destinations);
     let commands = commands(key.launcher_commands, recording);
     let apps = AppsProvider(apps);
@@ -1015,7 +1016,7 @@ fn sections(apps: &[App], key: &Inputs, recording: Rec) -> Found {
 
     gathered([
         ("Recents", recents),
-        ("Quicklinks", Quicklinks(&key.quicklinks).find("")),
+        ("Quicklinks", Quicklinks(quicklinks).find("")),
         ("Commands", found_commands),
         ("Windows", found_windows),
         ("Apps", found_apps),
@@ -1087,6 +1088,10 @@ struct Memo {
      * about as much as the ranking it saves. Only a ranking that runs copies them
      */
     apps: Vec<App>,
+
+    // the user's quicklinks that `found` was ranked for, compared and kept the same way: so a config
+    // reload that changes them ranks again, and a frame that changes nothing copies none of them
+    quicklinks: Vec<Quicklink>,
     found: Arc<Found>,
 }
 
@@ -1105,10 +1110,6 @@ struct Inputs {
     read: bool,
     actions: bool,
     launcher_commands: bool,
-
-    // the user's quicklinks, so a config reload that changes them ranks again; the Launcher holds
-    // no frecency key for them, so they list in config order within a Fit (ADR 0127)
-    quicklinks: Vec<Quicklink>,
 
     // which destinations exist, as the flags they are: `Destinations` is not compared, its file
     // not this one's
@@ -1154,14 +1155,19 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
     let radios = Radios::read();
     let titles = windows::titles();
 
+    let config = config::get();
+
+    // the Launcher holds no frecency key for a quicklink, so they list in config order within a Fit
+    // (ADR 0127); compared by borrow, so a frame that changes nothing copies none of them
+    let quicklinks = &config.quicklinks;
+
     let key = Inputs {
         visit,
         query: query.to_owned(),
         recording,
         read,
-        actions: config::get().launcher_actions,
-        launcher_commands: config::get().launcher_commands,
-        quicklinks: config::get().quicklinks.clone(),
+        actions: config.launcher_actions,
+        launcher_commands: config.launcher_commands,
         destinations: [
             destinations.wifi,
             destinations.bluetooth,
@@ -1188,12 +1194,14 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
     };
 
     let mut memo = MEMO.locked();
-    let same = memo.key.as_ref() == Some(&key) && memo.apps == apps;
+    let same =
+        memo.key.as_ref() == Some(&key) && memo.apps == apps && memo.quicklinks == *quicklinks;
 
     if !same {
-        memo.found = Arc::new(rank(apps, query, recording, read, &key));
+        memo.found = Arc::new(rank(apps, query, recording, read, &key, quicklinks));
         memo.key = Some(key);
         memo.apps = apps.to_vec();
+        memo.quicklinks = quicklinks.clone();
     }
 
     // one reference, so a frame that changes nothing copies no answer
@@ -1201,7 +1209,14 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
 }
 
 // what the providers find now, which `found` keeps until its inputs change
-fn rank(apps: &[App], query: &str, recording: Rec, read: bool, key: &Inputs) -> Found {
+fn rank(
+    apps: &[App],
+    query: &str,
+    recording: Rec,
+    read: bool,
+    key: &Inputs,
+    quicklinks: &[Quicklink],
+) -> Found {
     if query.trim().starts_with('?') && key.launcher_commands {
         let rest = query.trim()[1..].trim();
         let provider = commands(true, recording);
@@ -1216,7 +1231,7 @@ fn rank(apps: &[App], query: &str, recording: Rec, read: bool, key: &Inputs) -> 
 
     grouped(
         query,
-        || sections(apps, key, recording),
+        || sections(apps, key, recording, quicklinks),
         || {
             let mut ranked = provider::ranked(
                 &[
@@ -1225,7 +1240,7 @@ fn rank(apps: &[App], query: &str, recording: Rec, read: bool, key: &Inputs) -> 
                     &Actions(apps, key.actions),
                     &windows::Titles(&key.titles),
                     &destination(key.destinations),
-                    &Quicklinks(&key.quicklinks),
+                    &Quicklinks(quicklinks),
                     &commands(key.launcher_commands, recording),
                 ],
                 query,

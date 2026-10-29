@@ -113,6 +113,12 @@ fn address(query: &str) -> String {
  * and only the spawn decides whether it opened. The reason a failure gives never names the address
  */
 pub fn browse(address: &str) -> Result<(), String> {
+    // `xdg-open` reads a leading dash as an option of its own and refuses `--` too, so such an
+    // address is not one: nothing is spawned for it, whatever a config url says (ADR 0130)
+    if address.starts_with('-') {
+        return Err(String::from("an address never begins with a dash"));
+    }
+
     let child = command(address)
         .spawn()
         .map_err(|error| format!("{OPEN}: {error}"))?;
@@ -198,6 +204,16 @@ mod tests {
 
         assert_eq!(command.get_program(), OPEN);
         assert_eq!(argv, ["https://; rm -rf / && echo"]);
+    }
+
+    // a config url that begins with a dash is an option of the opener's own, not an address, so it
+    // is refused before anything is spawned
+    #[test]
+    fn a_dash_address_is_refused_rather_than_opened() {
+        for address in ["--help", "--version", "-x"] {
+            let why = browse(address).unwrap_err();
+            assert!(why.contains("dash"), "{address}: {why}");
+        }
     }
 
     // a query of one letter, and a commands query starting with '?', send nothing anywhere

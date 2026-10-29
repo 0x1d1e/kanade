@@ -8,11 +8,11 @@ An empty query listed one flat ranking: the six highest frecency scores as `Fit:
 
 ## Decision
 
-With nothing typed, the Launcher lists four sections in this order, each under a heading: the Recents, the Commands, the Windows and the Apps.
+With nothing typed, the Launcher lists five sections in this order, each under a heading: the Recents, the Quicklinks, the Commands, the Windows and the Apps. (The Quicklinks joined them with ADR 0139.)
 
 - The Recents are the six highest frecency scores (`Usage::recent`, ADR 0127), resolved back to the answer each key stands for. An answer the Recents show is taken out of the section it would otherwise list in, so nothing lists twice; a recent key that no longer resolves is left out rather than shown as a dead row.
-- Commands, Windows and Apps answer an empty query with everything they offer now, each as `Fit::Prefix`, so a section that would list nothing shows no heading. Destinations and Settings pages answer too but get no section, reaching only the Recents: they are many a page each, and listing them all would bury the windows and apps.
-- The section order is fixed, not a ranking. Within a section, the provider's own order stands: Commands by name and the higher score first, Windows by title, Apps by the higher score then by name.
+- Quicklinks, Commands, Windows and Apps answer an empty query with everything they offer now, each as `Fit::Prefix`, so a section that would list nothing shows no heading. Destinations and Settings pages answer too but get no section, reaching only the Recents: they are many a page each, and listing them all would bury the windows and apps.
+- The section order is fixed, not a ranking. Within a section, the provider's own order stands: Quicklinks in config order (ADR 0139), Commands by name and the higher score first, Windows by title, Apps by the higher score then by name.
 - A heading is the list's own row, not a second widget: the list lays out a heading before each section's first answer, and a heading takes its own height, so a section's answers keep their place whatever it holds. Headings are drawn but never selected: Up and Down, the wheel and a click move over answers only.
 - Typing any character returns to the ranked search of ADR 0126 and 0127 with the same query, unchanged.
 
