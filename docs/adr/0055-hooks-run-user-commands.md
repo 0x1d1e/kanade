@@ -24,3 +24,10 @@ Users want a script on a few moments of the session: a wallpaper to theme someth
 - A hook edited while running applies from the next fire; a `modules` change takes a restart as always.
 - The naming overlaps `modules::Hooks` (a Module's `status` and `reload` callbacks); the user-facing term is Hook, as in `CONTEXT.md`.
 - Plugins, an ABI and subscriptions to arbitrary events remain open.
+
+### Amendment: the child's environment, its stderr and the missing runner
+
+- **Environment.** The child gets only an allow-list of Kanade's environment, then its own event variables: `PATH`, `HOME`, `LANG`, `LC_*`, `XDG_RUNTIME_DIR` and the shell's own `KANADE_*` (`env_clear`, then the allow-list and `KANADE_HOOK` with its payload). A secret Kanade was started with, like `AWS_SECRET_ACCESS_KEY`, does not reach a command the config lists. `PATH` stays because that is how `setpriv` finds the hook; a leading `~/` in the program is expanded when the config is read, so the child's environment was never what made it work.
+- **Stderr.** The bounded runner (`appearance::child`) reads at most 4 KiB of the child's stderr, draining the rest unread: a flood grows neither memory nor, through `BRIEF`, a status line. What is shown is still the first line, cut to `BRIEF`.
+- **No guarded runner.** Without `setpriv` on `PATH` no hook runs. The refusal says exactly that and what to install (util-linux), once for the shell rather than at each fire of each event; `wake::guards` is still the test.
+- **`kanade status`.** One line says how many commands the config lists and the last refusal that no run has answered, in Kanade's own words; a command's own error is never in it, since it may name what its environment gave it. The per-event lines are unchanged.

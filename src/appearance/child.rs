@@ -9,6 +9,22 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 
+// how much of each stream a caller keeps: what a helper says as its answer, and only why it failed
+#[derive(Clone, Copy)]
+pub struct Limits {
+    pub stdout: usize,
+    pub stderr: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            stdout: OUTPUT_LIMIT,
+            stderr: OUTPUT_LIMIT,
+        }
+    }
+}
+
 // how long a reader may outlast its child: a grandchild that kept the pipe open holds it past that
 const READER_GRACE: Duration = Duration::from_millis(250);
 
@@ -81,7 +97,19 @@ pub fn run<N>(
     timeout: Duration,
     interrupt: impl FnMut() -> Option<Interrupt<N>>,
 ) -> Ran<N, Vec<u8>> {
-    match run_typed(command, name, timeout, interrupt) {
+    run_capped(command, name, timeout, Limits::default(), interrupt)
+}
+
+// `run`, keeping no more than `limits` of each stream: a helper whose stderr is only why it failed
+// need not be allowed megabytes of it
+pub fn run_capped<N>(
+    command: Command,
+    name: &str,
+    timeout: Duration,
+    limits: Limits,
+    interrupt: impl FnMut() -> Option<Interrupt<N>>,
+) -> Ran<N, Vec<u8>> {
+    match run_typed_capped(command, name, timeout, limits, interrupt) {
         Ran::Done(Ok(output)) => Ran::Done(Ok(output)),
         Ran::Done(Err(error)) => Ran::Done(Err(error.message())),
         Ran::Superseded(newer) => Ran::Superseded(newer),
@@ -90,9 +118,20 @@ pub fn run<N>(
 
 // `run`, keeping why it ended apart: a helper that refused is not one that may have acted
 pub fn run_typed<N>(
+    command: Command,
+    name: &str,
+    timeout: Duration,
+    interrupt: impl FnMut() -> Option<Interrupt<N>>,
+) -> Ran<N, Vec<u8>, Error> {
+    run_typed_capped(command, name, timeout, Limits::default(), interrupt)
+}
+
+// both, with what of each stream a caller keeps
+pub fn run_typed_capped<N>(
     mut command: Command,
     name: &str,
     timeout: Duration,
+    limits: Limits,
     mut interrupt: impl FnMut() -> Option<Interrupt<N>>,
 ) -> Ran<N, Vec<u8>, Error> {
     let mut child = match command
@@ -109,12 +148,12 @@ pub fn run_typed<N>(
     let readers = child
         .stdout
         .take()
-        .and_then(|output| capture(output, name, "stdout").ok())
+        .and_then(|output| capture(output, name, "stdout", limits.stdout).ok())
         .zip(
             child
                 .stderr
                 .take()
-                .and_then(|output| capture(output, name, "stderr").ok()),
+                .and_then(|output| capture(output, name, "stderr", limits.stderr).ok()),
         );
     let Some((stdout, stderr)) = readers else {
         abandon(child, None);
@@ -136,7 +175,7 @@ pub fn run_typed<N>(
         }
 
         match child.try_wait() {
-            Ok(Some(status)) => return Ran::Done(finish(name, status, stdout, stderr)),
+            Ok(Some(status)) => return Ran::Done(finish(name, status, stdout, stderr, limits)),
             Ok(None) => {}
             Err(error) => {
                 abandon(child, Some((stdout, stderr)));
@@ -158,7 +197,12 @@ pub fn run_typed<N>(
     }
 }
 
-fn capture<R: Read + Send + 'static>(mut stream: R, name: &str, which: &str) -> io::Result<Reader> {
+fn capture<R: Read + Send + 'static>(
+    mut stream: R,
+    name: &str,
+    which: &str,
+    limit: usize,
+) -> io::Result<Reader> {
     Builder::new()
         .name(format!("kanade-{name}-{which}"))
         .spawn(move || {
@@ -172,7 +216,7 @@ fn capture<R: Read + Send + 'static>(mut stream: R, name: &str, which: &str) -> 
                     return Ok((captured, over_limit));
                 }
 
-                let remaining = OUTPUT_LIMIT.saturating_sub(captured.len());
+                let remaining = limit.saturating_sub(captured.len());
                 captured.extend_from_slice(&buffer[..count.min(remaining)]);
                 over_limit |= count > remaining;
             }
@@ -210,6 +254,7 @@ fn finish(
     status: ExitStatus,
     stdout: Reader,
     stderr: Reader,
+    limits: Limits,
 ) -> Result<Vec<u8>, Error> {
     let (stdout, too_much_stdout) = reader(name, stdout, "stdout")?;
     let (stderr, _) = reader(name, stderr, "stderr")?;
@@ -226,7 +271,8 @@ fn finish(
 
     if too_much_stdout {
         return Err(Error::TooLong(format!(
-            "{name} output exceeded {OUTPUT_LIMIT} bytes"
+            "{name} output exceeded {} bytes",
+            limits.stdout
         )));
     }
 

@@ -4,14 +4,18 @@
 //! a thread of its own through the bounded child runner (`appearance::child`), under `setpriv
 //! --pdeathsig KILL`, for at most `hooks.timeout`. A hook is never run without that: one that
 //! outlived Kanade would be a stray process nothing stops, so a system with no setpriv on its PATH
-//! runs none and says so, as `wake::run_guarded` does for the programs a source starts. At most one
-//! run of an event is in flight; a fire meanwhile is dropped, so a slow command never piles up. What
-//! went wrong is kept for `kanade status` and said once on stderr, never as an Activity. Only event
-//! names are logged: a payload, like a wallpaper's path, travels in the child's environment alone.
+//! runs none and says so once, as `wake::run_guarded` does for the programs a source starts. Its
+//! child gets only what an allow-list names of Kanade's environment, as its own value, so a secret
+//! Kanade was started with is not handed to a command the config lists. At most one run of an event
+//! is in flight; a fire meanwhile is dropped, so a slow command never piles up. What went wrong is
+//! kept for `kanade status` and said once on stderr, never as an Activity. Only event names are
+//! logged: a payload, like a wallpaper's path, travels in the child's environment alone.
 
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
@@ -23,7 +27,7 @@ use toml::Value;
 use crate::appearance::child::{self, Ran};
 use crate::config::{self, Field, Kind, Range, Setting, Tail};
 use crate::modules;
-use crate::sources::wake::{self, SETPRIV};
+use crate::sources::wake;
 
 pub const MODULE: &str = "hooks";
 
@@ -43,6 +47,18 @@ const ENDING: Duration = Duration::from_secs(3);
 
 // how much of a failure `status` and stderr say
 const BRIEF: usize = 120;
+
+// how much of a hook's stderr is kept: only why it failed, so a flood grows neither memory nor,
+// through BRIEF, a status line
+const STDERR: usize = 4096;
+
+// why no hook runs at all: the guarded runner is not there, and a hook runs only under it. Said
+// once for the shell, not at each fire of each event
+const NO_SETPRIV: &str =
+    "setpriv is not on PATH, so no hook runs; install util-linux, which provides it";
+
+// whether that was said on stderr already
+static SAID_NO_SETPRIV: AtomicBool = AtomicBool::new(false);
 
 // a command may run this long unless `hooks.timeout` says
 const DEFAULT_TIMEOUT: u32 = 10;
@@ -174,6 +190,11 @@ impl Default for Commands {
 impl Commands {
     fn of(&self, event: Event) -> &[String] {
         &self.argv[event as usize]
+    }
+
+    // how many events a command is listed for
+    pub fn configured(&self) -> usize {
+        self.argv.iter().filter(|argv| !argv.is_empty()).count()
     }
 }
 
@@ -330,6 +351,35 @@ pub const SETTINGS: &[Setting] = &[
     },
 ];
 
+// why a run ended without a command having done its work
+#[derive(Debug, Clone, PartialEq)]
+pub struct Failure {
+    // why, as status says it: the command's own words for a run that started
+    why: String,
+
+    // whether Kanade stopped the run before a command could act on it, so `why` is Kanade's own
+    // words rather than the command's, which may name what it was given
+    refused: bool,
+}
+
+impl Failure {
+    // a run Kanade did not give a command: no guarded runner, a thread that would not start
+    fn refused(why: impl Into<String>) -> Self {
+        Self {
+            why: why.into(),
+            refused: true,
+        }
+    }
+
+    // a command's own failure: what it said, its timeout, or a panic in its runner
+    fn command(why: impl Into<String>) -> Self {
+        Self {
+            why: why.into(),
+            refused: false,
+        }
+    }
+}
+
 // one run of a command, to its end or its timeout
 pub trait Runner: Send + Sync + 'static {
     fn run(
@@ -338,7 +388,7 @@ pub trait Runner: Send + Sync + 'static {
         argv: &[String],
         value: Option<&OsStr>,
         timeout: Duration,
-    ) -> Result<(), String>;
+    ) -> Result<(), Failure>;
 }
 
 // the real one: a child of its own, never the shell's environment changed
@@ -351,30 +401,69 @@ impl Runner for Process {
         argv: &[String],
         value: Option<&OsStr>,
         timeout: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<(), Failure> {
         // never without `--pdeathsig`: a hook that outlived Kanade is a stray process nothing stops
         if !wake::guards() {
-            return Err(format!(
-                "{SETPRIV} is not on PATH, and a hook runs only under it, so it does not outlive Kanade"
-            ));
+            return Err(Failure::refused(NO_SETPRIV));
         }
 
         let mut command = Command::new(wake::SETPRIV);
-        command.args(["--pdeathsig", "KILL"]).args(argv);
-
-        command.stdin(Stdio::null()).env(EVENT, event.name());
+        command
+            .args(["--pdeathsig", "KILL"])
+            .args(argv)
+            .stdin(Stdio::null())
+            // only what the allow-list names, so a secret Kanade was started with stays here
+            .env_clear()
+            .envs(inherited(env::vars_os()))
+            .env(EVENT, event.name());
 
         if let (Some(variable), Some(value)) = (event.variable(), value) {
             command.env(variable, value);
         }
 
         let name = format!("hook {}", event.name());
+        let limits = child::Limits {
+            stderr: STDERR,
+            ..Default::default()
+        };
 
-        match child::run::<()>(command, &name, timeout, || None) {
-            Ran::Done(result) => result.map(drop),
-            Ran::Superseded(()) => Err(String::from("superseded")),
+        match child::run_typed_capped::<()>(command, &name, timeout, limits, || None) {
+            Ran::Done(Ok(_)) => Ok(()),
+            Ran::Done(Err(error)) => Err(classify(error)),
+            Ran::Superseded(()) => Err(Failure::command("superseded")),
         }
     }
+}
+
+// whether Kanade's side of the run stopped it before the command could act
+fn classify(error: child::Error) -> Failure {
+    match error {
+        child::Error::Spawn(_) | child::Error::Reader(_) => Failure::refused(error.message()),
+        child::Error::Exited(_)
+        | child::Error::TooLong(_)
+        | child::Error::TimedOut(_)
+        | child::Error::Aborted(_) => Failure::command(error.message()),
+    }
+}
+
+/*
+ * the variables a hook's child inherits from Kanade's own environment: what finds its program and
+ * its home, the session's locale and runtime directory, and the shell's own `KANADE_*`. Nothing
+ * else: a hook is the user's own command, not one handed every secret Kanade was started with
+ */
+fn inherited(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    vars.filter(|(key, _)| allowed(key)).collect()
+}
+
+fn allowed(key: &OsStr) -> bool {
+    // a name that is not UTF-8 is none of the ones here
+    let Some(key) = key.to_str() else {
+        return false;
+    };
+
+    matches!(key, "PATH" | "HOME" | "LANG" | "XDG_RUNTIME_DIR")
+        || key.starts_with("LC_")
+        || key.starts_with("KANADE_")
 }
 
 // where one event stands
@@ -416,6 +505,9 @@ fn brief(why: &str) -> String {
 struct Dispatcher<R> {
     runner: Arc<R>,
     slots: Arc<Mutex<[Slot; COUNT]>>,
+
+    // why Kanade last stopped a run short, until one works again
+    refused: Arc<Mutex<Option<String>>>,
 }
 
 impl<R: Runner> Dispatcher<R> {
@@ -423,6 +515,7 @@ impl<R: Runner> Dispatcher<R> {
         Self {
             runner: Arc::new(runner),
             slots: Arc::new(Mutex::new(Default::default())),
+            refused: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -465,6 +558,7 @@ impl<R: Runner> Dispatcher<R> {
         let (tell, done) = mpsc::channel::<()>();
         let runner = self.runner.clone();
         let slots = self.slots.clone();
+        let refused = self.refused.clone();
         let argv = argv.to_vec();
         let value = value.map(OsString::from);
 
@@ -472,6 +566,7 @@ impl<R: Runner> Dispatcher<R> {
             .name(format!("hook {}", event.name()))
             .spawn({
                 let slots = slots.clone();
+                let refused = refused.clone();
 
                 move || {
                     // dropped last, so a waiter hears the result is kept
@@ -479,9 +574,9 @@ impl<R: Runner> Dispatcher<R> {
                     let result = panic::catch_unwind(AssertUnwindSafe(|| {
                         runner.run(event, &argv, value.as_deref(), timeout)
                     }))
-                    .unwrap_or_else(|_| Err(String::from("the run panicked")));
+                    .unwrap_or_else(|_| Err(Failure::command("the run panicked")));
 
-                    finish(&slots, event, result);
+                    finish(&slots, &refused, event, result);
                 }
             });
 
@@ -490,11 +585,27 @@ impl<R: Runner> Dispatcher<R> {
             Err(error) => {
                 finish(
                     &slots,
+                    &refused,
                     event,
-                    Err(format!("cannot start a thread: {error}")),
+                    Err(Failure::refused(format!("cannot start a thread: {error}"))),
                 );
                 None
             }
+        }
+    }
+
+    // one line for `kanade status`: how many commands the config lists, and why Kanade last stopped
+    // a run short if one is unanswered, with none of a command's own words or what it was given
+    fn summary(&self, commands: usize) -> String {
+        let count = match commands {
+            0 => String::from("no commands"),
+            1 => String::from("1 command"),
+            count => format!("{count} commands"),
+        };
+
+        match &*self.refused.locked() {
+            Some(why) => format!("hooks: {count} configured; last refusal: {why}"),
+            None => format!("hooks: {count} configured"),
         }
     }
 
@@ -540,18 +651,42 @@ fn times(count: u32) -> String {
 }
 
 // keeps how a run ended, and frees its event for the next
-fn finish(slots: &Mutex<[Slot; COUNT]>, event: Event, result: Result<(), String>) {
+fn finish(
+    slots: &Mutex<[Slot; COUNT]>,
+    refused: &Mutex<Option<String>>,
+    event: Event,
+    result: Result<(), Failure>,
+) {
     let mut slots = slots.locked();
     let slot = &mut slots[event as usize];
 
     slot.running = false;
 
     match result {
-        Ok(()) => slot.failures = 0,
-        Err(why) => {
+        Ok(()) => {
+            slot.failures = 0;
+            // the last refusal is only what no run since has answered
+            *refused.locked() = None;
+        }
+        Err(failure) => {
             slot.failures += 1;
-            slot.last = brief(&why);
-            eprintln!("kanade: hook {} failed: {}", event.name(), slot.last);
+            slot.last = brief(&failure.why);
+
+            if failure.refused {
+                *refused.locked() = Some(slot.last.clone());
+
+                // a refusal no fire can change is the Module's line once, not each event's at
+                // each fire; any other is said as it comes
+                if failure.why == NO_SETPRIV {
+                    if !SAID_NO_SETPRIV.swap(true, Ordering::Relaxed) {
+                        eprintln!("kanade: {NO_SETPRIV}");
+                    }
+                } else {
+                    eprintln!("kanade: hook {} refused: {}", event.name(), slot.last);
+                }
+            } else {
+                eprintln!("kanade: hook {} failed: {}", event.name(), slot.last);
+            }
         }
     }
 }
@@ -604,9 +739,11 @@ pub fn fire_and_wait(event: Event) {
     }
 }
 
-// the lines `kanade status` adds
+// the lines `kanade status` adds: what the hooks are, then each event that went wrong
 pub fn status() -> Vec<String> {
-    DISPATCHER.status()
+    let mut lines = vec![DISPATCHER.summary(config::get().hooks.configured())];
+    lines.extend(DISPATCHER.status());
+    lines
 }
 
 #[cfg(test)]
@@ -621,13 +758,13 @@ mod tests {
     // a run that ends when told, saying with what it began
     struct Fake {
         began: Mutex<Sender<Began>>,
-        end: Mutex<Receiver<Result<(), String>>>,
+        end: Mutex<Receiver<Result<(), Failure>>>,
     }
 
     fn fake() -> (
         Dispatcher<Fake>,
         Receiver<Began>,
-        Sender<Result<(), String>>,
+        Sender<Result<(), Failure>>,
     ) {
         let (began, saw) = mpsc::channel();
         let (end, ends) = mpsc::channel();
@@ -646,7 +783,7 @@ mod tests {
             _: &[String],
             value: Option<&OsStr>,
             timeout: Duration,
-        ) -> Result<(), String> {
+        ) -> Result<(), Failure> {
             let _ = self
                 .began
                 .locked()
@@ -703,7 +840,7 @@ mod tests {
         assert!(hooks.fire(Event::Tone, &[], None, SECOND).is_none());
         assert!(began.try_recv().is_err());
 
-        end.send(Err(String::from("exited with exit status: 3\nmore")))
+        end.send(Err(Failure::command("exited with exit status: 3\nmore")))
             .unwrap();
         let done = hooks.fire(Event::Tone, &command(), None, SECOND).unwrap();
         assert!(done.wait(10 * SECOND));
@@ -712,7 +849,7 @@ mod tests {
             ["hooks: tone failed once in a row, last: exited with exit status: 3"]
         );
 
-        end.send(Err("x".repeat(500))).unwrap();
+        end.send(Err(Failure::command("x".repeat(500)))).unwrap();
         let done = hooks.fire(Event::Tone, &command(), None, SECOND).unwrap();
         assert!(done.wait(10 * SECOND));
         assert_eq!(
@@ -727,6 +864,90 @@ mod tests {
         let done = hooks.fire(Event::Tone, &command(), None, SECOND).unwrap();
         assert!(done.wait(10 * SECOND));
         assert!(hooks.status().is_empty());
+    }
+
+    // `kanade status` says how many commands are listed, and the last refusal no run has answered,
+    // with none of a command's own words or what it was given
+    #[test]
+    fn the_summary_says_how_many_commands_and_the_last_refusal() {
+        let (hooks, _began, end) = fake();
+
+        assert_eq!(hooks.summary(0), "hooks: no commands configured");
+        assert_eq!(hooks.summary(2), "hooks: 2 commands configured");
+
+        end.send(Err(Failure::refused(NO_SETPRIV))).unwrap();
+        let done = hooks.fire(Event::Tone, &command(), None, SECOND).unwrap();
+        assert!(done.wait(10 * SECOND));
+        assert_eq!(
+            hooks.summary(2),
+            format!("hooks: 2 commands configured; last refusal: {NO_SETPRIV}")
+        );
+
+        // a run that worked answers it
+        end.send(Ok(())).unwrap();
+        let done = hooks.fire(Event::Tone, &command(), None, SECOND).unwrap();
+        assert!(done.wait(10 * SECOND));
+        assert_eq!(hooks.summary(2), "hooks: 2 commands configured");
+    }
+
+    // a hook's child gets what the allow-list names and nothing else Kanade holds
+    #[test]
+    fn a_hook_inherits_only_the_listed_variables() {
+        let vars = [
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/someone"),
+            ("LANG", "en_GB.UTF-8"),
+            ("LC_ALL", "C"),
+            ("LC_TIME", "en_GB.UTF-8"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("KANADE_FRAMES", "1"),
+            ("AWS_SECRET_ACCESS_KEY", "secret"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/ssh"),
+            ("WAYLAND_DISPLAY", "wayland-0"),
+        ];
+
+        let kept: Vec<String> = inherited(
+            vars.iter()
+                .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+        )
+        .into_iter()
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect();
+
+        assert_eq!(
+            kept,
+            [
+                "PATH",
+                "HOME",
+                "LANG",
+                "LC_ALL",
+                "LC_TIME",
+                "XDG_RUNTIME_DIR",
+                "KANADE_FRAMES"
+            ]
+        );
+    }
+
+    // a hook whose stderr floods is read only up to the cap, so no flood grows memory or a status
+    // line, and one that writes more still ends cleanly
+    #[test]
+    fn a_hooks_stderr_is_read_only_up_to_the_cap() {
+        let failure = Process
+            .run(
+                Event::Lock,
+                &[
+                    String::from("sh"),
+                    String::from("-c"),
+                    String::from("head -c 1000000 /dev/zero | tr '\\0' x >&2; exit 1"),
+                ],
+                None,
+                10 * SECOND,
+            )
+            .unwrap_err();
+
+        assert!(!failure.refused, "the command ran and failed");
+        assert_eq!(failure.why.len(), STDERR, "{}", failure.why.len());
+        assert!(brief(&failure.why).len() <= BRIEF + 3);
     }
 
     // the real runner: the event's value reaches the child alone, and a child past its timeout is killed
@@ -754,7 +975,8 @@ mod tests {
                 None,
                 Duration::from_millis(200),
             )
-            .unwrap_err();
+            .unwrap_err()
+            .why;
 
         assert!(why.contains("timed out"), "{why}");
         assert!(started.elapsed() < 10 * SECOND);
