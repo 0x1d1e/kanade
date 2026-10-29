@@ -1798,6 +1798,7 @@ fn control(
         Kind::Modules(_) => unreachable!("section_view draws the Modules row itself"),
         Kind::Gestures(_) => unreachable!("gestures are set in config files only"),
         Kind::Rules(_) => unreachable!("notifications.rules is set in config files only"),
+        Kind::Quicklinks(_) => unreachable!("launcher.quicklinks is set in config files only"),
         Kind::Argv(_) => unreachable!("hooks are set in config files only"),
         Kind::Names(..) => unreachable!("focus.auto is set in config files only"),
     }

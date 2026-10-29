@@ -54,6 +54,7 @@ use crate::sources::accessibility;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::sound::Sounds;
 use crate::sources::weather::Units;
+use crate::surfaces::launcher::quicklinks::{self as quicklinks_cfg, Quicklink};
 use crate::tiles::{self, Placed};
 
 // a level change shows for 1000-1400 ms
@@ -218,6 +219,9 @@ pub struct Config {
 
     // `launcher.style`: the Island's own Surface, or a layer window of its own (ADR 0131)
     pub launcher_style: LauncherStyle,
+
+    // `launcher.quicklinks`: user shortcuts the Launcher lists (a URL or an argv list)
+    pub quicklinks: Vec<Quicklink>,
 
     // `settings.health_notice`: the one-time first-start Peek of checks that need attention (ADR 0088)
     pub health_notice: bool,
@@ -625,6 +629,7 @@ impl Default for Config {
             launcher_actions: true,
             launcher_commands: true,
             launcher_style: LauncherStyle::default(),
+            quicklinks: Vec::new(),
             health_notice: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
@@ -1205,6 +1210,9 @@ pub enum Kind {
     // a list of notification rules, each a table; a layer replaces the list below
     Rules(Field<Vec<Rule>>),
 
+    // a list of Launcher quicklinks, each a table; a layer replaces the list below
+    Quicklinks(Field<Vec<Quicklink>>),
+
     // a command as a list of strings, the program first, run without a shell (`hooks`); an empty
     // list is none, and a layer replaces the list below
     Argv(Field<Vec<String>>),
@@ -1422,6 +1430,7 @@ impl Kind {
                 (field.set)(config, off);
             }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
+            Kind::Quicklinks(field) => (field.set)(config, quicklinks_cfg::read_all(value)?),
             Kind::Tiles(field) => {
                 let list = value
                     .as_array()
@@ -1512,6 +1521,7 @@ impl Kind {
             Kind::Rules(field) => {
                 Value::Array((field.get)(config).iter().map(Rule::value).collect())
             }
+            Kind::Quicklinks(field) => quicklinks_cfg::value(&(field.get)(config)),
             Kind::Names(_, field) => Value::Array(
                 (field.get)(config)
                     .into_iter()
@@ -1557,6 +1567,7 @@ impl Kind {
             Kind::AppIds(field) | Kind::Gestures(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
+            Kind::Quicklinks(field) => field.copy(from, to),
             Kind::Argv(field) => field.copy(from, to),
             Kind::Names(_, field) => field.copy(from, to),
             Kind::Tiles(field) => field.copy(from, to),
@@ -2908,6 +2919,22 @@ pub const LAUNCHER: &[Setting] = &[
         ),
         tail: Tail {
             hint: Some("Open the Launcher in the Island or on its own"),
+            ..Tail::DEFAULT
+        },
+    },
+    Setting {
+        key: "launcher.quicklinks",
+        label: "Quicklinks",
+        help: "your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell; a layer replaces the list below; file only",
+        kind: Kind::Quicklinks(Field {
+            get: |config| config.quicklinks.clone(),
+            set: |config, links| config.quicklinks = links,
+        }),
+        tail: Tail {
+            hint: None,
+            example: Some(
+                "[{ title = \"GitHub\", url = \"https://github.com\" }, { title = \"Notes\", argv = [\"kitty\", \"-e\", \"vim\", \"~/notes.md\"] }]",
+            ),
             ..Tail::DEFAULT
         },
     },
@@ -4891,6 +4918,7 @@ mod tests {
                 "launcher.actions",
                 "launcher.commands",
                 "launcher.style",
+                "launcher.quicklinks",
                 "calendar.paths",
                 "calendar.reminder",
                 "calendar.subscriptions",
@@ -5475,6 +5503,53 @@ battery = false
             config.notification_rules[0].category.as_deref(),
             Some("email")
         );
+    }
+
+    // `[[launcher.quicklinks]]` reads as a list a later file replaces; a bad one keeps the list
+    // below and says where
+    #[test]
+    fn quicklinks_are_a_list_a_later_file_replaces() {
+        let first = "[[launcher.quicklinks]]\ntitle = \"GitHub\"\nurl = \"https://github.com\"\n\n[[launcher.quicklinks]]\ntitle = \"Editor\"\nargv = [\"code\"]\n";
+
+        let (config, problems) = one(first);
+        assert_eq!(problems, vec![]);
+        assert_eq!(config.quicklinks.len(), 2);
+        assert_eq!(config.quicklinks[0].title, "GitHub");
+        assert!(
+            matches!(&config.quicklinks[1].target, quicklinks_cfg::Target::Argv(argv) if argv == &["code"])
+        );
+
+        let (config, problems) = layers(
+            &[
+                first,
+                "\n[[launcher.quicklinks]]\ntitle = \"Bad\"\nurl = \"a\"\nargv = [\"b\"]\n",
+            ],
+            MIGRATIONS,
+        );
+        assert_eq!(
+            config.quicklinks.len(),
+            2,
+            "a bad layer keeps the list below"
+        );
+        assert_eq!(problems[1].len(), 1);
+        assert!(
+            problems[1][0]
+                .1
+                .starts_with("launcher.quicklinks: quicklink 1: set"),
+            "{:?}",
+            problems[1]
+        );
+
+        let (config, problems) = layers(
+            &[
+                first,
+                "[[launcher.quicklinks]]\ntitle = \"Mail\"\nurl = \"https://mail\"\n",
+            ],
+            MIGRATIONS,
+        );
+        assert_eq!(problems, [vec![], vec![]]);
+        assert_eq!(config.quicklinks.len(), 1);
+        assert_eq!(config.quicklinks[0].title, "Mail");
     }
 
     // a path list expands `~/`, keeps each once, and a later file's replaces the one below

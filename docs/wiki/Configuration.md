@@ -220,6 +220,8 @@ actions = true
 commands = true
 # "island" opens the Launcher in the Island's own body; "detached" opens it in a window of its own, centred on the focused output
 style = "island"
+# your own rows in the Launcher, each a title and a target: a url opened in the default browser, or an argv list run directly with no shell; a layer replaces the list below; file only
+# quicklinks = [{ title = "GitHub", url = "https://github.com" }, { argv = ["kitty", "-e", "vim", "~/notes.md"], title = "Notes" }]
 
 [calendar]
 # iCalendar (.ics) files and directories of them, read recursively, else $XDG_DATA_HOME/calendars

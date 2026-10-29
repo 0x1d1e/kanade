@@ -85,6 +85,7 @@ fn pressing(answer: &Answer) -> Offer {
         Action::Copy(_) => "Copy",
         Action::Choose(_) => "Choose",
         Action::Browse(_) => "Open in the browser",
+        Action::Quicklink(_) => "Run",
     };
 
     Offer {
@@ -117,6 +118,7 @@ fn copied(action: &Action) -> Offer {
         // the address is what a web row sends, and it is the query itself, so there is nothing of
         // the machine to copy out of it
         Action::Browse(_) => cannot("A web search copies nothing"),
+        Action::Quicklink(_) => cannot("A quicklink has no path or id"),
     }
 }
 

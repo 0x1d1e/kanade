@@ -53,6 +53,7 @@ mod commands;
 mod destinations;
 pub mod detached;
 mod provider;
+pub mod quicklinks;
 mod units;
 pub mod web;
 pub mod windows;
@@ -64,6 +65,7 @@ use choose::{Choices, Choosing};
 use commands::{Commands, Rec};
 use destinations::{Destination, Destinations};
 use provider::{Action, Answer, Fit, LauncherProvider, Mark};
+use quicklinks::{Quicklink, Quicklinks};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
 fn width() -> f32 {
@@ -206,6 +208,7 @@ impl Search {
         match action {
             Action::Copy(_) => Some(String::from("Not copied")),
             Action::Browse(_) => Some(format!("Not opened: {why}")),
+            Action::Quicklink(_) => Some(format!("Not run: {why}")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
             // `dispatch` worded it, as it knows whether the verb may have run
             Action::Run(_) => Some(why.clone()),
@@ -1012,6 +1015,7 @@ fn sections(apps: &[App], key: &Inputs, recording: Rec) -> Found {
 
     gathered([
         ("Recents", recents),
+        ("Quicklinks", Quicklinks(&key.quicklinks).find("")),
         ("Commands", found_commands),
         ("Windows", found_windows),
         ("Apps", found_apps),
@@ -1022,7 +1026,7 @@ fn sections(apps: &[App], key: &Inputs, recording: Rec) -> Found {
  * the sections laid out in the order given, each under its heading, and none for a section that
  * found nothing: a heading over no answers says nothing
  */
-fn gathered(sections: [(&'static str, Vec<Answer>); 4]) -> Found {
+fn gathered(sections: impl IntoIterator<Item = (&'static str, Vec<Answer>)>) -> Found {
     let mut answers = Vec::new();
     let mut placed = Vec::new();
 
@@ -1102,6 +1106,10 @@ struct Inputs {
     actions: bool,
     launcher_commands: bool,
 
+    // the user's quicklinks, so a config reload that changes them ranks again; the Launcher holds
+    // no frecency key for them, so they list in config order within a Fit (ADR 0127)
+    quicklinks: Vec<Quicklink>,
+
     // which destinations exist, as the flags they are: `Destinations` is not compared, its file
     // not this one's
     destinations: [bool; 18],
@@ -1153,6 +1161,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
         read,
         actions: config::get().launcher_actions,
         launcher_commands: config::get().launcher_commands,
+        quicklinks: config::get().quicklinks.clone(),
         destinations: [
             destinations.wifi,
             destinations.bluetooth,
@@ -1216,6 +1225,7 @@ fn rank(apps: &[App], query: &str, recording: Rec, read: bool, key: &Inputs) -> 
                     &Actions(apps, key.actions),
                     &windows::Titles(&key.titles),
                     &destination(key.destinations),
+                    &Quicklinks(&key.quicklinks),
                     &commands(key.launcher_commands, recording),
                 ],
                 query,
@@ -2341,6 +2351,7 @@ fn press(monitor: &str, visit: u64, action: Action, query: &str) {
         Action::Copy(text) => copy(text.clone(), done),
         Action::Run(verb) => run(verb, done),
         Action::Browse(address) => browse(address.clone(), done),
+        Action::Quicklink(argv) => quicklink(argv.clone(), done),
         Action::Launch(..)
         | Action::Perform(..)
         | Action::Focus(_)
@@ -2506,6 +2517,32 @@ fn browse(
         .map(drop)
         .map_err(|error| {
             eprintln!("launcher: cannot open the browser ({error})");
+            error.to_string()
+        })
+}
+
+/*
+ * runs a quicklink's argv directly, by argv with no shell, off the view thread. The row says it is
+ * not run if it is not; the title and argv are never logged (ADR 0019)
+ */
+fn quicklink(
+    argv: Vec<String>,
+    done: impl FnOnce(Result<(), String>) + Send + 'static,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("launcher-quicklink".into())
+        .spawn(move || {
+            let ran = quicklinks::run(&argv);
+
+            if let Err(why) = &ran {
+                eprintln!("launcher: running a quicklink: {why}");
+            }
+
+            done(ran)
+        })
+        .map(drop)
+        .map_err(|error| {
+            eprintln!("launcher: cannot run a quicklink ({error})");
             error.to_string()
         })
 }

@@ -162,6 +162,7 @@ pub const EXTERNAL_KEYS: &[&str] = &[
     "notifications.sound_normal",
     "notifications.sound_critical",
     "notifications.rules",
+    "launcher.quicklinks",
     "focus.auto",
     // what an agent may read of the windows: set in a config file or `kanade config set`, not by a click
     "ui.describe",

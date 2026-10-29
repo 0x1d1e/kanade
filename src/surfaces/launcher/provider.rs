@@ -82,6 +82,9 @@ pub enum Action {
      * the Launcher sends what was typed off the machine, so its row says where it goes
      */
     Browse(String),
+
+    // runs this argv list directly, no shell (a quicklink's command target)
+    Quicklink(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

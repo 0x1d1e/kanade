@@ -138,6 +138,7 @@ fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
             "additionalProperties": false,
         }),
         Kind::Rules(_) => json!({ "type": "array", "items": { "type": "object" } }),
+        Kind::Quicklinks(_) => json!({ "type": "array", "items": { "type": "object" } }),
     };
 
     let mut description = setting.help.to_owned();
