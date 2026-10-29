@@ -13,7 +13,7 @@
 //! the card empty rather than stopping anything.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -105,15 +105,29 @@ pub fn ask() {
 }
 
 fn load() {
-    let lines = path()
-        .and_then(|path| fs::read(path).ok())
-        .map(|bytes| parse(&bytes))
-        .unwrap_or_default();
+    let lines = path().map(|path| read(&path)).unwrap_or_default();
 
     let mut notes = Notes::write();
 
     notes.loaded = true;
     notes.lines = lines;
+}
+
+// The notes a file holds, read only once its size is known to be within the cap: `fs::read`
+// allocates the whole file before any check, so an over-cap file is empty and never allocated
+fn read(path: &Path) -> Vec<String> {
+    let Ok(size) = fs::metadata(path) else {
+        return Vec::new();
+    };
+
+    if size.len() > BYTES as u64 {
+        return Vec::new();
+    }
+
+    fs::read(path)
+        .ok()
+        .map(|bytes| parse(&bytes))
+        .unwrap_or_default()
 }
 
 fn store(lines: &[String]) {
@@ -368,10 +382,14 @@ impl Cards {
         self.editing(monitor) || self.over.as_deref() == Some(monitor)
     }
 
-    // the notes this output's card shows: what is being typed into, else the file's newest
+    // the notes this output's card shows: what is being typed into, else the file's newest; only
+    // the newest `SHOWN` either way, so the card's fixed height holds them from its bottom up and
+    // the typing never draws over the lines above
     pub fn shown(&self, monitor: &str, stored: &[String]) -> Vec<String> {
         match &self.edit {
-            Some(edit) if edit.monitor == monitor => edit.lines.clone(),
+            Some(edit) if edit.monitor == monitor => {
+                edit.lines[edit.lines.len().saturating_sub(SHOWN)..].to_vec()
+            }
             _ => stored[stored.len().saturating_sub(SHOWN)..].to_vec(),
         }
     }
@@ -558,6 +576,27 @@ mod tests {
     }
 
     #[test]
+    fn a_file_past_its_cap_is_not_read() {
+        let path = std::env::temp_dir().join(format!("kanade-notes-{}", std::process::id()));
+
+        fs::write(&path, b"one\ntwo\n").unwrap();
+
+        assert_eq!(read(&path), lines(&["one", "two"]));
+
+        // the size is taken before `fs::read`, so a larger file is empty and never allocated
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(BYTES as u64 + 1)
+            .unwrap();
+
+        assert_eq!(read(&path), Vec::<String>::new());
+
+        fs::remove_file(&path).unwrap();
+
+        assert_eq!(read(&path), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_click_starts_a_card_and_the_pointer_asks_for_the_keyboard() {
         let mut cards = Cards::new();
         let stored = lines(&["one", "two"]);
@@ -597,6 +636,25 @@ mod tests {
 
         // the new card has a note of its own, empty until something is typed
         assert_eq!(cards.shown(OTHER, &[]), lines(&["x", ""]));
+    }
+
+    #[test]
+    fn a_card_being_typed_into_shows_only_its_newest_notes() {
+        let mut cards = Cards::new();
+
+        let stored = (0..LINES)
+            .map(|at| format!("note {at}"))
+            .collect::<Vec<String>>();
+
+        cards.start(MONITOR, &stored);
+        cards.press(Key::Character('x'));
+
+        let shown = cards.shown(MONITOR, &stored);
+
+        // the newest `SHOWN` alone, the newest last, so the fixed-height card holds them
+        assert_eq!(shown.len(), SHOWN);
+        assert_eq!(shown.last().map(String::as_str), Some("x"));
+        assert_eq!(shown.first().map(String::as_str), Some("note 196"));
     }
 
     #[test]

@@ -53,10 +53,20 @@ impl OutputHandler for WaylandState {
         }
     }
 
-    // dropping a window destroys its layer surface
+    // a window on a monitor that is gone goes the way a closed one does
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
-        self.windows
-            .retain(|window| window.output.as_ref() != Some(&output));
+        let gone = self
+            .windows
+            .iter()
+            .filter(|window| window.output.as_ref() == Some(&output))
+            .map(|window| window.role.wl_surface().clone())
+            .collect::<Vec<_>>();
+
+        // each window goes the way a closed one does, so the keyboard is let go and a card being
+        // typed into keeps what was typed; close takes it out of the windows itself
+        for surface in &gone {
+            self.close(surface);
+        }
 
         self.publish(Some(&output));
         self.publish_toplevels();

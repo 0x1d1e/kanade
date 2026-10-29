@@ -248,5 +248,17 @@ impl WaylandState {
 
         // the compositor's input method has no surface with the keyboard left, so it is disabled
         self.sync_ime();
+
+        /*
+         * the window hears the keyboard leave as it would from the compositor, so what it holds is
+         * flushed before it goes; taken out of the window first, since the handler may redraw
+         */
+        let lost = self
+            .window(surface)
+            .and_then(|window| window.on_lost.clone());
+
+        if let Some(lost) = lost {
+            lost();
+        }
     }
 }
