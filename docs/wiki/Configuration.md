@@ -6,7 +6,7 @@ Kanade reads its config at start, and again whenever one of its files changes, i
 2. every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else `~/.config/kanade/`), in alphabetical order, so `config.toml` can sit beside files like `10-theme.toml` that another tool manages. Hidden files are skipped.
 3. `$XDG_STATE_HOME/kanade/settings.toml` (else `~/.local/state/kanade/settings.toml`), which only the Settings window (`kanade settings open`) and `kanade module` write. It holds just what it changed from the layers below: a value set back to theirs removes the key
 
-Tables merge key by key, so a later file only changes the keys it sets; any other value, a list too, replaces the one below. Kanade never writes your files. Every key is optional; these are the defaults, which `kanade config defaults` prints:
+Tables merge key by key, so a later file only changes the keys it sets; any other value, a list too, replaces the one below. Kanade never writes your files. A file that cannot be read, or that gives a problem, refuses the whole read: a reload keeps the config that runs, shows the first problem once on the island as a notice, and leaves the rest in `kanade status`, which also has the paths the last good config was read from, kept in `$XDG_STATE_HOME/kanade/last-good-config`. The read at start skips each such file alone instead, so one bad layer does not keep the shell from starting. Every key is optional; these are the defaults, which `kanade config defaults` prints:
 
 ```toml
 # the island snaps to its new shape and fades its content; the fade is 80 ms at 100% animation speed; KANADE_REDUCED_MOTION=1 or 0 overrides it

@@ -4101,6 +4101,18 @@ fn files(home: Option<&str>, settings: bool, problems: &mut Vec<String>) -> Vec<
     files
 }
 
+// the files a read reads, in the order they apply, those there now: what `crate::reload` keeps as
+// the last good config's paths
+pub fn layer_files() -> Vec<PathBuf> {
+    let home = env::var("HOME").ok();
+    let mut problems = Vec::new();
+
+    files(home.as_deref(), true, &mut problems)
+        .into_iter()
+        .filter(|file| file.is_file())
+        .collect()
+}
+
 // an XDG base directory: the variable if set to an absolute path, else its default under home
 pub fn base(variable: &str, default: &str, home: Option<&str>) -> Option<PathBuf> {
     env::var_os(variable)

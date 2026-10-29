@@ -74,7 +74,7 @@
 | `niri-config undo` | puts back the bytes before Kanade's last change, only while the file is as that change left it. The Settings window's niri page ([Settings](Settings.md)) stages its changes and writes them with Save as one such change, and has this as its Undo |
 | `niri-config backups` | lists the backups, newest first (the number is the one `restore` takes), then `orig`, the first bytes Kanade saw; kept in `$XDG_STATE_HOME/kanade/niri-config/`, a ring per config, the newest 20, readable by you only |
 | `niri-config restore <n>\|orig` | puts a backup back (the result must validate; the current file need not), keeping what it replaces as a backup |
-| `status` | the config generation, the last reload error and the keys pending restart |
+| `status` | the config generation, the paths the last good config was read from, the last reload error and the keys pending restart |
 | `module list` | each Module: whether it runs, why not, and what a restart would change |
 | `module enable\|disable <name>` | turns a Module on or off in the settings file, applied at the next restart; prints what the restart will change, the Modules that turn off with it included. `island` cannot be turned off |
 | `lock` | locks the session: every monitor shows the date, the time, who is signed in and a password field over its wallpaper, checked by PAM through its `login` service, or the one `lock.pam_service` names, whose messages show under the field. Exits 0 once niri holds the lock for that call, 1 when niri refuses it, as while another locker holds the session, 3 if not within 5 s or when a password typed on it is accepted or being checked, see [Keyboard](Keyboard.md). Refused without the PAM service's file |

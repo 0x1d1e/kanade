@@ -1334,6 +1334,34 @@ pub fn health_attention(waiting: usize) {
     IslandService::write().post(activity(HEALTH, job, Vec::new()), Instant::now());
 }
 
+// the id of a refused config reload; a space is outside a client's alphabet
+const REFUSED: &str = "config refused";
+
+/*
+ * a reload Kanade refused (`crate::reload`): the running config is kept and the first problem is
+ * named, as the failed form of a Live Activity a while on the focused output. The rest of the
+ * problems stay on stderr and in `kanade status`, and `why` is kept to a line
+ */
+pub fn config_refused(why: &str) {
+    let problem: String = why
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(100)
+        .collect();
+
+    let job = Job {
+        title: String::from("Config reload refused"),
+        detail: format!("the running config is kept: {problem}"),
+        progress: None,
+        ended: Some(Ended::Failed),
+        serial: 0,
+    };
+
+    IslandService::write().post(activity(REFUSED, job, Vec::new()), Instant::now());
+}
+
 // the key of the action `run` hears: its press ends the command with SIGTERM
 const CANCEL: &str = "cancel";
 

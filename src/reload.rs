@@ -10,22 +10,32 @@
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use kanade_runtime::{MutexExt, service::Service};
 
+use crate::atomic::{self, Mode};
 use crate::config::{self, Config, Place};
 use crate::hooks::{self, Event};
 use crate::island::service::IslandService;
-use crate::{appearance, modules, settings, supervise, view};
+use crate::{appearance, modules, settings, sources, supervise, view};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
+
+// the paths of the config that last applied, in the state directory beside the other state: one
+// line each, and never the config itself, which may hold a token
+const LAST_GOOD: &str = "last-good-config";
+
+// whether a write of it was already reported
+static SAID_LAST_GOOD: AtomicBool = AtomicBool::new(false);
 
 // what the reloads came to, for `status`
 struct State {
@@ -37,6 +47,10 @@ struct State {
 
     // the keys whose new value waits for a restart
     pending: Vec<String>,
+
+    // the first problem of the refusal last shown on the island, so the same refused read is not
+    // shown at each reload of an unchanged file
+    noticed: Option<String>,
 }
 
 // held for a whole reload, so the watch and an IPC reload never interleave
@@ -44,6 +58,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     generation: 1,
     error: None,
     pending: Vec::new(),
+    noticed: None,
 });
 
 // what a reload or validate found
@@ -58,6 +73,9 @@ pub enum Outcome {
 
 // the watch's thread; one that cannot watch says so, and `config reload` still reloads
 pub fn spawn() {
+    // the config read at start is the last good one until a reload applies another
+    keep(&config::layer_files());
+
     supervise::spawn("config", || {
         let places = config::places();
 
@@ -132,7 +150,11 @@ pub fn reload() -> Outcome {
 
             state.generation += 1;
             state.error = None;
+            state.noticed = None;
             state.pending.clone_from(pending);
+
+            // the files this read applied, beside the other state; the config itself is not copied
+            keep(&config::layer_files());
 
             eprintln!("kanade: config reloaded, generation {}", state.generation);
             for key in pending {
@@ -142,12 +164,21 @@ pub fn reload() -> Outcome {
         Outcome::Invalid(problems) => {
             state.error = Some(problems.join("\n"));
 
+            // one Transient on the focused output, through the Service, naming the first problem
+            // only; the rest is in `kanade status`. The same refused read is not shown again
+            let first = problems.first().cloned().unwrap_or_default();
+            let show = newly_refused(&mut state, &first);
+
             eprintln!(
                 "kanade: config not reloaded, generation {} stays:",
                 state.generation
             );
             for problem in problems {
                 eprintln!("kanade: {problem}");
+            }
+
+            if show {
+                sources::live::config_refused(&first);
             }
         }
     }
@@ -166,6 +197,79 @@ pub fn error() -> Option<String> {
     STATE.locked().error.clone()
 }
 
+// whether a refusal is one to show: the first problem of the last shown refusal, so a file read
+// again unchanged says nothing new, while a different one does
+fn newly_refused(state: &mut State, first: &str) -> bool {
+    if state.noticed.as_deref() == Some(first) {
+        return false;
+    }
+
+    state.noticed = Some(first.to_owned());
+    true
+}
+
+// where the last good config's paths are kept, beside the other state
+fn last_good_file() -> Option<PathBuf> {
+    config::base(
+        "XDG_STATE_HOME",
+        ".local/state",
+        std::env::var("HOME").ok().as_deref(),
+    )
+    .map(|dir| dir.join("kanade").join(LAST_GOOD))
+}
+
+/*
+ * the paths of the config that last applied, written only when they changed: one a line, the file
+ * 0600 and replaced whole, so a crash leaves the old list or the new one. A failure is no reason to
+ * fail a reload, and is said once
+ */
+fn keep(files: &[PathBuf]) {
+    let Some(path) = last_good_file() else {
+        return;
+    };
+
+    if let Err(error) = keep_at(&path, files)
+        && !SAID_LAST_GOOD.swap(true, Ordering::Relaxed)
+    {
+        eprintln!(
+            "kanade: cannot keep the last good config at {}: {error}",
+            path.display()
+        );
+    }
+}
+
+// `keep`, at a file named
+fn keep_at(path: &Path, files: &[PathBuf]) -> io::Result<()> {
+    let mut text = String::new();
+    for file in files {
+        text.push_str(&file.to_string_lossy());
+        text.push('\n');
+    }
+
+    if fs::read_to_string(path).is_ok_and(|kept| kept == text) {
+        return Ok(());
+    }
+
+    atomic::write(path, text.as_bytes(), Mode::Private)
+}
+
+// the paths kept, none when nothing applied or the file cannot be read
+fn kept_last_good() -> Vec<String> {
+    last_good_file().map_or_else(Vec::new, |path| kept_at(&path))
+}
+
+// `kept_last_good`, from the file named
+fn kept_at(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // what a reload would come to, changing nothing
 pub fn validate() -> Outcome {
     let (read, problems) = config::read();
@@ -173,20 +277,27 @@ pub fn validate() -> Outcome {
     judge(&config::get(), &read, problems)
 }
 
-// the layout and generation, what the config in effect skipped at start, the last reload error
-// and the keys pending restart
+// the layout and generation, the paths of the last good config, what the config in effect skipped
+// at start, the last reload error and the keys pending restart
 pub fn status() -> Vec<String> {
     let state = STATE.locked();
 
-    lines(&state, &config::skipped())
+    lines(&state, &kept_last_good(), &config::skipped())
 }
 
-fn lines(state: &State, skipped: &[String]) -> Vec<String> {
+fn lines(state: &State, last_good: &[String], skipped: &[String]) -> Vec<String> {
     let mut lines = vec![format!(
         "config schema_version {}, generation {}",
         config::SCHEMA_VERSION,
         state.generation
     )];
+
+    // the file or files that last applied, which a reload that refuses its files keeps running
+    lines.extend(
+        last_good
+            .iter()
+            .map(|path| format!("config: last good {path}")),
+    );
 
     // every reload that applied read a config with nothing to skip
     if state.generation == 1 && !skipped.is_empty() {
@@ -403,6 +514,7 @@ mod tests {
     }
 
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc;
 
     use super::*;
@@ -447,21 +559,26 @@ mod tests {
     #[test]
     fn status_says_what_the_config_skipped_failed_and_waits_for() {
         let skipped = [String::from("a.toml:1: clok: unknown key, skipped")];
+        let last_good = [String::from("/home/a/.config/kanade/config.toml")];
         let mut state = State {
             generation: 1,
             error: None,
             pending: Vec::new(),
+            noticed: None,
         };
 
         assert_eq!(
-            lines(&state, &[]),
-            [format!(
-                "config schema_version {}, generation 1",
-                config::SCHEMA_VERSION
-            )]
+            lines(&state, &last_good, &[]),
+            [
+                format!(
+                    "config schema_version {}, generation 1",
+                    config::SCHEMA_VERSION
+                ),
+                String::from("config: last good /home/a/.config/kanade/config.toml"),
+            ]
         );
         assert_eq!(
-            lines(&state, &skipped)[1..],
+            lines(&state, &last_good, &skipped)[2..],
             [
                 "config skipped at start:",
                 "  a.toml:1: clok: unknown key, skipped",
@@ -474,7 +591,7 @@ mod tests {
         state.pending = vec![String::from("modules.media")];
 
         assert_eq!(
-            lines(&state, &skipped)[1..],
+            lines(&state, &last_good, &skipped)[2..],
             [
                 "config last reload error:",
                 "  a.toml:1: x",
@@ -482,6 +599,55 @@ mod tests {
                 "config modules.media is pending restart",
             ]
         );
+    }
+
+    // an unchanged file read again refuses nothing new; another problem is shown, and one read
+    // again after a reload applied is shown again
+    #[test]
+    fn a_refusal_is_shown_once() {
+        let mut state = State {
+            generation: 1,
+            error: None,
+            pending: Vec::new(),
+            noticed: None,
+        };
+
+        assert!(newly_refused(&mut state, "a.toml:3: x"));
+        assert!(!newly_refused(&mut state, "a.toml:3: x"));
+        assert!(newly_refused(&mut state, "a.toml:3: y"));
+
+        state.noticed = None;
+        assert!(newly_refused(&mut state, "a.toml:3: y"));
+    }
+
+    #[test]
+    fn the_last_good_paths_are_private_and_one_a_line() {
+        let dir = env_dir("last-good");
+        let path = dir.join("last-good-config");
+        let files = [
+            PathBuf::from("/home/a/.config/kanade/config.toml"),
+            PathBuf::from("/home/a/.local/state/kanade/settings.toml"),
+        ];
+
+        keep_at(&path, &files).unwrap();
+
+        assert_eq!(
+            kept_at(&path),
+            [
+                "/home/a/.config/kanade/config.toml",
+                "/home/a/.local/state/kanade/settings.toml",
+            ]
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        // what applies with no file of its own is nothing to keep
+        keep_at(&path, &[]).unwrap();
+        assert!(kept_at(&path).is_empty());
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
