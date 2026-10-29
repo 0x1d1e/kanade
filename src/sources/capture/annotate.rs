@@ -265,8 +265,9 @@ pub fn asked(path: &str) {
 
 /*
  * niri saved a screenshot, the path or none when it only copied, on the niri thread. One a
- * `capture screenshot` asked for opens in the editor and its saved notice waits until the editor
- * closes; any other is not the editor's, and is shown at once
+ * `capture screenshot` asked for, with the editor still on, opens in it and its saved notice waits
+ * until the editor closes; any other, or one asked for before the editor was turned off, is not the
+ * editor's, and is shown at once
  */
 pub fn heard(path: Option<String>) {
     let Some(path) = path else {
@@ -284,7 +285,7 @@ pub fn heard(path: Option<String>) {
             .and_then(|place| asked.remove(place))
     };
 
-    if asked.is_some() {
+    if asked.is_some() && config::get().capture_annotate {
         open(path);
     } else {
         live::screenshot_captured(Some(path));
@@ -298,38 +299,61 @@ pub fn heard(path: Option<String>) {
 fn open(path: String) {
     let spawned = thread::Builder::new()
         .name(String::from("annotate-open"))
-        .spawn(move || {
-            let size = match read(Path::new(&path)) {
-                Ok(size) => size,
-                Err(why) => {
-                    live::annotation_failed(&why);
-                    live::screenshot_captured(Some(path));
+        .spawn({
+            let path = path.clone();
 
-                    return;
-                }
-            };
-            let Some(monitor) = focused_monitor() else {
-                live::screenshot_captured(Some(path));
-
-                return;
-            };
-            let mut editor = Editor::write();
-
-            editor.serial = editor.serial.wrapping_add(1);
-            editor.shot = Some(Shot {
-                path: PathBuf::from(path),
-                width: size.0,
-                height: size.1,
-                monitor,
-            });
-            editor.tool = Tool::Rectangle;
-            editor.drawing = Drawing::default();
-            editor.saving = false;
-            editor.why = None;
+            move || opened(path)
         });
 
     if let Err(error) = spawned {
         eprintln!("capture: annotate: {error}");
+
+        // it never opened, so its notice shows at once, as any other screenshot's does
+        live::screenshot_captured(Some(path));
+    }
+}
+
+// the worker `open` starts: the file's size, then the editor on it
+fn opened(path: String) {
+    let size = match read(Path::new(&path)) {
+        Ok(size) => size,
+        Err(why) => {
+            live::annotation_failed(&why);
+            live::screenshot_captured(Some(path));
+
+            return;
+        }
+    };
+    let Some(monitor) = focused_monitor() else {
+        live::screenshot_captured(Some(path));
+
+        return;
+    };
+
+    let replaced = {
+        let mut editor = Editor::write();
+
+        editor.serial = editor.serial.wrapping_add(1);
+
+        // a shot still standing here is replaced, not closed: its own notice posts below
+        let previous = editor.shot.replace(Shot {
+            path: PathBuf::from(&path),
+            width: size.0,
+            height: size.1,
+            monitor,
+        });
+
+        editor.tool = Tool::Rectangle;
+        editor.drawing = Drawing::default();
+        editor.saving = false;
+        editor.why = None;
+
+        previous
+    };
+
+    // the shot it stands in for never closed, so it keeps its own saved notice
+    if let Some(replaced) = replaced.and_then(|shot| shot.path.to_str().map(str::to_owned)) {
+        live::screenshot_captured(Some(replaced));
     }
 }
 
@@ -367,7 +391,8 @@ fn read(path: &Path) -> Result<(u32, u32), String> {
         .map(|(width, height, _)| (width, height))
         .ok_or_else(|| {
             format!(
-                "the screenshot is not an image the editor draws, or is over {MOST_PIXELS} pixels"
+                "the screenshot is not an image the editor draws, or is larger than the {} megapixels it draws",
+                MOST_PIXELS / 1_000_000
             )
         })
 }
@@ -457,7 +482,16 @@ fn saving() {
         });
 
     if let Err(error) = spawned {
-        eprintln!("capture: annotate: {error}");
+        // no worker, so nothing was written: the editor keeps its shot and its keyboard, and says
+        // why, rather than waiting on a save that will never come
+        let mut editor = Editor::write();
+
+        if editor.serial == serial {
+            editor.saving = false;
+            editor.why = Some(format!("saving could not start: {error}"));
+        } else {
+            editor.quiet();
+        }
     }
 }
 
@@ -508,8 +542,11 @@ fn dismiss() {
         path
     };
 
-    // the original is untouched and still on disk, so its notice is still true
-    if let Some(path) = path.to_str() {
+    // the original is untouched and still on disk, unless it was deleted while the editor stood:
+    // its notice would name a file that is not there
+    if path.exists()
+        && let Some(path) = path.to_str()
+    {
         live::screenshot_captured(Some(path.to_owned()));
     }
 }
