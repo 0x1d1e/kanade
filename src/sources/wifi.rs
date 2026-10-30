@@ -32,9 +32,6 @@ const SETTINGS: &str = "org.freedesktop.NetworkManager.Settings";
 const PROFILE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 pub const ATTEMPT: &str = "org.freedesktop.NetworkManager.Connection.Active";
 
-const BUS: &str = "org.freedesktop.DBus";
-const BUS_PATH: &str = "/org/freedesktop/DBus";
-
 const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 const DEVICES: &str = "/org/freedesktop/NetworkManager/Devices/";
 const ACCESS_POINTS: &str = "/org/freedesktop/NetworkManager/AccessPoint/";
@@ -348,10 +345,7 @@ fn scan() {
  * so everything read or asked of one goes to it, never to a NetworkManager that replaced it
  */
 fn owner() -> String {
-    Bus::system()
-        .call(BUS, BUS_PATH, BUS, "GetNameOwner", &[Argument::from(NAME)])
-        .text()
-        .to_owned()
+    super::bus::name_owner(Bus::system(), NAME)
 }
 
 // `owner`'s first Wi-Fi device, empty when there is none

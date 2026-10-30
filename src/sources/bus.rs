@@ -12,6 +12,13 @@ pub fn reachable(bus: Bus) -> bool {
     !bus.call(DBUS, PATH, DBUS, "GetId", &[]).text().is_empty()
 }
 
+// the unique name like `:1.42` a program runs as, empty while no one has `name`
+pub fn name_owner(bus: Bus, name: &str) -> String {
+    bus.call(DBUS, PATH, DBUS, "GetNameOwner", &[Argument::from(name)])
+        .text()
+        .to_owned()
+}
+
 // the process that has `name`, none while no one has it
 pub fn owner(bus: Bus, name: &str) -> Option<u32> {
     let owner = bus.call(DBUS, PATH, DBUS, "GetNameOwner", &[Argument::from(name)]);

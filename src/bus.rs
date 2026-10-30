@@ -54,6 +54,8 @@ pub enum Argument {
     Map(BTreeMap<String, Argument>),
     // groups of string to variant, like a NetworkManager connection's settings
     Groups(BTreeMap<String, BTreeMap<String, Argument>>),
+    // fields in order, like a polkit subject's kind and details
+    Struct(Vec<Argument>),
     Variant(Box<Argument>),
 }
 
@@ -332,6 +334,14 @@ impl Method {
             self.connection.reply(&header, &body(arguments))
         };
     }
+
+    /// A call Kanade cannot take, as a caller reads it rather than as an answer. The name is one
+    /// of the bus's own, like `org.freedesktop.DBus.Error.InvalidArgs`.
+    pub fn fail(&self, name: &str, message: &str) {
+        let header = self.message.header();
+
+        let _ = self.connection.reply_error(&header, name, &(message,));
+    }
 }
 
 // each getter answers empty for the wrong kind
@@ -505,6 +515,7 @@ fn variant(argument: &Argument) -> Variant<'static> {
                 .map(|(name, group)| (name.clone(), entries(group)))
                 .collect::<HashMap<_, _>>(),
         ),
+        Argument::Struct(fields) => Variant::Structure(body(fields)),
         Argument::Variant(inner) => Variant::Value(Box::new(variant(inner))),
     }
 }
@@ -531,7 +542,17 @@ mod tests {
             Argument::from(7_u32),
             Argument::Map(options),
             Argument::from(1_u64 << 40),
+            // a struct's fields read back as a list, which is how polkit's subject is taken
+            Argument::Struct(vec![
+                Argument::from("unix-session"),
+                Argument::Map(BTreeMap::from([(
+                    String::from("session-id"),
+                    Argument::from("3"),
+                )])),
+            ]),
         ]);
+
+        assert_eq!(sent.fields()[5].value_signature().to_string(), "(sa{sv})");
 
         let read: Vec<Value> = sent.fields().iter().map(value).collect();
 
@@ -543,5 +564,9 @@ mod tests {
         // a window id is a `t`, which a `u` is refused for
         assert_eq!(sent.fields()[4].value_signature().to_string(), "t");
         assert_eq!(read[4].number(), (1_u64 << 40) as f64);
+
+        // a struct's fields read back as a list, in order
+        assert_eq!(read[5].list()[0].text(), "unix-session");
+        assert_eq!(read[5].list()[1].get("session-id").text(), "3");
     }
 }

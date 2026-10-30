@@ -16,14 +16,11 @@ use crate::bus::{Argument, Bus, Method, Value};
 use kanade_runtime::{MutexExt, service::Service};
 
 use super::BLUEZ;
+use crate::sources::bus::name_owner;
 use crate::supervise;
 
 const PATH: &str = "/org/kanade/bluetooth/agent";
 const AGENT: &str = "org.bluez.Agent1";
-
-// the bus itself, which alone says who owns a name
-const BUS: &str = "org.freedesktop.DBus";
-const BUS_PATH: &str = "/org/freedesktop/DBus";
 
 // shows codes and answers yes or no, typing none: a keyboard pairs by typing the code shown
 const CAPABILITY: &str = "DisplayYesNo";
@@ -188,12 +185,7 @@ fn owner() -> String {
     let mut owner = OWNER.locked();
 
     owner
-        .get_or_insert_with(|| {
-            Bus::system()
-                .call(BUS, BUS_PATH, BUS, "GetNameOwner", &[Argument::from(BLUEZ)])
-                .text()
-                .to_owned()
-        })
+        .get_or_insert_with(|| name_owner(Bus::system(), BLUEZ))
         .clone()
 }
 
