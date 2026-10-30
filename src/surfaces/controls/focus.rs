@@ -9,7 +9,7 @@ use kanade_runtime::service::Service;
 use super::list;
 use crate::sources::audio::Node;
 use crate::sources::power::Profile;
-use crate::sources::wifi::Secret;
+use crate::sources::wifi::{self, Secret};
 use crate::surfaces::grid::moved;
 use crate::surfaces::ring::Ring;
 use crate::tiles::{Placed, Size, Tile};
@@ -409,7 +409,7 @@ impl Focus {
                 secret.pop();
                 None
             }
-            Key::Enter => secret.fits().then_some(Act::Join),
+            Key::Enter => wifi::fits(secret).then_some(Act::Join),
             Key::Escape => return Some((self.out(), None)),
             _ => return None,
         };

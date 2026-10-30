@@ -6,13 +6,13 @@
 //! shows (`wanted`). Closed, those signals are dropped without a call, as before. A join waits on
 //! what it hears there too (`hear`): its device, its active connection and NetworkManager itself.
 //!
-//! A password lives in a `Secret`, which never prints, and only until NetworkManager has it: a
+//! A password lives in a `Secret` (`sources::secret`), which never prints and is zeroed when let
+//! go, and only until NetworkManager has it: a
 //! profile made to join with one is kept in memory and saved only once the network takes it, so a
 //! wrong password leaves nothing behind. NetworkManager asks a secret agent, like nm-applet, for a
 //! password it lacks or that failed; with none running, the join fails and says so here.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -23,6 +23,7 @@ use kanade_runtime::{MutexExt, service::Service};
 use zbus::blocking::Connection;
 
 use super::network::{NAME, ROOT};
+pub use super::secret::Secret;
 use super::system::Watched;
 
 pub const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
@@ -70,44 +71,15 @@ const KEY_8021X: u32 = 0x200;
 const KEY_SAE: u32 = 0x400;
 const KEY_OWE: u32 = 0x800;
 
-/*
- * a password, or what is typed of one. It never prints, so no log, panic or `Debug` of a Service
- * holding one shows it
- */
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct Secret(String);
+// what WPA takes: 8 to 63 characters, or the key itself as 64 hex digits
+pub fn fits(secret: &Secret) -> bool {
+    let length = secret.len();
 
-impl Secret {
-    pub fn push(&mut self, letter: char) {
-        self.0.push(letter);
-    }
-
-    pub fn pop(&mut self) {
-        self.0.pop();
-    }
-
-    // in characters, which is what the field draws a dot for
-    pub fn len(&self) -> usize {
-        self.0.chars().count()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    // what WPA takes: 8 to 63 characters, or the key itself as 64 hex digits
-    pub fn fits(&self) -> bool {
-        let length = self.0.chars().count();
-
-        (8..=63).contains(&length)
-            || (length == 64 && self.0.chars().all(|letter| letter.is_ascii_hexdigit()))
-    }
+    (8..=63).contains(&length) || (length == 64 && secret.plaintext().chars().all(hex))
 }
 
-impl fmt::Debug for Secret {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Secret(..)")
-    }
+fn hex(letter: char) -> bool {
+    letter.is_ascii_hexdigit()
 }
 
 // how a network keeps others out
@@ -895,7 +867,7 @@ fn settings(network: &Network, secret: Option<&Secret>) -> Argument {
         let mut security = BTreeMap::from([(String::from("key-mgmt"), text(key_management))]);
 
         if let Some(secret) = secret {
-            security.insert(String::from("psk"), text(&secret.0));
+            security.insert(String::from("psk"), text(secret.plaintext()));
         }
 
         groups.insert(String::from("802-11-wireless-security"), security);
@@ -994,26 +966,23 @@ mod tests {
 
     #[test]
     fn a_password_fits_wpa() {
-        let secret = |text: &str| Secret(text.into());
+        let secret = |text: &str| {
+            text.chars().fold(Secret::default(), |mut secret, letter| {
+                secret.push(letter);
+                secret
+            })
+        };
 
-        assert!(!secret("1234567").fits());
-        assert!(secret("12345678").fits());
-        assert!(secret(&"a".repeat(63)).fits());
-        assert!(!secret(&"g".repeat(64)).fits());
-        assert!(secret(&"0f".repeat(32)).fits());
-        assert!(!secret(&"a".repeat(65)).fits());
+        assert!(!fits(&secret("1234567")));
+        assert!(fits(&secret("12345678")));
+        assert!(fits(&secret(&"a".repeat(63))));
+        assert!(!fits(&secret(&"g".repeat(64))));
+        assert!(fits(&secret(&"0f".repeat(32))));
+        assert!(!fits(&secret(&"a".repeat(65))));
 
         // characters, not bytes: a CJK passphrase of 30 is legal, and a 4 letter one is not
-        assert!(secret(&"\u{5bc6}\u{7801}".repeat(15)).fits());
-        assert!(!secret("\u{5bc6}\u{7801}").fits());
-    }
-
-    #[test]
-    fn a_secret_never_prints() {
-        let secret = Secret("hunter22".into());
-
-        assert!(!format!("{secret:?}").contains("hunter22"));
-        assert!(!format!("{:?}", Some(secret)).contains("hunter22"));
+        assert!(fits(&secret(&"\u{5bc6}\u{7801}".repeat(15))));
+        assert!(!fits(&secret("\u{5bc6}\u{7801}")));
     }
 
     // the NetworkManager a join asked, by its unique name

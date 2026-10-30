@@ -52,6 +52,7 @@ pub mod recording;
 pub mod reminders;
 pub mod screen_time;
 pub mod seat;
+pub mod secret;
 pub mod secrets;
 pub mod session;
 pub mod shelf;

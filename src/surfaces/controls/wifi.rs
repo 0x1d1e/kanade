@@ -208,7 +208,7 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
             list::label("Join"),
             84.0,
             false,
-            secret.fits().then_some(Act::Join)
+            wifi::fits(secret).then_some(Act::Join)
         ),
     ])
     .width(WIDTH)
