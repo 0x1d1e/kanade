@@ -287,17 +287,8 @@ fn answer(method: Method) {
 fn begin(method: Method) {
     let arguments = method.arguments();
 
-    let cookie = match arguments.len() {
-        3 => arguments.get(2).map_or("", Value::text).to_owned(),
-        4 => arguments.get(3).map_or("", Value::text).to_owned(),
-        _ => String::new(),
-    };
-
-    let message = if arguments.len() >= 4 {
-        clamp(arguments.get(3).map_or("", Value::text), MOST_MESSAGE)
-    } else {
-        String::new()
-    };
+    let (cookie, message, identities) = layout(arguments);
+    let cookie = cookie.to_owned();
 
     let Some(caller) = caller() else {
         method.reply(&[]);
@@ -305,9 +296,7 @@ fn begin(method: Method) {
     };
 
     // whose password: the first unix-user polkit offers, when it is the caller's own session user
-    let user = arguments
-        .get(1)
-        .and_then(identity)
+    let user = identity(identities)
         .filter(|uid| caller.uid == *uid)
         .map(|_| caller.user.clone());
 
@@ -358,6 +347,16 @@ fn begin(method: Method) {
     });
 
     advance();
+}
+
+// BeginAuthentication's arguments, polkit's `(sss@a{ss}sa(sa{sv}))`: the message second, the
+// cookie fifth and the identities sixth
+fn layout(arguments: &[Value]) -> (&str, String, &Value) {
+    (
+        arguments.get(4).map_or("", Value::text),
+        clamp(arguments.get(1).map_or("", Value::text), MOST_MESSAGE),
+        arguments.get(5).unwrap_or(&Value::Nothing),
+    )
 }
 
 // the cookie polkit cancels, any one of them
@@ -1040,6 +1039,44 @@ mod tests {
         assert_eq!(identity(&identities("unix-user", 1000)), Some(1000));
         assert_eq!(identity(&identities("unix-session", 1000)), None);
         assert_eq!(identity(&identities("unix-user", 0)), Some(0));
+    }
+
+    // BeginAuthentication is `(sss a{ss} s a(sa{sv}))`: the message second, the cookie fifth and
+    // the identities sixth, as polkitd's own `(sss@a{ss}sa(sa{sv}))` says
+    #[test]
+    fn begin_authentication_reads_its_six_arguments() {
+        let identities = |kind: &str, uid: u32| {
+            Value::List(vec![
+                Value::Text(kind.into()),
+                Value::Map(BTreeMap::from([(
+                    String::from("uid"),
+                    Value::Number(uid as f64),
+                )])),
+            ])
+        };
+
+        let call = |offered: Value| {
+            vec![
+                Value::Text(String::from("org.freedesktop.timedate1.set-timezone")),
+                Value::Text(String::from(
+                    "Authentication is required to set the timezone",
+                )),
+                Value::Text(String::from("preferences-system-time")),
+                Value::Map(BTreeMap::new()),
+                Value::Text(String::from("cookie-1")),
+                offered,
+            ]
+        };
+
+        let arguments = call(identities("unix-user", 1000));
+        let (cookie, message, offered) = layout(&arguments);
+
+        assert_eq!(cookie, "cookie-1");
+        assert_eq!(message, "Authentication is required to set the timezone");
+        assert_eq!(identity(offered), Some(1000));
+
+        // a call shorter than the six has no cookie to answer
+        assert_eq!(layout(&call(identities("unix-user", 1000))[..4]).0, "");
     }
 
     // a try that failed empties the field and says what is left
