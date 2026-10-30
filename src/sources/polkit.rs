@@ -923,12 +923,20 @@ fn from_polkit(sender: &str) -> bool {
 // the uid of the first unix-user identity polkit offers: a session or a group is not a user;
 // polkit's `(sa{sv})` is one struct: the kind word, then the dict whose `uid` names the user
 fn identity(identities: &Value) -> Option<u32> {
-    let fields = identities.list();
+    // `a(sa{sv})`: the argument is an array, each element one identity's `(sa{sv})`
+    for identity in identities.list() {
+        let fields = identity.list();
 
-    (fields.first().map_or("", Value::text) == "unix-user").then(|| match fields.get(1) {
-        Some(Value::Map(map)) => map.get("uid").map_or(0.0, Value::number) as u32,
-        _ => 0,
-    })
+        if fields.first().map_or("", Value::text) != "unix-user" {
+            continue;
+        }
+
+        if let Some(Value::Map(map)) = fields.get(1) {
+            return Some(map.get("uid").map_or(0.0, Value::number) as u32);
+        }
+    }
+
+    None
 }
 
 // Kanade registers where polkit asks: the agent's object, and the caller's session as the subject
@@ -1023,10 +1031,10 @@ mod tests {
         assert_eq!(typed(&Secret::default(), None), Secret::default());
     }
 
-    // the one identity polkit offers is read from `(sa{sv})`
+    // the identities polkit offers are an array of `(sa{sv})`, read from the first unix-user
     #[test]
     fn a_unix_user_identity_is_found() {
-        let identities = |kind: &str, uid: u32| {
+        let one = |kind: &str, uid: u32| {
             Value::List(vec![
                 Value::Text(kind.into()),
                 Value::Map(BTreeMap::from([(
@@ -1035,10 +1043,29 @@ mod tests {
                 )])),
             ])
         };
+        let identities = |kind: &str, uid: u32| Value::List(vec![one(kind, uid)]);
 
         assert_eq!(identity(&identities("unix-user", 1000)), Some(1000));
-        assert_eq!(identity(&identities("unix-session", 1000)), None);
         assert_eq!(identity(&identities("unix-user", 0)), Some(0));
+
+        // the first unix-user wins, whatever other identities come before it
+        assert_eq!(
+            identity(&Value::List(vec![
+                one("unix-session", 1000),
+                one("unix-user", 1000),
+            ])),
+            Some(1000)
+        );
+
+        // no unix-user at all, and no identities at all
+        assert_eq!(
+            identity(&Value::List(vec![
+                one("unix-session", 1000),
+                one("unix-group", 1000),
+            ])),
+            None
+        );
+        assert_eq!(identity(&Value::List(Vec::new())), None);
     }
 
     // BeginAuthentication is `(sss a{ss} s a(sa{sv}))`: the message second, the cookie fifth and
@@ -1046,13 +1073,13 @@ mod tests {
     #[test]
     fn begin_authentication_reads_its_six_arguments() {
         let identities = |kind: &str, uid: u32| {
-            Value::List(vec![
+            Value::List(vec![Value::List(vec![
                 Value::Text(kind.into()),
                 Value::Map(BTreeMap::from([(
                     String::from("uid"),
                     Value::Number(uid as f64),
                 )])),
-            ])
+            ])])
         };
 
         let call = |offered: Value| {
