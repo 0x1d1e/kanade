@@ -10,7 +10,7 @@ A prompt is outside text and a password at once. What polkit and PAM say is not 
 
 ## Decision
 
-- **Kanade registers a user-session `org.freedesktop.PolicyKit1.AuthenticationAgent` on the system bus**, at `/org/kanade/polkit/agent`, for this logind session, registers once at startup, and registers again whenever `org.freedesktop.PolicyKit1` gets a new owner.
+- **Kanade registers a user-session `org.freedesktop.PolicyKit1.AuthenticationAgent` on the system bus**, at `/org/kanade/polkit/agent`, for this logind session: it registers once at startup, and again whenever `org.freedesktop.PolicyKit1` gets a new owner. A refused registration is not retried when the other agent exits.
 - **Only the current owner of `org.freedesktop.PolicyKit1` (polkitd) may call Begin/CancelAuthentication on it.** Anything else is dropped silently: anyone on the bus can name the agent's path.
 - **Only this session's own logind user is accepted as the authenticatee.** polkit's `(sa{sv})` identity is read as a `unix-user` uid and compared with logind's `Session.User` for this session; a session, a group, or another user's uid is none.
 - **The password goes to polkit's stock helper**, socket-activated at `/run/polkit/agent-helper.socket`: `<user>`, then `<cookie>`, a line each, then a line per PAM message (`PAM_PROMPT_*`, `PAM_ERROR_MSG`, `PAM_TEXT_INFO`, `g_strescape`d) until `SUCCESS` or `FAILURE`. PAM runs as root in the helper, so Kanade holds no privilege, registers no polkit action, and never calls `AuthenticationAgentResponse`.
@@ -25,6 +25,6 @@ A prompt is outside text and a password at once. What polkit and PAM say is not 
 ## Consequences
 
 - The `polkit` Module is on unless turned off, needs only the core, and registers on start.
-- Registration is refused while another polkit agent owns the name, and stderr says so. polkit-gnome is spawned by `dist/niri/config.kdl` and installed by `scripts/install`, so a session already running it keeps it, and Kanade's prompt never shows.
-- The `BeginAuthentication` argument layout has not been checked against a live polkitd: with the helper unverified, a request fails closed rather than hanging.
+- Registration is refused while another polkit agent owns the name, and stderr says so. The shipped niri config and installer add no agent of their own, so this is now only a session that starts one itself; Kanade's prompt shows after a restart with that agent gone.
+- **The `BeginAuthentication` argument layout, the identity array and the user name are verified** against polkit 128 on 2026-10-30 by a real request that ended in a granted authorization.
 - Nothing waits on the Island forever: three tries, the session lock, a closed prompt, or 30 minutes with nothing typed each end a request as not authorized.

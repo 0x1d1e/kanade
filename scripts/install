@@ -145,7 +145,7 @@ install_packages() {
         if [ -z "$gpu" ]; then
             echo "note: no Vulkan driver chosen, install the one for your GPU" >&2
         fi
-        packages="$packages xdg-desktop-portal-gnome gnome-keyring polkit polkit-gnome pipewire
+        packages="$packages xdg-desktop-portal-gnome gnome-keyring polkit pipewire
             pipewire-pulse wireplumber noto-fonts noto-fonts-emoji inter-font kitty brightnessctl
             playerctl qt6ct xwayland-satellite $gpu"
     fi
