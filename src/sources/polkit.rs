@@ -904,7 +904,16 @@ fn caller() -> Option<Caller> {
     let user = user_value.list();
 
     let uid = user.first().map_or(0.0, Value::number) as u32;
-    let name = user.get(1).map_or("", Value::text).to_owned();
+    let user_path = user.get(1).map_or("", Value::text);
+
+    if user_path.is_empty() {
+        return None;
+    }
+
+    let name = Bus::system()
+        .property(LOGIND, user_path, "org.freedesktop.login1.User", "Name")
+        .text()
+        .to_owned();
 
     (!name.is_empty()).then_some(Caller {
         session,
