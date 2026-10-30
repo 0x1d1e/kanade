@@ -10,7 +10,7 @@ A prompt is outside text and a password at once. What polkit and PAM say is not 
 
 ## Decision
 
-- **Kanade registers a user-session `org.freedesktop.PolicyKit1.AuthenticationAgent` on the system bus**, at `/org/kanade/polkit/agent`, for this logind session, and registers again whenever `org.freedesktop.PolicyKit1` gets a new owner.
+- **Kanade registers a user-session `org.freedesktop.PolicyKit1.AuthenticationAgent` on the system bus**, at `/org/kanade/polkit/agent`, for this logind session, registers once at startup, and registers again whenever `org.freedesktop.PolicyKit1` gets a new owner.
 - **Only the current owner of `org.freedesktop.PolicyKit1` (polkitd) may call Begin/CancelAuthentication on it.** Anything else is dropped silently: anyone on the bus can name the agent's path.
 - **Only this session's own logind user is accepted as the authenticatee.** polkit's `(sa{sv})` identity is read as a `unix-user` uid and compared with logind's `Session.User` for this session; a session, a group, or another user's uid is none.
 - **The password goes to polkit's stock helper**, socket-activated at `/run/polkit/agent-helper.socket`: `<user>`, then `<cookie>`, a line each, then a line per PAM message (`PAM_PROMPT_*`, `PAM_ERROR_MSG`, `PAM_TEXT_INFO`, `g_strescape`d) until `SUCCESS` or `FAILURE`. PAM runs as root in the helper, so Kanade holds no privilege, registers no polkit action, and never calls `AuthenticationAgentResponse`.

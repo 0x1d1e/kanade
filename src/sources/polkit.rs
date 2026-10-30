@@ -162,6 +162,8 @@ pub fn start() {
     // polkitd restarting takes a new unique name: it is answered again under it
     supervise::spawn("polkit watcher", move || {
         let mut owners = Bus::system().signals_from(DBUS_PATH, DBUS, "NameOwnerChanged");
+        // polkitd is usually already running: a name change alone would never register us
+        register();
 
         for signal in &mut owners {
             let name = signal.arguments().first().map_or("", Value::text);
