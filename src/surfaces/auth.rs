@@ -2,7 +2,7 @@
 //! field, and Cancel. Nothing but its own answer or the session lock closes it (ADR 0146).
 
 use kanade_runtime::service::Service;
-use kanade_runtime::{Center, Column, Key, Rectangle, Text};
+use kanade_runtime::{Center, Column, Key, Rectangle, Text, Widget};
 
 use super::pad;
 use super::password;
@@ -27,30 +27,40 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
         .elide();
 
     let who = Text::new(format!("Password for {}", prompt.user()))
-        .size(theme::text::LABEL_SMALL)
-        .color(theme::island().on_surface_variant)
+        .size(theme::text::BODY)
+        .color(theme::island().on_surface)
+        .weight(theme::text::SEMIBOLD)
         .elide();
 
-    let note = Rectangle::new()
-        .width(width)
-        .height(LINE)
-        .align_child(Center, Center)
-        .child(
-            Text::new(prompt.note().unwrap_or(""))
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface_variant)
-                .elide(),
-        );
+    let note = prompt.note().map(|note| {
+        Box::new(
+            Rectangle::new()
+                .width(width)
+                .height(LINE)
+                .align_child(Center, Center)
+                .child(
+                    Text::new(note)
+                        .size(theme::text::LABEL_SMALL)
+                        .color(theme::island().on_surface_variant)
+                        .elide(),
+                ),
+        ) as Box<dyn Widget>
+    });
 
-    let pills = pad::pills(vec![
+    let mut content: Vec<Box<dyn Widget>> = vec![
+        Box::new(message),
+        Box::new(who),
+        Box::new(password::field(prompt.secret(), width, "Password")),
+    ];
+    content.extend(note);
+    content.push(Box::new(pad::pills(vec![
         Box::new(pad::pill("cancel", "Cancel", false, polkit::cancel)),
-        Box::new(pad::pill(
+        Box::new(pad::primary_pill(
             "authenticate",
             "Authenticate",
-            false,
             polkit::submit,
         )),
-    ]);
+    ])));
 
     pad::frame(
         "Authentication",
@@ -58,17 +68,7 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
             .width(pad::WIDTH)
             .height(pad::BODY)
             .align_child(Center, Center)
-            .child(
-                Column::new(vec![
-                    Box::new(message),
-                    Box::new(who),
-                    Box::new(password::field(prompt.secret(), width, "Password")),
-                    Box::new(note),
-                    Box::new(pills),
-                ])
-                .gap(4.0)
-                .align(Center),
-            ),
+            .child(Column::new(content).gap(4.0).align(Center)),
     )
 }
 

@@ -310,6 +310,35 @@ pub fn pill(
     }
 }
 
+// a primary action, filled with the Island's primary role
+pub fn primary_pill(
+    node: &'static str,
+    label: &'static str,
+    press: impl Fn() + 'static,
+) -> Rectangle {
+    Rectangle::new()
+        .width(PILL_WIDTH)
+        .height(PILL)
+        .radius(PILL / 2.0)
+        .padding(Padding {
+            top: 0.0,
+            right: 14.0,
+            bottom: 0.0,
+            left: 14.0,
+        })
+        .fill(theme::island().primary)
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, node).label(label))
+        .on_click(super::on_left(press))
+        .child(
+            Text::new(label)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_primary)
+                .weight(theme::text::SEMIBOLD),
+        )
+}
+
 // pills side by side along the bottom of the body
 pub fn pills(row: Vec<Box<dyn Widget>>) -> Row {
     Row::new(row).gap(PILL_GAP)
