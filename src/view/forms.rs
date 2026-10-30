@@ -115,6 +115,7 @@ pub(super) fn surface(
         Surface::Emoji => Some(surfaces::emoji::surface(monitor, island.visit())),
         Surface::ScreenTime => Some(surfaces::screen_time::surface(monitor, island.visit())),
         Surface::Files => Some(surfaces::files::surface(monitor, island.visit())),
+        Surface::Auth => Some(surfaces::auth::surface(open)),
     }
 }
 

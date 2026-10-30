@@ -1047,6 +1047,21 @@ impl IslandService {
             return;
         }
 
+        /*
+         * polkit's prompt waits for an answer nothing else on screen can give (ADR 0146), so it
+         * holds the keyboard the password is typed with and stays until it is answered, cancelled, or
+         * the session locks, rather than for the hold
+         */
+        if surface == Surface::Auth {
+            self.island(monitor).held = true;
+
+            if expanded {
+                self.wait(monitor);
+            }
+
+            return;
+        }
+
         let island = self.island(monitor);
         island.held = expanded;
 

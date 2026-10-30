@@ -62,6 +62,9 @@ pub enum Surface {
 
     // the desktop's recent files as a shelf, opened, never managed (ADR 0141)
     Files,
+
+    // polkit's password prompt, opened for a request and held until it ends (ADR 0146)
+    Auth,
 }
 
 /*

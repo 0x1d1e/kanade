@@ -593,7 +593,7 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
         }
         Presentation::Expanded(Surface::Controls | Surface::Weather) => CONTROLS,
         Presentation::Expanded(
-            Surface::Session | Surface::Timer | Surface::Capture | Surface::Window,
+            Surface::Session | Surface::Timer | Surface::Capture | Surface::Window | Surface::Auth,
         ) => PAD,
         Presentation::Expanded(Surface::Tray) => TRAY_LIST,
         Presentation::Expanded(Surface::Media) => MEDIA,

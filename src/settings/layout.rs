@@ -149,7 +149,9 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Session",
-        &["lock", "sddm", "idle", "session", "settings", "ui", "hooks"],
+        &[
+            "lock", "sddm", "idle", "session", "polkit", "settings", "ui", "hooks",
+        ],
     ),
 ];
 

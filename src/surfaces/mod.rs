@@ -10,6 +10,7 @@ use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::theme;
 
+pub mod auth;
 pub mod calendar;
 pub mod capture;
 pub mod clipboard;
@@ -23,6 +24,7 @@ pub mod launcher;
 pub mod media;
 pub mod notifications;
 mod pad;
+pub mod password;
 mod ring;
 pub mod screen_time;
 mod search;

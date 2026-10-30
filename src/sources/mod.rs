@@ -43,6 +43,7 @@ pub mod osd;
 pub mod palette;
 pub mod pipewire;
 pub mod playback;
+pub mod polkit;
 pub mod power;
 pub mod privacy;
 pub mod pulse;

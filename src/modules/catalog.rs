@@ -26,9 +26,9 @@ use crate::sources::{
     clipboard, devices, dictation, focus, fullscreen, google, keys, launch, launcher_entry, live,
     lyrics, media, network, night_light,
     niri::{self, Niri},
-    notifications, osd, pipewire, power, privacy, radios, recording, reminders, screen_time, seat,
-    session, sleep, subscriptions, system, timer, tray, usage, wake, wallpaper, wallpaper_moving,
-    weather, windows, workspace,
+    notifications, osd, pipewire, polkit, power, privacy, radios, recording, reminders,
+    screen_time, seat, session, sleep, subscriptions, system, timer, tray, usage, wake, wallpaper,
+    wallpaper_moving, weather, windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, desk, dock, gesture, hooks, idle,
@@ -727,6 +727,24 @@ notifications dnd on until <HH:MM>
         start: |app| {
             service::watch::<Adapter>(devices::follow_bluetooth);
             system::spawn();
+            app
+        },
+    },
+    // polkit's own agent: it answers password requests on the system bus,
+    // shown on the Island only while the session is unlocked (ADR 0120: no helper, no action)
+    Module {
+        name: "polkit",
+        about: "Answers polkit password requests from the Island while the session is unlocked",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[],
+        start: |app| {
+            polkit::start();
+
             app
         },
     },

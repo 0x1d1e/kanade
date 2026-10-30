@@ -2,25 +2,16 @@
 //! saved ones, and the password a secured one asks for. Each network says how it is joined, or why
 //! its last join failed. A password shows as dots only.
 
-use kanade_runtime::ui::{Role, Semantics};
-use kanade_runtime::{
-    Center, Column, End, Padding, Rectangle, Row, Size, Stack, Start, Text, Widget, children,
-};
+use kanade_runtime::{Center, Column, End, Rectangle, Row, Stack, Text, Widget, children};
 
 use super::WIDTH;
 use super::focus::{Act, At};
-use super::list::{self, GAP, HEADER, ICON, ICON_GAP};
+use super::list::{self, GAP, HEADER, ICON};
 use crate::icon::Icon;
 use crate::sources::system::Radio;
 use crate::sources::wifi::{self, Failure, Join, Link, Networks, Secret, Security};
-use crate::theme::space::TARGET;
+use crate::surfaces::password;
 use crate::theme::{self, DISABLED};
-
-const FIELD: f32 = 44.0;
-const FIELD_INSET: f32 = 16.0;
-const ICON_GLYPH: f32 = 16.0;
-const DOTS: f32 = theme::text::TITLE;
-const CARET: f32 = 1.5;
 
 // the networks it lists, by name, one a row: none while the radio is not on
 pub fn rows(radio: Radio, networks: &Networks) -> Vec<Vec<(At, f32)>> {
@@ -215,98 +206,12 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
     .gap(8.0)
     .justify(End);
 
-    Column::new(children![title, field(secret), note, buttons])
-        .width(WIDTH)
-        .gap(GAP)
-}
-
-// a dot per character typed
-fn dots(count: usize) -> Text {
-    Text::new("\u{2022}".repeat(count))
-        .size(DOTS)
-        .color(theme::island().on_surface)
-        .weight(theme::text::MEDIUM)
-}
-
-/*
- * the most of `count` dots that fit: a longer run of dots is always wider, so the count is halved
- * into rather than built and measured from the longest down, one build a letter typed
- */
-fn visible(count: usize, fits: impl Fn(&Text) -> bool) -> usize {
-    let (mut low, mut high) = (0usize, count);
-    let mut shown = 0;
-
-    while low <= high {
-        let middle = low + (high - low) / 2;
-
-        if fits(&dots(middle)) {
-            shown = middle;
-            low = middle + 1;
-        } else {
-            high = middle.saturating_sub(1);
-        }
-    }
-
-    shown
-}
-
-// a dot per character typed, the last ones while they do not fit, then the caret
-fn field(secret: &Secret) -> Rectangle {
-    let room = WIDTH - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
-
-    let caret = Rectangle::new()
-        .width(CARET)
-        .height(DOTS + 4.0)
-        .fill(theme::island().on_surface);
-
-    let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= room);
-
-    let typed: Box<dyn Widget> = if secret.is_empty() {
-        Box::new(
-            Row::new(children![
-                caret,
-                Text::new("Password")
-                    .size(DOTS)
-                    .color(theme::island().on_surface_variant)
-                    .weight(theme::text::MEDIUM),
-            ])
-            .align(Center),
-        )
-    } else {
-        let shown = dots(visible(secret.len(), fits));
-
-        Box::new(Row::new(children![shown, caret]).align(Center))
-    };
-
-    Rectangle::new()
-        .width(WIDTH)
-        .height(FIELD)
-        .radius(FIELD / 2.0)
-        .fill(theme::island().surface_container)
-        .padding(Padding {
-            top: 0.0,
-            right: FIELD_INSET,
-            bottom: 0.0,
-            left: FIELD_INSET,
-        })
-        .align_child(Start, Center)
-        .semantics(|| {
-            Semantics::new(Role::TextInput, "password")
-                .secret()
-                .focused(true)
-        })
-        .child(
-            Row::new(vec![
-                Box::new(
-                    Rectangle::new()
-                        .width(TARGET)
-                        .height(TARGET)
-                        .align_child(Center, Center)
-                        .child(Icon::Lock.on(ICON_GLYPH, theme::island().on_surface_variant)),
-                ) as Box<dyn Widget>,
-                typed,
-            ])
-            .gap(ICON_GAP)
-            .align(Center),
-        )
+    Column::new(children![
+        title,
+        password::field(secret, WIDTH, "Password"),
+        note,
+        buttons
+    ])
+    .width(WIDTH)
+    .gap(GAP)
 }

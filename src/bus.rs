@@ -102,8 +102,22 @@ impl Bus {
         method: &str,
         arguments: &[Argument],
     ) -> Value {
+        self.try_call(destination, path, interface, method, arguments)
+            .unwrap_or_default()
+    }
+
+    /// As `call`, but says why a call failed in the callee's own words, for one whose failure is
+    /// worth telling apart from its answer.
+    pub fn try_call(
+        &self,
+        destination: &str,
+        path: &str,
+        interface: &str,
+        method: &str,
+        arguments: &[Argument],
+    ) -> Result<Value, String> {
         let Some(connection) = self.connection else {
-            return Value::Nothing;
+            return Err(String::from("no bus"));
         };
 
         let reply = if arguments.is_empty() {
@@ -118,17 +132,14 @@ impl Bus {
             )
         };
 
-        let Ok(reply) = reply else {
-            return Value::Nothing;
-        };
-
+        let reply = reply.map_err(|error| error.to_string())?;
         let mut values = message_values(&reply);
 
-        match values.len() {
+        Ok(match values.len() {
             0 => Value::Nothing,
             1 => values.remove(0),
             _ => Value::List(values),
-        }
+        })
     }
 
     pub fn property(&self, destination: &str, path: &str, interface: &str, name: &str) -> Value {

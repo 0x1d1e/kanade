@@ -111,6 +111,12 @@ pub fn key(monitor: &str, key: Key) {
         return;
     }
 
+    // polkit's own authentication prompt on the Island: its keys answer nothing behind it, and
+    // Escape cancels it (ADR 0146)
+    if modules::on("polkit") && surfaces::auth::key(monitor, key) {
+        return;
+    }
+
     if modules::on("tray") && surfaces::tray::key(monitor, key) {
         return;
     }
