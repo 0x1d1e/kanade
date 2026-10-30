@@ -41,7 +41,7 @@ const HELPER: &str = "/run/polkit/agent-helper.socket";
 
 const AUTHORITY: &str = "org.freedesktop.PolicyKit1";
 const AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
-const AUTHORITY_IFACE: &str = "org.freedesktop.PolicyKit1.Authority1";
+const AUTHORITY_IFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 
 // the object polkit calls to ask and to cancel, and its interface
 const AGENT: &str = "/org/kanade/polkit/agent";
