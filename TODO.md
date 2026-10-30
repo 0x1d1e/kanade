@@ -357,7 +357,7 @@ Quick, high fit:
   - [x] Synced lyrics in the media Surface. Src: `DankMaterialShell/quickshell/Services/LyricsService.qml`, `iNiR/services/LyricsService.qml`. Shipped: ADR 0063 / `src/sources/lyrics.rs`.
   - [x] Per-track accent colour. Src: `DankMaterialShell` `MediaAccentService.qml`, `TrackArtService.qml`. Shipped: `src/sources/media.rs`.
   - [x] Meeting Join alert from the calendar. Src: `isle/crates/isle-daemon/src/meeting.rs`. Shipped: `src/sources/reminders.rs`.
-  - [ ] Polkit agent as an auth Activity. Src: `iNiR` and `DankMaterialShell` `PolkitService.qml`. Parked as keeping credentials external.
+  - [x] Polkit agent as an auth Activity. Src: `iNiR` and `DankMaterialShell` `PolkitService.qml`. Done (ADR 0146, commit f53edfc, the `polkit` Module): a user-session `org.freedesktop.PolicyKit1.AuthenticationAgent` at `/org/kanade/polkit/agent`, answered only for this session's own logind user and only while unlocked; the password typed on the Auth Surface goes to polkit's stock socket-activated helper, so PAM runs as root there and Kanade holds no privilege and registers no action; three tries, quiet refusals polkit reads as not authorized, and nothing kept.
 
 Medium:
 
