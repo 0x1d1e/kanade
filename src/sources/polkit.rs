@@ -956,7 +956,7 @@ fn register() -> bool {
         &[
             subject,
             Argument::from(capabilities.as_str()),
-            Argument::Path(AGENT.into()),
+            Argument::from(AGENT),
         ],
     ) {
         Ok(_) => true,
