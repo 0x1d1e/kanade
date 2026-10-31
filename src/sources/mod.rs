@@ -63,6 +63,7 @@ pub mod subscriptions;
 pub mod system;
 pub mod timer;
 pub mod tray;
+pub mod umbriel;
 pub mod usage;
 pub mod wake;
 pub mod wallpaper;

@@ -38,6 +38,14 @@ const ZEN_RETIRED: [&str; 1] = ["ui.systemUsesDarkTheme"];
 const HELPER_RETRY: Duration = Duration::from_secs(2);
 const INTERFACE_SCHEMA: &str = "org.gnome.desktop.interface";
 
+pub const FONT_NAME: &str = "JetBrainsMono Nerd Font 11";
+pub const CURSOR_DARK: &str = "Bibata-Modern-Classic";
+pub const CURSOR_LIGHT: &str = "Bibata-Modern-Ice";
+pub const ICON_DARK: &str = "Papirus-Dark";
+pub const ICON_LIGHT: &str = "Papirus";
+pub const GTK_THEME_DARK: &str = "adw-gtk3-dark";
+pub const GTK_THEME_LIGHT: &str = "adw-gtk3";
+
 #[derive(Clone, Debug, PartialEq)]
 enum Request {
     Set(Tone),
@@ -91,6 +99,12 @@ struct SavedZenPreference {
 struct SavedGtkConfig {
     theme: Option<SavedValue>,
     prefer_dark: SavedValue,
+    #[serde(default)]
+    icon_theme: Option<SavedValue>,
+    #[serde(default)]
+    cursor_theme: Option<SavedValue>,
+    #[serde(default)]
+    font_name: Option<SavedValue>,
     created: bool,
 }
 
@@ -99,6 +113,12 @@ struct SavedQtConfig {
     scheme: SavedValue,
     custom_palette: SavedValue,
     style: Option<SavedValue>,
+    #[serde(default)]
+    icon_theme: Option<SavedValue>,
+    #[serde(default)]
+    cursor_theme: Option<SavedValue>,
+    #[serde(default)]
+    font: Option<SavedValue>,
 }
 
 #[derive(Debug)]
@@ -371,9 +391,12 @@ fn apply(tone: Tone, scheme: Option<&Scheme>, requests: &Receiver<Request>) -> H
         }
     }
 
-    let gtk_theme = current_theme
-        .as_deref()
-        .and_then(|current| paired_theme(current, tone, &gtk_theme_names()));
+    let themes = gtk_theme_names();
+    let gtk_theme = gtk_theme_for_tone(tone, &themes).or_else(|| {
+        current_theme
+            .as_deref()
+            .and_then(|current| paired_theme(current, tone, &themes))
+    });
     if let (Some(current), Some(target)) = (current_theme.as_deref(), gtk_theme.as_deref()) {
         match set_desktop(
             "gtk-theme",
@@ -385,6 +408,33 @@ fn apply(tone: Tone, scheme: Option<&Scheme>, requests: &Receiver<Request>) -> H
             Helper::Done(Ok(())) => {}
             Helper::Done(Err(error)) => eprintln!("kanade: could not apply GTK theme: {error}"),
             Helper::Superseded(newer) => return Helper::Superseded(newer),
+        }
+    }
+
+    for (key, target) in [
+        ("icon-theme", icon_theme_for_tone(tone, &icon_theme_names())),
+        (
+            "cursor-theme",
+            cursor_theme_for_tone(tone, &cursor_theme_names()),
+        ),
+        ("font-name", FONT_NAME.to_owned()),
+    ] {
+        let current = match read_setting(key, requests) {
+            Helper::Done(Ok(value)) => value,
+            Helper::Done(Err(error)) => {
+                eprintln!("kanade: could not read desktop {key}: {error}");
+                None
+            }
+            Helper::Superseded(newer) => return Helper::Superseded(newer),
+        };
+        if let Some(current) = current {
+            match set_desktop(key, &target, Some(current), &mut state, requests) {
+                Helper::Done(Ok(())) => {}
+                Helper::Done(Err(error)) => {
+                    eprintln!("kanade: could not apply desktop {key}: {error}")
+                }
+                Helper::Superseded(newer) => return Helper::Superseded(newer),
+            }
         }
     }
 
@@ -446,6 +496,9 @@ fn apply(tone: Tone, scheme: Option<&Scheme>, requests: &Receiver<Request>) -> H
         }
         if let Err(error) = colors::apply_kitty(scheme, tone) {
             eprintln!("kanade: could not write kitty colors: {error}");
+        }
+        if let Err(error) = colors::apply_umbriel(scheme, tone) {
+            eprintln!("kanade: could not write umbriel colors: {error}");
         }
     }
 
@@ -543,6 +596,9 @@ fn disable(requests: &Receiver<Request>) -> Helper<()> {
     }
     if let Err(error) = colors::restore_kitty() {
         eprintln!("kanade: could not remove kitty colors: {error}");
+    }
+    if let Err(error) = colors::restore_umbriel() {
+        eprintln!("kanade: could not remove umbriel colors: {error}");
     }
 
     if let Err(error) = update_zen_profiles(false, &mut state) {
@@ -726,6 +782,83 @@ fn qt_style_for_tone(current: &str, tone: Tone, palette_style: Option<&str>) -> 
     }
 }
 
+fn installed_themes(kind: &str, marker: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for root in data_dirs()
+        .into_iter()
+        .map(|path| path.join(kind))
+        .chain(home_dir().map(|home| home.join(".icons")))
+    {
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+                && entry.path().join(marker).exists()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn cursor_theme_names() -> Vec<String> {
+    installed_themes("icons", "cursors")
+}
+
+fn icon_theme_names() -> Vec<String> {
+    installed_themes("icons", "index.theme")
+}
+
+fn cursor_theme_for_tone(tone: Tone, installed: &[String]) -> String {
+    let preferred = match tone {
+        Tone::Dark => CURSOR_DARK,
+        Tone::Light => CURSOR_LIGHT,
+    };
+    if installed.is_empty() || installed.iter().any(|name| name == preferred) {
+        return preferred.to_owned();
+    }
+    if tone == Tone::Light && installed.iter().any(|name| name == CURSOR_DARK) {
+        return CURSOR_DARK.to_owned();
+    }
+    installed
+        .first()
+        .cloned()
+        .unwrap_or_else(|| preferred.to_owned())
+}
+
+fn icon_theme_for_tone(tone: Tone, installed: &[String]) -> String {
+    let preferred = match tone {
+        Tone::Dark => ICON_DARK,
+        Tone::Light => ICON_LIGHT,
+    };
+    if installed.is_empty() || installed.iter().any(|name| name == preferred) {
+        return preferred.to_owned();
+    }
+    if tone == Tone::Dark && installed.iter().any(|name| name == ICON_LIGHT) {
+        return ICON_LIGHT.to_owned();
+    }
+    installed
+        .first()
+        .cloned()
+        .unwrap_or_else(|| preferred.to_owned())
+}
+
+fn gtk_theme_for_tone(tone: Tone, installed: &[String]) -> Option<String> {
+    let preferred = match tone {
+        Tone::Dark => GTK_THEME_DARK,
+        Tone::Light => GTK_THEME_LIGHT,
+    };
+    installed
+        .iter()
+        .find(|name| name.as_str() == preferred)
+        .cloned()
+}
+
 fn gtk_theme_names() -> Vec<String> {
     let mut names = Vec::new();
     for root in data_dirs()
@@ -859,6 +992,9 @@ fn apply_gtk_config_with_save(
                 .unwrap_or_else(|| dark.to_owned()),
             pending: None,
         },
+        icon_theme: None,
+        cursor_theme: None,
+        font_name: None,
         created,
     });
     if let Some(theme) = paired.as_deref() {
@@ -880,6 +1016,26 @@ fn apply_gtk_config_with_save(
         "gtk-application-prefer-dark-theme",
         dark,
     );
+    let cursor = cursor_theme_for_tone(tone, &cursor_theme_names());
+    let icon = icon_theme_for_tone(tone, &icon_theme_names());
+    for (key, target, slot) in [
+        ("gtk-font-name", FONT_NAME, &mut saved.font_name),
+        (
+            "gtk-cursor-theme-name",
+            cursor.as_str(),
+            &mut saved.cursor_theme,
+        ),
+        ("gtk-icon-theme-name", icon.as_str(), &mut saved.icon_theme),
+    ] {
+        let current = gtk_ini_value(&original, "Settings", key);
+        let value = slot.get_or_insert_with(|| SavedValue {
+            before: current.clone(),
+            applied: current.clone().unwrap_or_else(|| target.to_owned()),
+            pending: None,
+        });
+        begin_saved_update(value, current, target);
+        updated = gtk_ini_set(&updated, "Settings", key, target);
+    }
 
     *which.slot(state) = Some(saved);
     save(state).map_err(io::Error::other)?;
@@ -891,6 +1047,18 @@ fn apply_gtk_config_with_save(
         commit_saved_update(theme, target);
     }
     commit_saved_update(&mut saved.prefer_dark, dark);
+    commit_saved_update(
+        saved.font_name.as_mut().expect("GTK font was saved"),
+        FONT_NAME,
+    );
+    commit_saved_update(
+        saved.cursor_theme.as_mut().expect("GTK cursor was saved"),
+        &cursor_theme_for_tone(tone, &cursor_theme_names()),
+    );
+    commit_saved_update(
+        saved.icon_theme.as_mut().expect("GTK icon theme was saved"),
+        &icon_theme_for_tone(tone, &icon_theme_names()),
+    );
     save(state).map_err(io::Error::other)
 }
 
@@ -936,6 +1104,15 @@ fn restore_gtk_config_with_save(
         "gtk-application-prefer-dark-theme",
         &saved.prefer_dark,
     );
+    for (key, value) in [
+        ("gtk-font-name", &saved.font_name),
+        ("gtk-cursor-theme-name", &saved.cursor_theme),
+        ("gtk-icon-theme-name", &saved.icon_theme),
+    ] {
+        if let Some(value) = value {
+            restore_gtk_ini_value(&mut updated, "Settings", key, value);
+        }
+    }
     if updated != original {
         if saved.created
             && updated
@@ -985,6 +1162,9 @@ fn apply_qt_config(
     let scheme = ini_value(&original, "Appearance", "color_scheme_path");
     let custom = ini_value(&original, "Appearance", "custom_palette");
     let style = ini_value(&original, "Appearance", "style");
+    let icon_theme = ini_value(&original, "Appearance", "icon_theme");
+    let cursor_theme = ini_value(&original, "Appearance", "cursor_theme");
+    let font = ini_value(&original, "General", "font");
     let mut saved = saved_qt_clone(state, major).unwrap_or_else(|| SavedQtConfig {
         scheme: SavedValue {
             before: scheme.clone(),
@@ -997,10 +1177,40 @@ fn apply_qt_config(
             pending: None,
         },
         style: None,
+        icon_theme: None,
+        cursor_theme: None,
+        font: None,
     });
     begin_saved_update(&mut saved.scheme, scheme, &scheme_path);
     begin_saved_update(&mut saved.custom_palette, custom, "true");
-
+    let icon_target = icon_theme_for_tone(tone, &icon_theme_names());
+    let cursor_target = cursor_theme_for_tone(tone, &cursor_theme_names());
+    let font_target = "\"JetBrainsMono Nerd Font,11,-1,5,50,0,0,0,0,0\"";
+    for (key, current, target, slot, section) in [
+        (
+            "icon_theme",
+            icon_theme,
+            icon_target.as_str(),
+            &mut saved.icon_theme,
+            "Appearance",
+        ),
+        (
+            "cursor_theme",
+            cursor_theme.clone(),
+            cursor_target.as_str(),
+            &mut saved.cursor_theme,
+            "Appearance",
+        ),
+        ("font", font, font_target, &mut saved.font, "General"),
+    ] {
+        let value = slot.get_or_insert_with(|| SavedValue {
+            before: current.clone(),
+            applied: current.clone().unwrap_or_else(|| target.to_owned()),
+            pending: None,
+        });
+        begin_saved_update(value, current, target);
+        updated = ini_set(&updated, section, key, target);
+    }
     if let Some(current) = style {
         let mut saved_style = saved.style.take().unwrap_or_else(|| SavedValue {
             before: Some(current.clone()),
@@ -1036,7 +1246,24 @@ fn apply_qt_config(
     {
         commit_saved_update(style, &target);
     }
+    commit_saved_update(
+        saved.icon_theme.as_mut().expect("Qt icon was saved"),
+        &icon_target,
+    );
+    commit_saved_update(
+        saved.cursor_theme.as_mut().expect("Qt cursor was saved"),
+        &cursor_target,
+    );
+    commit_saved_update(saved.font.as_mut().expect("Qt font was saved"), font_target);
     save_state(state).map_err(io::Error::other)
+}
+
+fn clone_saved_value(value: &SavedValue) -> SavedValue {
+    SavedValue {
+        before: value.before.clone(),
+        applied: value.applied.clone(),
+        pending: value.pending.clone(),
+    }
 }
 
 fn saved_qt_clone(state: &SyncState, major: u8) -> Option<SavedQtConfig> {
@@ -1056,6 +1283,9 @@ fn saved_qt_clone(state: &SyncState, major: u8) -> Option<SavedQtConfig> {
             applied: style.applied.clone(),
             pending: style.pending.clone(),
         }),
+        icon_theme: saved.icon_theme.as_ref().map(clone_saved_value),
+        cursor_theme: saved.cursor_theme.as_ref().map(clone_saved_value),
+        font: saved.font.as_ref().map(clone_saved_value),
     })
 }
 
@@ -1111,6 +1341,21 @@ fn restore_qt_config(major: u8, state: &mut SyncState) -> io::Result<()> {
     );
     if let Some(style) = &saved.style {
         restore_ini_value(&mut updated, "Appearance", "style", style);
+    }
+    for (section, key, value) in [
+        ("Appearance", "icon_theme", &saved.icon_theme),
+        ("Appearance", "cursor_theme", &saved.cursor_theme),
+        ("General", "font", &saved.font),
+    ] {
+        if let Some(value) = value {
+            restore_ini_value(&mut updated, section, key, value);
+        }
+    }
+    if let Some(font) = &saved.font {
+        restore_ini_value(&mut updated, "Fonts", "general", font);
+    }
+    if let Some(cursor) = &saved.cursor_theme {
+        restore_ini_value(&mut updated, "Appearance", "cursor", cursor);
     }
     if updated != original {
         atomic_write(&path, updated.as_bytes())?;
@@ -2142,9 +2387,12 @@ mod tests {
         );
         updated = ini_set(&updated, "Appearance", "custom_palette", "true");
         updated = ini_set(&updated, "Appearance", "style", "Fusion");
+        let font_target = "\"JetBrainsMono Nerd Font,11,-1,5,50,0,0,0,0,0\"";
+        updated = ini_set(&updated, "General", "font", font_target);
         assert!(updated.contains("color_scheme_path=/tmp/simple.conf"));
         assert!(updated.contains("style=Fusion"));
         assert!(updated.contains("icon_theme=Papirus"));
+        assert!(updated.contains("font=\"JetBrainsMono Nerd Font,11,-1,5,50,0,0,0,0,0\""));
         assert!(updated.contains("[SettingsWindow]\ngeometry=x"));
 
         let mut restored = updated.clone();
@@ -2178,6 +2426,16 @@ mod tests {
                 pending: None,
             },
         );
+        restore_ini_value(
+            &mut restored,
+            "General",
+            "font",
+            &SavedValue {
+                before: None,
+                applied: font_target.to_owned(),
+                pending: None,
+            },
+        );
         assert_eq!(
             ini_value(&restored, "Appearance", "color_scheme_path"),
             None
@@ -2186,6 +2444,7 @@ mod tests {
             ini_value(&restored, "Appearance", "custom_palette"),
             Some(String::from("false"))
         );
+        assert_eq!(ini_value(&restored, "General", "font"), None);
         assert!(restored.contains("style=kvantum-dark"));
     }
 
@@ -2262,7 +2521,7 @@ mod tests {
             );
             assert_eq!(
                 gtk_ini_value(&light, "Settings", "gtk-font-name").as_deref(),
-                Some("Inter 11")
+                Some(FONT_NAME)
             );
 
             apply_gtk_config_with_save(
@@ -2286,7 +2545,7 @@ mod tests {
             );
             assert_eq!(
                 gtk_ini_value(&dark, "Settings", "gtk-font-name").as_deref(),
-                Some("Inter 11")
+                Some(FONT_NAME)
             );
 
             restore_gtk_config_with_save(which, &path, &mut state, |_| Ok(())).unwrap();
@@ -2367,6 +2626,9 @@ mod tests {
                     applied: String::from("0"),
                     pending: None,
                 },
+                icon_theme: None,
+                cursor_theme: None,
+                font_name: None,
                 created: false,
             });
             assert!(restore_gtk_config_with_save(which, &path, &mut state, |_| Ok(())).is_err());

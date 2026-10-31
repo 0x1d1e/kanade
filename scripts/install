@@ -226,10 +226,11 @@ fetch_binary() {
         *) tree=release/0.1 ;;
     esac
     raw=https://raw.githubusercontent.com/0x1d1e/kanade/$tree
-    mkdir -p "$dir/dist/niri"
+    mkdir -p "$dir/dist/niri" "$dir/dist/umbriel"
     fetch_dist "$raw/dist/kanade.service" "$dir/dist/kanade.service" "$tree"
     fetch_dist "$raw/dist/kanade.png" "$dir/dist/kanade.png" "$tree"
     fetch_dist "$raw/dist/niri/config.kdl" "$dir/dist/niri/config.kdl" "$tree"
+    fetch_dist "$raw/dist/umbriel/config.toml" "$dir/dist/umbriel/config.toml" "$tree"
     dist=$dir/dist
 }
 
@@ -655,6 +656,16 @@ main() {
         else
             install -Dm644 "$dist/niri/config.kdl" "$config/niri/config.kdl"
             echo "installed $config/niri/config.kdl"
+        fi
+    fi
+
+    # Umbriel config: installed only when missing, never replaced
+    if [ -f "$dist/umbriel/config.toml" ]; then
+        if [ -e "$config/umbriel/config.toml" ]; then
+            echo "kept $config/umbriel/config.toml, dist/umbriel/config.toml is the default"
+        else
+            install -Dm644 "$dist/umbriel/config.toml" "$config/umbriel/config.toml"
+            echo "installed $config/umbriel/config.toml"
         fi
     fi
 

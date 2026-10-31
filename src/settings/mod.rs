@@ -19,6 +19,7 @@ mod niri;
 pub(crate) mod outputs;
 mod place;
 mod ring;
+mod umbriel;
 mod view;
 
 use std::cell::RefCell;
@@ -80,6 +81,9 @@ pub struct Settings {
 
     // niri's config.kdl as the niri page shows it, read and changed off the draw thread (`niri`)
     niri: niri::State,
+
+    // Umbriel's config.toml as the umbriel page shows it, read and changed off the draw thread (`umbriel`)
+    umbriel: umbriel::State,
 
     // the niri page's monitors, tried live in niri and then kept or reverted (`outputs`)
     outputs: outputs::State,
@@ -300,6 +304,7 @@ pub fn open(page: Option<&'static str>) {
         Settings::write().module_query.clear();
         Settings::write().hovered.clear();
         Settings::write().niri.reopen();
+        Settings::write().umbriel.reopen();
         Settings::write().outputs.reopen();
         TextInput::set_text(SEARCH, "");
         TextInput::set_text(MODULE_FILTER, "");
@@ -318,6 +323,7 @@ pub fn open(page: Option<&'static str>) {
 
     // read again for the rows a search finds as well as the page
     niri::load();
+    umbriel::load();
     if Settings::read().page == niri::PAGE {
         outputs::refresh();
     }
@@ -450,6 +456,9 @@ fn turn_to(page: &'static str) {
     if page == niri::PAGE {
         niri::load();
         outputs::refresh();
+    }
+    if page == umbriel::PAGE {
+        umbriel::load();
     }
 }
 

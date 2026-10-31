@@ -82,6 +82,27 @@ pub fn config() -> Option<PathBuf> {
     })
 }
 
+// the config Umbriel reads, as it looks for it
+pub fn umbriel_config() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("UMBRIEL_CONFIG").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from);
+    let base = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(|home| home.join(".config")))?;
+    let user = base.join("umbriel/config.toml");
+    let system = PathBuf::from("/etc/umbriel/config.toml");
+
+    Some(if !user.exists() && system.exists() {
+        system
+    } else {
+        user
+    })
+}
+
 // the files read last and when each changed, with what they gave
 type Read = (
     Vec<(PathBuf, Option<SystemTime>)>,
@@ -90,30 +111,81 @@ type Read = (
 
 static READ: Mutex<Option<Read>> = Mutex::new(None);
 
-// the binds in niri's config, read again only once a file it read changed
+// the binds in niri's and/or Umbriel's config, read again only once a file it read changed
 pub fn binds() -> Arc<Result<Vec<Bind>, Unread>> {
-    let Some(path) = config() else {
+    let niri_path = config();
+    let umbriel_path = umbriel_config();
+
+    if niri_path.is_none() && umbriel_path.is_none() {
         return Arc::new(Err(Unread {
-            file: PathBuf::from("niri/config.kdl"),
+            file: PathBuf::from("config"),
             why: String::from("HOME is not set"),
         }));
-    };
+    }
 
     let mut read = READ.locked();
 
     if let Some((files, binds)) = &*read
-        && files.first().map(|(file, _)| file) == Some(&path)
+        && !files.is_empty()
         && files.iter().all(|(file, when)| modified(file) == *when)
     {
         return binds.clone();
     }
 
     let mut files = Vec::new();
-    let binds = Arc::new(load(&path, &mut |file| {
+    let mut all_binds = Vec::new();
+    let mut last_error = None;
+
+    let mut read_file = |file: &Path| {
         files.push((file.to_owned(), modified(file)));
         fs::read_to_string(file)
-    }));
+    };
 
+    let umbriel_active = crate::sources::umbriel::is_active();
+
+    if umbriel_active {
+        if let Some(path) = &umbriel_path {
+            match load_umbriel(path, &mut read_file) {
+                Ok(b) => all_binds.extend(b),
+                Err(e) => last_error = Some(e),
+            }
+        }
+        if let Some(path) = &niri_path
+            && let Ok(niri_binds) = load(path, &mut read_file)
+        {
+            for b in niri_binds {
+                if !all_binds.iter().any(|existing| existing.keys == b.keys) {
+                    all_binds.push(b);
+                }
+            }
+        }
+    } else {
+        if let Some(path) = &niri_path {
+            match load(path, &mut read_file) {
+                Ok(b) => all_binds.extend(b),
+                Err(e) => last_error = Some(e),
+            }
+        }
+        if let Some(path) = &umbriel_path
+            && let Ok(umbriel_binds) = load_umbriel(path, &mut read_file)
+        {
+            for b in umbriel_binds {
+                if !all_binds.iter().any(|existing| existing.keys == b.keys) {
+                    all_binds.push(b);
+                }
+            }
+        }
+    }
+
+    let result = if all_binds.is_empty()
+        && let Some(err) = last_error
+    {
+        Err(err)
+    } else {
+        Ok(all_binds)
+    };
+
+    let binds = Arc::new(result);
     *read = Some((files, binds.clone()));
 
     binds
@@ -147,6 +219,219 @@ pub fn load(
             ..bind
         })
         .collect())
+}
+
+// parses keybindings from Umbriel's config.toml
+pub fn load_umbriel(
+    path: &Path,
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+) -> Result<Vec<Bind>, Unread> {
+    let mut found = Vec::new();
+    let mut walking = Vec::new();
+    walk_umbriel(path, false, &mut walking, read, &mut found)?;
+
+    let modifier = String::from("Super");
+
+    let mut seen = std::collections::HashSet::new();
+    let mut resolved_binds = Vec::new();
+    for bind in found.into_iter().rev() {
+        let key_sig = same(&bind.keys.join("+"));
+        if seen.insert(key_sig) {
+            resolved_binds.push(Bind {
+                keys: resolved(&bind.keys, &modifier),
+                ..bind
+            });
+        }
+    }
+    resolved_binds.reverse();
+    Ok(resolved_binds)
+}
+
+fn walk_umbriel(
+    path: &Path,
+    optional: bool,
+    walking: &mut Vec<PathBuf>,
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+    found: &mut Vec<Bind>,
+) -> Result<(), Unread> {
+    let unread = |why: String| Unread {
+        file: path.to_owned(),
+        why,
+    };
+
+    let here: PathBuf = path.components().collect();
+    if walking.contains(&here) {
+        return Err(unread(String::from("includes itself")));
+    }
+    if walking.len() > DEEPEST {
+        return Err(unread(String::from("includes too deeply")));
+    }
+
+    let text = match read(path) {
+        Ok(text) => text,
+        Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(unread(String::from("not found")));
+        }
+        Err(error) => return Err(unread(error.to_string())),
+    };
+
+    let doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| unread(e.to_string()))?;
+
+    // Parse [keybinds] table
+    if let Some(keybinds) = doc.get("keybinds").and_then(|k| k.as_table_like()) {
+        for (combo, item) in keybinds.iter() {
+            if let Some(bind) = parse_umbriel_bind(combo, item) {
+                found.push(bind);
+            }
+        }
+    }
+
+    // Follow includes: include.files and include.optional.files
+    let mut includes = Vec::new();
+
+    if let Some(inc) = doc.get("include") {
+        if let Some(files) = inc.get("files").and_then(|f| f.as_array()) {
+            for val in files {
+                if let Some(file_str) = val.as_str() {
+                    includes.push((file_str.to_owned(), false));
+                }
+            }
+        }
+        if let Some(opt) = inc.get("optional")
+            && let Some(files) = opt.get("files").and_then(|f| f.as_array())
+        {
+            for val in files {
+                if let Some(file_str) = val.as_str() {
+                    includes.push((file_str.to_owned(), true));
+                }
+            }
+        }
+    }
+
+    for (file, opt) in includes {
+        let beside_path = beside(path, &file);
+        walking.push(here.clone());
+        let res = walk_umbriel(&beside_path, opt, walking, read, found);
+        walking.pop();
+        res?;
+    }
+
+    Ok(())
+}
+
+fn parse_umbriel_bind(combo: &str, item: &toml_edit::Item) -> Option<Bind> {
+    let (action_str, explicit_title) = match item {
+        toml_edit::Item::Value(toml_edit::Value::String(s)) => (s.value().to_owned(), None),
+        toml_edit::Item::Table(t) => {
+            let act = t.get("action")?.as_str()?.to_owned();
+            let title = t
+                .get("hotkey-overlay-title")
+                .or_else(|| t.get("hotkey_overlay_title"))
+                .or_else(|| t.get("title"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            (act, title)
+        }
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(it)) => {
+            let act = it.get("action")?.as_str()?.to_owned();
+            let title = it
+                .get("hotkey-overlay-title")
+                .or_else(|| it.get("hotkey_overlay_title"))
+                .or_else(|| it.get("title"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            (act, title)
+        }
+        _ => return None,
+    };
+
+    let (group, readable) = umbriel_readable(&action_str);
+    let title = explicit_title.unwrap_or(readable);
+
+    Some(Bind {
+        keys: keys(combo),
+        title,
+        group,
+    })
+}
+
+fn umbriel_readable(action: &str) -> (Group, String) {
+    let action = action.trim();
+    let spawn_cmd = if let Some(cmd) = action.strip_prefix("spawn:") {
+        Some(cmd.trim())
+    } else if let Some(cmd) = action.strip_prefix("spawn") {
+        if cmd.starts_with(char::is_whitespace) {
+            Some(cmd.trim())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(cmd) = spawn_cmd {
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        if let Some(&first) = words.first() {
+            let program = Path::new(first)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            if program == "kanade" && words.len() > 1 {
+                return (Group::Kanade, sentence(&words[1..].join(" ")));
+            }
+
+            let rest = words[1..].join(" ");
+            return (
+                Group::Other,
+                format!(
+                    "Run {program}{}{rest}",
+                    if rest.is_empty() { "" } else { " " }
+                ),
+            );
+        }
+    }
+
+    let (name, arg) = match action.split_once(':') {
+        Some((n, a)) => (n, Some(a)),
+        None => (action, None),
+    };
+
+    let group = if name.starts_with("screenshot") {
+        Group::Other
+    } else if name.contains("workspace") {
+        Group::Workspaces
+    } else if [
+        "window",
+        "column",
+        "scratchpad",
+        "layout",
+        "floating",
+        "fullscreen",
+        "maximize",
+        "consume",
+        "expel",
+    ]
+    .iter()
+    .any(|w| name.contains(w))
+    {
+        Group::Windows
+    } else {
+        Group::Other
+    };
+
+    let mut words = name.replace('-', " ");
+    if let Some(arg) = arg
+        && !arg.is_empty()
+    {
+        words.push(' ');
+        words.push_str(arg);
+    }
+
+    (group, sentence(&words))
 }
 
 // what the walk gathers from the files
@@ -1098,5 +1383,164 @@ mod tests {
         assert!(keys.iter().any(|(place, _)| place == "Any Surface"));
         assert!(keys.iter().any(|(place, _)| place == "Keys"));
         assert!(keys.iter().all(|(_, keys)| !keys.contains('`')));
+    }
+
+    #[test]
+    fn umbriel_binds_parsed_and_grouped() {
+        let config = files(&[(
+            "/c/config.toml",
+            r#"
+            [keybinds]
+            "Mod+Return" = "spawn kitty"
+            "Mod+Shift+Return" = "spawn:foot"
+            "Mod+Shift+C" = "window-close"
+            "Mod+V" = { action = "spawn kanade clipboard toggle", hotkey-overlay-title = "Island: Clipboard" }
+            "Mod+1" = "workspace:1"
+            "Mod+comma" = "spawn kanade settings open"
+            "Mod+L" = "spawn:kanade lock"
+            "Mod+Shift+S" = "screenshot"
+            "#,
+        )]);
+
+        let binds = load_umbriel(Path::new("/c/config.toml"), &mut |file| {
+            config
+                .get(file)
+                .cloned()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        })
+        .unwrap();
+
+        assert_eq!(
+            titles(&binds),
+            [
+                "Run kitty",
+                "Run foot",
+                "Window close",
+                "Island: Clipboard",
+                "Workspace 1",
+                "Settings open",
+                "Lock",
+                "Screenshot",
+            ]
+        );
+
+        assert_eq!(
+            binds.iter().map(|b| b.group).collect::<Vec<_>>(),
+            [
+                Group::Other,
+                Group::Other,
+                Group::Windows,
+                Group::Kanade,
+                Group::Workspaces,
+                Group::Kanade,
+                Group::Kanade,
+                Group::Other,
+            ]
+        );
+
+        assert_eq!(binds[0].keys, ["Super", "Enter"]);
+        assert_eq!(binds[2].keys, ["Super", "Shift", "C"]);
+        assert_eq!(binds[5].keys, ["Super", "Comma"]);
+        assert_eq!(binds[6].keys, ["Super", "L"]);
+    }
+
+    #[test]
+    fn umbriel_includes_and_cycles() {
+        let config = files(&[
+            (
+                "/c/config.toml",
+                r#"
+                [include]
+                files = ["extra.toml"]
+
+                [include.optional]
+                files = ["absent.toml"]
+
+                [keybinds]
+                "Mod+Q" = "window-close"
+                "#,
+            ),
+            (
+                "/c/extra.toml",
+                r#"
+                [keybinds]
+                "Mod+T" = "spawn:foot"
+                "#,
+            ),
+        ]);
+
+        let binds = load_umbriel(Path::new("/c/config.toml"), &mut |file| {
+            config
+                .get(file)
+                .cloned()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        })
+        .unwrap();
+
+        assert_eq!(titles(&binds), ["Window close", "Run foot"]);
+
+        // Test cycle detection
+        let looped = files(&[(
+            "/c/config.toml",
+            r#"
+            [include]
+            files = ["config.toml"]
+            "#,
+        )]);
+
+        let unread = load_umbriel(Path::new("/c/config.toml"), &mut |file| {
+            looped
+                .get(file)
+                .cloned()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+
+        assert_eq!(unread.file, PathBuf::from("/c/config.toml"));
+        assert_eq!(unread.why, "includes itself");
+    }
+
+    #[test]
+    fn default_dist_umbriel_config_parses_binds() {
+        let content = fs::read_to_string("dist/umbriel/config.toml").unwrap();
+        let config = files(&[("/c/config.toml", &content)]);
+        let binds = load_umbriel(Path::new("/c/config.toml"), &mut |file| {
+            config
+                .get(file)
+                .cloned()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        })
+        .unwrap();
+        assert!(!binds.is_empty());
+        assert!(
+            binds
+                .iter()
+                .any(|b| b.title == "Settings open" && b.group == Group::Kanade)
+        );
+        assert!(
+            binds
+                .iter()
+                .any(|b| b.title == "Launcher toggle" && b.group == Group::Kanade)
+        );
+        assert!(
+            binds
+                .iter()
+                .any(|b| b.title == "Lock" && b.group == Group::Kanade)
+        );
+        assert!(
+            binds
+                .iter()
+                .any(|b| b.title == "Run kitty" && b.group == Group::Other)
+        );
+        assert!(
+            binds
+                .iter()
+                .any(|b| b.title == "Window close" && b.group == Group::Windows)
+        );
+        assert!(
+            binds
+                .iter()
+                .any(|b| b.title == "Overview toggle" && b.group == Group::Other)
+        );
     }
 }

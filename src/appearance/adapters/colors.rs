@@ -25,6 +25,7 @@ const QT: &str = include_str!("templates/qtct.conf");
 const KDE: &str = include_str!("templates/kde.colors");
 const NIRI: &str = include_str!("templates/niri.kdl");
 const KITTY: &str = include_str!("templates/kitty.conf");
+const UMBRIEL: &str = include_str!("templates/umbriel.toml");
 // the lines that include Kanade's files, last in the user's config so their colors win
 const NIRI_INCLUDE: &str = "include optional=true \"kanade.kdl\" // Kanade appearance sync";
 const KITTY_INCLUDE: &str = "include kanade.conf";
@@ -206,6 +207,181 @@ pub(super) fn restore_niri() -> io::Result<()> {
         }
     }
     remove_generated(&root.join("kanade.kdl")).map(drop)
+}
+
+// Umbriel's colors and borders through a file config.toml includes via include.optional
+pub(super) fn apply_umbriel(scheme: &Scheme, tone: Tone) -> io::Result<()> {
+    apply_umbriel_to(&config_home().join("umbriel"), scheme, tone)
+}
+
+pub(super) fn apply_umbriel_to(root: &Path, scheme: &Scheme, tone: Tone) -> io::Result<()> {
+    let config = root.join("config.toml");
+    let Some(text) = read_regular(&config)? else {
+        return Ok(());
+    };
+    write_generated(
+        &root.join("kanade.toml"),
+        &render(UMBRIEL, scheme.roles(tone))?,
+    )?;
+    let updated = umbriel_include(&text, true);
+    if updated != text {
+        atomic_write(&config, updated.as_bytes())?;
+    }
+    Ok(())
+}
+
+pub(super) fn restore_umbriel() -> io::Result<()> {
+    restore_umbriel_from(&config_home().join("umbriel"))
+}
+
+pub(super) fn restore_umbriel_from(root: &Path) -> io::Result<()> {
+    let config = root.join("config.toml");
+    if let Some(text) = read_regular(&config)? {
+        let updated = umbriel_include(&text, false);
+        if updated != text {
+            atomic_write(&config, updated.as_bytes())?;
+        }
+    }
+    remove_generated(&root.join("kanade.toml")).map(drop)
+}
+
+// safely injects or removes include.optional.files = ["kanade.toml"]
+pub(super) fn umbriel_include(text: &str, present: bool) -> String {
+    use toml_edit::{Array, DocumentMut, Item, Table, Value};
+
+    let Ok(mut doc) = text.parse::<DocumentMut>() else {
+        return text.to_owned();
+    };
+
+    let kanade_entry = "kanade.toml";
+
+    if present {
+        // If include.optional.files already contains "kanade.toml", nothing to do
+        if let Some(files) = doc
+            .get("include")
+            .and_then(|i| i.get("optional"))
+            .and_then(|o| o.get("files"))
+            .and_then(|f| f.as_array())
+            && files.iter().any(|v| v.as_str() == Some(kanade_entry))
+        {
+            return text.to_owned();
+        }
+
+        // If include.optional table exists, add "kanade.toml" to its files array
+        if let Some(include_item) = doc.get_mut("include") {
+            if let Some(opt_item) = include_item.get_mut("optional") {
+                if let Some(files_item) = opt_item.get_mut("files") {
+                    if let Some(arr) = files_item.as_array_mut() {
+                        arr.push(kanade_entry);
+                        return doc.to_string();
+                    }
+                } else if let Some(opt_table) = opt_item.as_table_mut() {
+                    let mut arr = Array::new();
+                    arr.push(kanade_entry);
+                    opt_table.insert("files", Item::Value(Value::Array(arr)));
+                    return doc.to_string();
+                }
+            } else if let Some(include_table) = include_item.as_table_mut() {
+                let mut opt_table = Table::new();
+                let mut arr = Array::new();
+                arr.push(kanade_entry);
+                opt_table.insert("files", Item::Value(Value::Array(arr)));
+                include_table.insert("optional", Item::Table(opt_table));
+                return doc.to_string();
+            }
+        }
+
+        // Otherwise, cleanly append [include.optional]\nfiles = ["kanade.toml"]
+        let mut updated = text.to_string();
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        if !updated.is_empty() && !updated.ends_with("\n\n") {
+            updated.push('\n');
+        }
+        updated.push_str("[include.optional]\nfiles = [\"kanade.toml\"]\n");
+        updated
+    } else {
+        // Restore: remove "kanade.toml"
+        let appended_block = "\n[include.optional]\nfiles = [\"kanade.toml\"]\n";
+        if let Some(idx) = text.rfind(appended_block) {
+            let before = &text[..idx];
+            let after = &text[idx + appended_block.len()..];
+            if after.is_empty() {
+                let mut res = before.to_string();
+                if !res.is_empty() && !res.ends_with('\n') {
+                    res.push('\n');
+                }
+                return res;
+            }
+        }
+        let appended_block_bare = "[include.optional]\nfiles = [\"kanade.toml\"]\n";
+        if text.trim() == appended_block_bare.trim() {
+            return String::new();
+        }
+
+        let mut has_other_files = false;
+        let mut removed = false;
+
+        if let Some(include_item) = doc.get_mut("include")
+            && let Some(opt_item) = include_item.get_mut("optional")
+        {
+            if let Some(files_item) = opt_item.get_mut("files")
+                && let Some(arr) = files_item.as_array_mut()
+            {
+                let mut i = 0;
+                while i < arr.len() {
+                    if arr.get(i).and_then(|v| v.as_str()) == Some(kanade_entry) {
+                        arr.remove(i);
+                        removed = true;
+                    } else {
+                        i += 1;
+                    }
+                }
+                has_other_files = !arr.is_empty();
+            }
+            if !has_other_files
+                && removed
+                && let Some(opt_table) = opt_item.as_table_mut()
+            {
+                opt_table.remove("files");
+                if opt_table.is_empty()
+                    && let Some(include_table) = include_item.as_table_mut()
+                {
+                    include_table.remove("optional");
+                    if include_table.is_empty() {
+                        doc.remove("include");
+                    }
+                }
+            }
+        }
+
+        if removed {
+            doc.to_string()
+        } else {
+            let mut kept_lines: Vec<String> = Vec::new();
+            let mut skipped = false;
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed == "include.optional.files = [\"kanade.toml\"]"
+                    || trimmed == "files = [\"kanade.toml\"]"
+                {
+                    skipped = true;
+                    continue;
+                }
+                kept_lines.push(line.to_string());
+            }
+            if skipped {
+                let mut res = kept_lines.join("\n");
+                if !res.is_empty() {
+                    res.push('\n');
+                }
+                res
+            } else {
+                text.to_owned()
+            }
+        }
+    }
 }
 
 // kitty's colors through a file kitty.conf includes, then each running kitty told to reload
@@ -640,7 +816,7 @@ mod tests {
                 .map(|role| (role, String::from("#654321"))),
         )
         .collect();
-        for template in [GTK, QT, KDE, NIRI] {
+        for template in [GTK, QT, KDE, NIRI, UMBRIEL] {
             let rendered = render(template, &roles).unwrap();
             assert!(generated(&rendered));
             assert!(!rendered.contains("{{"));
@@ -656,5 +832,87 @@ mod tests {
             assert!(!rendered.contains("{{"));
         }
         assert!(render("{{missing}}", &roles).is_err());
+    }
+
+    #[test]
+    fn umbriel_include_injects_and_restores_cleanly() {
+        let base = "[general]\nautostart = [\"kanade\"]\n";
+        let injected = umbriel_include(base, true);
+        assert!(injected.contains("[include.optional]"));
+        assert!(injected.contains("files = [\"kanade.toml\"]"));
+
+        // Injecting again is idempotent
+        assert_eq!(umbriel_include(&injected, true), injected);
+
+        // Restoring removes the injected include cleanly
+        let restored = umbriel_include(&injected, false);
+        assert_eq!(restored.trim(), base.trim());
+
+        // Array with existing files
+        let with_user = "[include.optional]\nfiles = [\"user.toml\"]\n";
+        let user_injected = umbriel_include(with_user, true);
+        assert!(user_injected.contains("\"user.toml\""));
+        assert!(user_injected.contains("\"kanade.toml\""));
+        let user_restored = umbriel_include(&user_injected, false);
+        assert!(user_restored.contains("\"user.toml\""));
+        assert!(!user_restored.contains("\"kanade.toml\""));
+    }
+
+    #[test]
+    fn umbriel_appearance_apply_and_restore_cycle() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kanade-test-umbriel-appearance-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let config_path = temp_dir.join("config.toml");
+        let kanade_path = temp_dir.join("kanade.toml");
+        fs::write(&config_path, "[general]\nautostart = [\"kanade\"]\n").unwrap();
+
+        let roles: BTreeMap<String, String> = [
+            "surface_container",
+            "surface_container_highest",
+            "surface_variant",
+            "surface",
+            "on_surface",
+            "on_surface_variant",
+            "on_primary",
+            "on_error",
+            "primary",
+            "secondary",
+            "tertiary",
+            "error",
+            "outline_variant",
+        ]
+        .into_iter()
+        .map(|r| (r.to_string(), "#123456".to_string()))
+        .collect();
+
+        let scheme = Scheme {
+            wallpaper: PathBuf::new(),
+            dark: roles.clone(),
+            light: roles,
+        };
+
+        // Apply
+        apply_umbriel_to(&temp_dir, &scheme, Tone::Dark).unwrap();
+        assert!(kanade_path.is_file());
+        let kanade_content = fs::read_to_string(&kanade_path).unwrap();
+        assert!(kanade_content.contains(HEADER));
+        assert!(kanade_content.contains("[colors]"));
+        assert!(kanade_content.contains("[colors.border]"));
+
+        let updated_config = fs::read_to_string(&config_path).unwrap();
+        assert!(updated_config.contains("kanade.toml"));
+
+        // Restore
+        restore_umbriel_from(&temp_dir).unwrap();
+        assert!(!kanade_path.exists());
+        let restored_config = fs::read_to_string(&config_path).unwrap();
+        assert!(!restored_config.contains("kanade.toml"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

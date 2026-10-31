@@ -1367,6 +1367,7 @@ dependencies = [
  "simd-adler32",
  "syn 2.0.119",
  "toml",
+ "toml_edit",
  "ureq",
  "wayland-client",
  "zbus",
@@ -3306,6 +3307,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

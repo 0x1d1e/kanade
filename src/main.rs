@@ -39,6 +39,7 @@ mod surfaces;
 mod theme;
 mod tiles;
 mod ui;
+mod umbriel_config;
 mod update;
 mod view;
 

@@ -27,6 +27,22 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 const USAGE: &str = "usage: kanade-install --script PATH [--shell-only] [--no-niri] [--niri] [--sddm] [--sddm-greeter keep|niri] [--optional]";
 
+/// Default Umbriel configuration tailored for Kanade.
+pub const UMBRIEL_DEFAULT_CONFIG: &str = include_str!("../../../dist/umbriel/config.toml");
+
+/// Installs the default Umbriel configuration to `dest` if it does not already exist.
+/// Returns `Ok(true)` if installed, `Ok(false)` if already present.
+pub fn install_umbriel_config_if_missing(dest: &Path) -> io::Result<bool> {
+    if std::fs::symlink_metadata(dest).is_ok() {
+        return Ok(false);
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(dest, UMBRIEL_DEFAULT_CONFIG)?;
+    Ok(true)
+}
+
 /// Same sentence as `scripts/install`.
 const NO_PACMAN: &str = "failed to find pacman, Kanade installs on Arch Linux and derivatives only";
 
@@ -989,6 +1005,19 @@ fn scan() -> Scan {
         lines.push(format!("niri config: {} missing", config.display()));
     }
 
+    let umbriel_config = config_home().join("umbriel/config.toml");
+    if umbriel_config.exists() {
+        lines.push(format!(
+            "umbriel config: {} exists",
+            umbriel_config.display()
+        ));
+    } else {
+        lines.push(format!(
+            "umbriel config: {} missing",
+            umbriel_config.display()
+        ));
+    }
+
     if cargo_bin_on_path() {
         lines.push("~/.cargo/bin: on PATH".to_string());
     } else {
@@ -1458,5 +1487,29 @@ mod tests {
         assert!(niri_on(true, true, true, false));
         assert!(niri_on(true, true, false, true));
         assert!(!niri_on(false, true, false, false));
+    }
+
+    #[test]
+    fn installs_umbriel_config_only_when_missing() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kanade-test-umbriel-install-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let dest = temp_dir.join("umbriel/config.toml");
+
+        // First install: missing -> writes file and returns true
+        let installed = super::install_umbriel_config_if_missing(&dest).unwrap();
+        assert!(installed);
+        assert!(dest.is_file());
+        let content = std::fs::read_to_string(&dest).unwrap();
+        assert!(content.contains("[general]"));
+        assert!(content.contains("autostart = [\"kanade\"]"));
+
+        // Second install: already exists -> returns false and leaves content untouched
+        let reinstalled = super::install_umbriel_config_if_missing(&dest).unwrap();
+        assert!(!reinstalled);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

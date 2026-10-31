@@ -34,6 +34,7 @@ use super::niri;
 use super::outputs;
 use super::place;
 use super::ring::{self, Stop};
+use super::umbriel;
 use super::{
     FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change as super_change,
     change_all as super_change_all, font_search, hover, input, inspect, module_filter, path,
@@ -76,6 +77,7 @@ pub(super) fn hover_container(roles: &ThemeRoles) -> Color {
 mod niri_page;
 mod outputs_page;
 mod place_page;
+mod umbriel_page;
 
 const WIDTH: f32 = 920.0;
 const HEIGHT: f32 = 640.0;
@@ -168,6 +170,7 @@ pub fn window() -> Window {
 
     // the niri page's inputs hold what the worker last read
     niri::sync_inputs(&settings.niri);
+    umbriel::sync_inputs(&settings.umbriel);
     outputs::sync_inputs(&settings.outputs);
     place::sync_inputs(&settings);
 
@@ -560,9 +563,13 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     // reload after any edit, which says nothing of a setting changed from a result
     let niri_page = (!settings.searching() && settings.page == niri::PAGE)
         || (settings.searching() && ring::on_niri_setting());
+    let umbriel_page = (!settings.searching() && settings.page == umbriel::PAGE)
+        || (settings.searching() && ring::on_umbriel_setting());
     let waiting = settings.pending.len();
     let (status, ink) = if niri_page {
         niri_page::status(settings, roles)
+    } else if umbriel_page {
+        umbriel_page::status(settings, roles)
     } else if let Some(refused) = &settings.refused {
         (refused.clone(), theme::window_signals().warning)
     } else if settings.unreadable.is_some()
@@ -598,13 +605,22 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
 
     let mut actions: Vec<Box<dyn Widget>> = Vec::new();
     // a change not saved leaves no Undo in its place: Discard and Save take the footer
-    let staged = niri_page && settings.niri.has_staged();
+    let staged = (niri_page && settings.niri.has_staged())
+        || (umbriel_page && settings.umbriel.has_staged());
     let undoable = if niri_page {
         settings.niri.undoable && !staged
+    } else if umbriel_page {
+        settings.umbriel.undoable && !staged
     } else {
         !settings.history.is_empty()
     };
-    let undo: fn() = if niri_page { niri::undo } else { undo };
+    let undo: fn() = if niri_page {
+        niri::undo
+    } else if umbriel_page {
+        umbriel::undo
+    } else {
+        undo
+    };
     if niri_page {
         actions.extend(outputs_page::actions(settings, roles));
         if staged {
@@ -629,6 +645,27 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
                 niri::save,
             ));
         }
+    } else if umbriel_page && staged {
+        let enabled = !settings.umbriel.is_saving();
+
+        actions.push(pill(
+            "discard",
+            "Discard",
+            false,
+            enabled,
+            settings,
+            roles,
+            umbriel::discard,
+        ));
+        actions.push(pill(
+            "save",
+            "Save",
+            true,
+            enabled,
+            settings,
+            roles,
+            umbriel::save,
+        ));
     }
     if undoable {
         let hovered = settings.is_hovered("undo");
@@ -724,6 +761,8 @@ fn page_body(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Co
     ];
     if page.name == niri::PAGE {
         items.extend(niri_page::notices(settings));
+    } else if page.name == umbriel::PAGE {
+        items.extend(umbriel_page::notices(settings));
     } else {
         items.extend(notices(settings));
     }
@@ -765,6 +804,14 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
         .any(|row| matches!(row, Line::Niri(_) | Line::NiriRule(_)) && matches(row, &query))
     {
         items.extend(niri_page::notices(settings));
+    }
+    if PAGES
+        .iter()
+        .flat_map(|page| page.sections)
+        .flat_map(|section| section.rows)
+        .any(|row| matches!(row, Line::Umbriel(_) | Line::UmbrielRule(_)) && matches(row, &query))
+    {
+        items.extend(umbriel_page::notices(settings));
     }
 
     let mut found = false;
@@ -814,6 +861,14 @@ fn matches(row: &Line, query: &str) -> bool {
 
     if let Line::NiriRule(id) = row {
         return niri_page::mentions_rule(id, query);
+    }
+
+    if let Line::Umbriel(path) = row {
+        return umbriel_page::mentions(path, query);
+    }
+
+    if let Line::UmbrielRule(id) = row {
+        return umbriel_page::mentions_rule(id, query);
     }
 
     if let Line::Place = row {
@@ -1055,6 +1110,8 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
         Line::Niri(path) => niri_page::row(path, settings, roles),
         Line::Outputs => Box::new(outputs_page::section(settings, roles)),
         Line::NiriRule(id) => niri_page::rule_row(id, settings, roles),
+        Line::Umbriel(path) => umbriel_page::row(path, settings, roles),
+        Line::UmbrielRule(id) => umbriel_page::rule_row(id, settings, roles),
         Line::Position { edge, align } => {
             let edge = setting(edge).expect("the layout's keys are the schema's");
             let align = setting(align).expect("the layout's keys are the schema's");

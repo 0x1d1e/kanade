@@ -238,8 +238,8 @@ pub fn lock_shade(light: Option<f32>, dimmed: bool) -> Color {
     Color::rgba(0, 0, 0, (least.max(needed) * 255.0).round() as u8)
 }
 
-// the family drawn when `appearance.font` is unset: vendored, so it does not need to be installed
-pub const FONT: &str = "Open Sauce One";
+// the family drawn when `appearance.font` is unset: defaults to JetBrainsMono Nerd Font
+pub const FONT: &str = "JetBrainsMono Nerd Font";
 
 /*
  * the family the shell's text is set in: `appearance.font`, else Open Sauce One. A set family still

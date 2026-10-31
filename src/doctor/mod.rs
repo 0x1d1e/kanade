@@ -25,7 +25,8 @@ use crate::modules::{self, Module, Provider};
 use crate::sddm;
 use crate::sources::json::Json;
 use crate::sources::{
-    binds, bus, cava, keys, niri, pipewire, radios, recording, sound, wake, wallpaper,
+    binds, bus, cava, keys, niri, pipewire, radios, recording, sound, umbriel as umbriel_source,
+    wake, wallpaper,
 };
 
 // the oldest niri Kanade follows (docs/archived/design.md Constraints)
@@ -133,6 +134,7 @@ fn gather(shell: Check, pid: Option<u32>) -> Vec<Check> {
     ];
 
     checks.extend(niri());
+    checks.extend(umbriel());
 
     let blur = config.appearance.finish == Finish::Blur;
 
@@ -310,6 +312,70 @@ fn unit_check(shell: Option<u32>, state: &Unit) -> Check {
             "unit {unit}: {load}, see docs/wiki/Installation.md to install it: {unrestarted}"
         )),
     }
+}
+
+fn umbriel() -> Vec<Check> {
+    let binary = match Command::new("umbriel").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            if version.is_empty() {
+                Check::warn(String::from("umbriel: version command returned no output"))
+            } else {
+                Check::ok(version.to_string())
+            }
+        }
+        Ok(output) => Check::warn(format!("umbriel: --version exited with {}", output.status)),
+        Err(error) => Check::warn(format!("umbriel: not available ({error})")),
+    };
+
+    let socket = match umbriel_source::socket_path() {
+        Some(path) => Check::ok(format!("umbriel socket: {}", path.display())),
+        None => Check::warn(String::from("umbriel socket: not found")),
+    };
+
+    let config_path = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(".config")
+        })
+        .join("umbriel/config.toml");
+    let config_check = match fs::read_to_string(&config_path) {
+        Ok(_text) => {
+            let validation = Command::new("umbriel")
+                .args(["config", "validate", "-c"])
+                .arg(&config_path)
+                .output();
+            match validation {
+                Ok(output) if output.status.success() => Check::ok(format!(
+                    "umbriel config: {} validates",
+                    config_path.display()
+                )),
+                Ok(output) => Check::warn(format!(
+                    "umbriel config: validation failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )),
+                Err(error) => Check::warn(format!("umbriel config: cannot validate ({error})")),
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Check::warn(format!(
+            "umbriel config: {} not found",
+            config_path.display()
+        )),
+        Err(error) => Check::warn(format!("umbriel config: {error}")),
+    };
+
+    let rules = match fs::read_to_string(&config_path) {
+        Ok(text) if crate::umbriel_config::rules::is_rule_active(&text, "blur-kanade") => {
+            Check::ok(String::from("umbriel layer rule: blur-kanade active"))
+        }
+        Ok(_) => Check::warn(String::from("umbriel layer rule: blur-kanade not active")),
+        Err(_) => Check::warn(String::from("umbriel layer rule: config unavailable")),
+    };
+
+    vec![binary, socket, config_check, rules]
 }
 
 fn niri() -> Vec<Check> {

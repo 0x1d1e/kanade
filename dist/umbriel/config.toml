@@ -1,0 +1,61 @@
+# Kanade default Umbriel config, installed by scripts/install only when ~/.config/umbriel/config.toml is missing
+
+[general]
+autostart = ["kanade"]
+attach_modal_dialogs = true
+xwayland = true
+
+[appearance]
+corner_radius = 10
+border_width = 2
+
+[appearance.title_bar]
+font = "JetBrainsMono Nerd Font"
+
+[appearance.tab_bar]
+font = "JetBrainsMono Nerd Font"
+
+[appearance.blur]
+radius = 5
+passes = 2
+optimized = true
+
+[layout]
+mode = "scrolling"
+gap = 8
+extent_presets = [0.333, 0.5, 0.667]
+
+[layout.scrolling]
+default_extent_fraction = 0.5
+
+[input.cursor]
+theme = "Bibata-Modern-Classic"
+size = 24
+
+[[layer_rule]]
+match.namespace = "^kanade(-dock|-banners)?$"
+blur = true
+blur_optimized = false
+blur_ignore_alpha = 0.5
+blur_popups = true
+
+[keybinds]
+"Mod+comma" = "spawn kanade settings open"
+"Mod+Space" = "spawn kanade launcher toggle"
+"Mod+L" = "spawn kanade lock"
+"Mod+Return" = "spawn kitty"
+"Mod+Q" = "window-close"
+"Mod+Tab" = "overview-toggle"
+"XF86AudioRaiseVolume" = "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02+ -l 1.0"
+"XF86AudioLowerVolume" = "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02-"
+"XF86AudioMute" = "spawn wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+"XF86AudioMicMute" = "spawn wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"
+"XF86AudioPlay" = "spawn playerctl play-pause"
+"XF86AudioStop" = "spawn playerctl stop"
+"XF86AudioPrev" = "spawn playerctl previous"
+"XF86AudioNext" = "spawn playerctl next"
+"XF86MonBrightnessUp" = "spawn brightnessctl --class=backlight set +5%"
+"XF86MonBrightnessDown" = "spawn brightnessctl --class=backlight set 5%-"
+
+[include.optional]
+files = ["kanade.toml"]

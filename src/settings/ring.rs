@@ -97,6 +97,22 @@ pub fn on_niri_setting() -> bool {
     })
 }
 
+// Whether the keyboard ring is on an umbriel setting, including while search results show it.
+pub fn on_umbriel_setting() -> bool {
+    AT.with_borrow(|at| {
+        at.as_deref().is_some_and(|id| {
+            [
+                "field settings umbriel ",
+                "switch umbriel ",
+                "choice umbriel ",
+                "reset umbriel ",
+            ]
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+        })
+    })
+}
+
 pub fn key(key: Key) {
     match key {
         Key::Tab => travel(1),

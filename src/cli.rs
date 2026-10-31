@@ -219,6 +219,25 @@ niri-config rules apply|remove <id>
   restore: <n> from `backups`, 1 the newest, or orig, the first bytes Kanade saw",
     ),
     (
+        "umbriel-config",
+        "Change single settings in Umbriel's config.toml, checked and backed up",
+        "umbriel-config validate|backups|undo
+umbriel-config get <path>
+umbriel-config set <path> <value>
+umbriel-config remove <path>
+umbriel-config restore <n>|orig
+umbriel-config rules
+umbriel-config rules apply|remove <id>
+  <path>: dotted key in Umbriel's config, like layout.gap, appearance.blur.radius, or keybinds.\"Mod+comma\"
+  <value>: true, false, a number or text; text as TOML value or plain string
+  rules: list recommended layer rules (blur-kanade, overview-wallpaper, screencast-banners) and status
+  rules apply|remove <id>: apply or remove a recommended layer rule by its id
+  --config <file>: right after umbriel-config, another file than Umbriel's own (UMBRIEL_CONFIG is read too)
+  set, remove: change the key in the file, ask Umbriel validation first, keep a backup
+  undo: puts back the last change while the file is as it left it
+  restore: <n> from `backups`, 1 the newest, or orig, the first bytes Kanade saw",
+    ),
+    (
         "update",
         "Replace the installed binary with the published one, without a shell",
         "update
@@ -497,6 +516,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
         ["config", "reset", key] => return keyed(keys::reset(key)),
         ["config", "validate", file] => return validated(file),
         ["niri-config", ref rest @ ..] => return niri_config(rest),
+        ["umbriel-config", ref rest @ ..] => return umbriel_config(rest),
         _ => {}
     }
 
@@ -711,6 +731,74 @@ fn niri_config(words: &[&str]) -> ExitCode {
     };
 
     keyed(said.map(|said| format!("{said}\n")))
+}
+
+// `umbriel-config`: Umbriel's own config file, changed in this process like `config`; 2 for words
+// that are no form of it
+fn umbriel_config(words: &[&str]) -> ExitCode {
+    let (explicit, words) = match words {
+        ["--config", file, rest @ ..] => (Some(std::path::Path::new(file)), rest),
+        words => (None, words),
+    };
+    let file = match crate::umbriel_config::target(explicit) {
+        Ok(file) => file,
+        Err(why) => return keyed(Err(why)),
+    };
+    let state = crate::umbriel_config::state();
+    let editor = crate::umbriel_config::Editor {
+        file,
+        state: state.clone().unwrap_or_default(),
+        validate: &crate::umbriel_config::validate_umbriel,
+        now_ms: crate::umbriel_config::now_ms,
+    };
+
+    let writes = matches!(
+        words,
+        ["set", ..]
+            | ["remove", ..]
+            | ["undo"]
+            | ["restore", ..]
+            | ["backups"]
+            | ["rules", "apply", ..]
+            | ["rules", "remove", ..]
+    );
+
+    if writes && let Err(why) = state {
+        return keyed(Err(why));
+    }
+
+    let said = match words {
+        ["validate"] => editor.check(),
+        ["get", path] => editor.get(path),
+        ["set", path, value] => editor.set(path, value),
+        ["remove", path] => editor.remove(path),
+        ["undo"] => editor.undo(),
+        ["backups"] => Ok(editor.backups()),
+        ["restore", which] => editor.restore(which),
+        ["rules"] => print_umbriel_rules(&editor),
+        ["rules", "apply", id] => editor.apply_rule(id),
+        ["rules", "remove", id] => editor.remove_rule(id),
+        _ => {
+            complain(&mistake(&["umbriel-config"], Style::of(&io::stderr())));
+            return ExitCode::from(2);
+        }
+    };
+
+    keyed(said.map(|said| format!("{said}\n")))
+}
+
+fn print_umbriel_rules(editor: &crate::umbriel_config::Editor) -> Result<String, String> {
+    let rules = editor.rules()?;
+    let mut lines = Vec::new();
+    lines.push(format!("{:<22} STATUS", "RULE"));
+    for rule in rules {
+        let status = match rule.status {
+            crate::umbriel_config::RuleStatus::Active => String::from("active"),
+            crate::umbriel_config::RuleStatus::Missing => String::from("missing"),
+        };
+        lines.push(format!("{:<22} {}", rule.id, status));
+    }
+    Ok(lines.join("\n"))
 }
 
 fn print_rules(editor: &crate::niri_config::Editor) -> Result<String, String> {

@@ -1,0 +1,42 @@
+# Kanade appearance sync: wallpaper colors through Matugen, rewritten on each change
+# included through include.optional.files in ~/.config/umbriel/config.toml
+
+[colors]
+background = "{{surface_container}}ff"
+text_primary = "{{on_surface}}ff"
+text_muted = "{{on_surface_variant}}ff"
+accent_primary = "{{primary}}ff"
+accent_secondary = "{{secondary}}ff"
+warning = "{{tertiary}}ff"
+error = "{{error}}ff"
+insert_hint = "{{primary}}80"
+backdrop = "{{surface_variant}}ff"
+
+[colors.border]
+focused = "{{primary}}ff"
+unfocused = "{{outline_variant}}ff"
+outer = "{{surface_container_highest}}ff"
+
+[colors.overview]
+background_tint = "{{surface}}88"
+badge = "{{primary}}ff"
+workspace_background = "{{surface}}ff"
+
+[colors.tab_bar]
+background = "{{surface_container}}ff"
+text = "{{on_surface_variant}}ff"
+active = "{{primary}}ff"
+active_text = "{{on_primary}}ff"
+active_unfocused = "{{surface_variant}}ff"
+active_unfocused_text = "{{on_surface}}ff"
+urgent = "{{error}}ff"
+urgent_text = "{{on_error}}ff"
+
+[colors.title_bar]
+background = "{{surface_container}}ff"
+background_unfocused = "{{surface}}ff"
+text = "{{on_surface}}ff"
+text_unfocused = "{{on_surface_variant}}ff"
+close = "{{error}}ff"
+maximize = "{{primary}}ff"
+minimize = "{{secondary}}ff"

@@ -52,6 +52,12 @@ pub enum Row {
     // a recommended layer rule from Installation.md
     NiriRule(&'static str),
 
+    // an option of Umbriel's own config (`umbriel`), by its path in `config.toml`; it has no key
+    Umbriel(&'static str),
+
+    // a recommended rule or preset for Umbriel
+    UmbrielRule(&'static str),
+
     // finds the Weather location from a place name or the IP address, and sets `weather.location`
     // and `weather.place` (ADR 0136); it has no key of its own, those two keep their own rows
     Place,
@@ -67,6 +73,8 @@ impl Row {
             | Row::Niri(_)
             | Row::Outputs
             | Row::NiriRule(_)
+            | Row::Umbriel(_)
+            | Row::UmbrielRule(_)
             | Row::Place => Vec::new(),
         }
     }
@@ -725,6 +733,77 @@ pub const PAGES: &[Page] = &[
             },
         ],
     },
+    Page {
+        name: "umbriel",
+        title: "Umbriel",
+        summary: "Edit Umbriel's own config.toml: its layout, appearance, blur, focus, keyboard, touchpad, mouse and cursor",
+        group: "Compositor",
+        icon: Icon::Columns,
+        sections: &[
+            Section {
+                title: "Layout",
+                rows: &[
+                    Row::Umbriel("layout.mode"),
+                    Row::Umbriel("layout.gap"),
+                    Row::Umbriel("layout.extent_presets"),
+                    Row::Umbriel("layout.scrolling.default_extent_fraction"),
+                ],
+            },
+            Section {
+                title: "Appearance & Blur",
+                rows: &[
+                    Row::Umbriel("appearance.border_width"),
+                    Row::Umbriel("appearance.outer_border_width"),
+                    Row::Umbriel("appearance.corner_radius"),
+                    Row::Umbriel("appearance.blur.enabled"),
+                    Row::Umbriel("appearance.blur.radius"),
+                    Row::Umbriel("appearance.blur.passes"),
+                    Row::Umbriel("appearance.shadow.enabled"),
+                ],
+            },
+            Section {
+                title: "Input & Focus",
+                rows: &[
+                    Row::Umbriel("input.middle_click_paste"),
+                    Row::Umbriel("input.client_window_drag"),
+                    Row::Umbriel("input.focus.follows_mouse"),
+                    Row::Umbriel("input.focus.hover_raises"),
+                ],
+            },
+            Section {
+                title: "Keyboard",
+                rows: &[
+                    Row::Umbriel("input.keyboard.layout"),
+                    Row::Umbriel("input.keyboard.repeat_delay"),
+                    Row::Umbriel("input.keyboard.repeat_rate"),
+                    Row::Umbriel("input.keyboard.numlock_toggle"),
+                ],
+            },
+            Section {
+                title: "Touchpad",
+                rows: &[
+                    Row::Umbriel("input.touchpad.tap"),
+                    Row::Umbriel("input.touchpad.natural_scroll"),
+                    Row::Umbriel("input.touchpad.disable_while_typing"),
+                ],
+            },
+            Section {
+                title: "Mouse & Cursor",
+                rows: &[
+                    Row::Umbriel("input.mouse.natural_scroll"),
+                    Row::Umbriel("input.cursor.theme"),
+                    Row::Umbriel("input.cursor.size"),
+                ],
+            },
+            Section {
+                title: "Recommended rules",
+                rows: &[
+                    Row::UmbrielRule("blur-kanade"),
+                    Row::UmbrielRule("overview-wallpaper"),
+                ],
+            },
+        ],
+    },
 ];
 
 // the page showing `key`
@@ -838,6 +917,50 @@ mod tests {
             assert_eq!(rules.iter().filter(|&rule| rule == id).count(), 1, "{id}");
         }
         assert_eq!(rules.len(), crate::niri_config::PRESETS.len());
+    }
+
+    #[test]
+    fn every_umbriel_row_is_an_option_listed_once() {
+        let rows: Vec<&str> = PAGES
+            .iter()
+            .flat_map(|page| page.sections)
+            .flat_map(|section| section.rows)
+            .filter_map(|row| match row {
+                Row::Umbriel(path) => Some(*path),
+                _ => None,
+            })
+            .collect();
+
+        for path in &rows {
+            assert!(
+                super::super::umbriel::item(path).is_some(),
+                "{path} is no option"
+            );
+            assert_eq!(rows.iter().filter(|&row| row == path).count(), 1, "{path}");
+        }
+        assert_eq!(rows.len(), super::super::umbriel::ITEMS.len());
+    }
+
+    #[test]
+    fn every_umbriel_rule_is_a_preset_listed_once() {
+        let rules: Vec<&str> = PAGES
+            .iter()
+            .flat_map(|page| page.sections)
+            .flat_map(|section| section.rows)
+            .filter_map(|row| match row {
+                Row::UmbrielRule(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+
+        for id in &rules {
+            assert!(
+                crate::umbriel_config::rules::preset(id).is_some(),
+                "{id} is no preset"
+            );
+            assert_eq!(rules.iter().filter(|&rule| rule == id).count(), 1, "{id}");
+        }
+        assert_eq!(rules.len(), crate::umbriel_config::rules::PRESETS.len());
     }
 
     #[test]
