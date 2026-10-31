@@ -167,12 +167,22 @@ impl Slider {
             return;
         }
 
-        *ASKED.locked() = Some(Asked {
+        let mut asked = ASKED.locked();
+        if let Some(asked) = asked.as_mut()
+            && asked.slider == self
+            && asked.percent == percent
+        {
+            asked.at = Instant::now();
+            return;
+        }
+
+        *asked = Some(Asked {
             slider: self,
             percent,
             at: Instant::now(),
             carry: 0.0,
         });
+        drop(asked);
 
         self.send(percent);
     }

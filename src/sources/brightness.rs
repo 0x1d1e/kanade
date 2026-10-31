@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kanade_runtime::service::Service;
-use kanade_runtime::worker;
+use kanade_runtime::worker::{self, Key};
 
 use crate::bus::{Argument, Bus};
 use crate::config::{self, Backend};
@@ -194,9 +194,11 @@ impl Brightness {
         write.quiet();
         drop(write);
 
-        worker::run(move || write_level(percent));
+        worker::run_latest(BACKLIGHT, move || write_level(percent));
     }
 }
+
+const BACKLIGHT: Key = Key("backlight");
 
 // the monitors found, with what is already known of those that were there
 fn screens(monitors: Vec<Monitor>, known: &[Screen]) -> Vec<Screen> {

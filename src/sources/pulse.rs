@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use kanade_runtime::service::Service;
-use kanade_runtime::worker;
+use kanade_runtime::worker::{self, Key};
 use libpulse_binding::callbacks::ListResult;
 use libpulse_binding::context::subscribe::InterestMaskSet;
 use libpulse_binding::context::{Context, FlagSet, State};
@@ -95,7 +95,7 @@ impl Audio {
 
     // anything above 100 is treated as 100
     pub fn set_volume(volume: u8) {
-        worker::run(move || set(Device::Output, volume.min(100)));
+        worker::run_latest(SPEAKER, move || set(Device::Output, volume.min(100)));
     }
 
     pub fn toggle_mute() {
@@ -104,13 +104,16 @@ impl Audio {
 
     // anything above 100 is treated as 100
     pub fn set_microphone_volume(volume: u8) {
-        worker::run(move || set(Device::Input, volume.min(100)));
+        worker::run_latest(MICROPHONE, move || set(Device::Input, volume.min(100)));
     }
 
     pub fn toggle_microphone_mute() {
         worker::run(|| toggle(Device::Input));
     }
 }
+
+const SPEAKER: Key = Key("pulse-speaker");
+const MICROPHONE: Key = Key("pulse-microphone");
 
 fn toggle(device: Device) {
     let level = read(device);
