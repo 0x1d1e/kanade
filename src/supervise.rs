@@ -8,8 +8,9 @@
 //! A source that returns is not restarted: some are done once their work is finished (`seed`), and
 //! one that ends because its bus went away must not spin. So a return is recorded like a panic,
 //! which `kanade status` shows, and the source that can go on after one runs its own loop with
-//! `crate::backoff` (as `battery`, `seat` and `wallpaper::watch` do). `niri` is one such: per ADR
-//! 0071 its stream is never reconnected, so a return there is final.
+//! `crate::backoff` (as `battery`, `seat` and `wallpaper::watch` do). `niri` is one such: after ADR
+//! 0071 it reconnects its stream in its own loop, so the supervised run stays alive across a lost
+//! stream and a return there is still final.
 //!
 //! A return is a fault only for a source meant to run for the session. One whose returning is its
 //! whole design, as `wallpaper::seed` filling an empty folder once, starts with `spawn_once` and

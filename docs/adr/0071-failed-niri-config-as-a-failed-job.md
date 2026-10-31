@@ -16,7 +16,7 @@ niri's EventStream sends `ConfigLoaded { failed }` on connecting, for the last l
 ## Consequences
 
 - With `live` off, a failed reload shows nothing.
-- The stream is not reconnected after a loss (a restart of niri), so a niri restarted onto a broken config shows nothing until Kanade restarts; with it, the failure on connecting shows once.
+- After a loss, Kanade reconnects to niri's stream with a bounded backoff, so a niri restarted onto a broken config shows the failure once when Kanade reconnects, as the new stream's `ConfigLoaded` reports the last load; with a stream that stays up, the failure on connecting shows once.
 - Each failed reload shows again; a repeat within the lifetime refreshes the same Activity.
 
 Files: `src/sources/niri.rs`, `src/sources/live.rs`, `src/modules/catalog.rs`.

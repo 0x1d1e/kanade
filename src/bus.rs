@@ -5,7 +5,9 @@
 //! a view shows the empty value.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
@@ -13,15 +15,126 @@ use zbus::message::Type;
 use zbus::zvariant::{ObjectPath, Structure, StructureBuilder, Value as Variant};
 use zbus::{MatchRule, Message};
 
-// one connection per bus, shared by every thread; tried once, so a bus started later needs a restart
-static SESSION: LazyLock<Option<Connection>> = LazyLock::new(|| Connection::session().ok());
-static SYSTEM: LazyLock<Option<Connection>> = LazyLock::new(|| Connection::system().ok());
+const RETRY_INITIAL: Duration = Duration::from_millis(250);
+const RETRY_MAX: Duration = Duration::from_secs(30);
+
+static SESSION: LazyLock<Manager> = LazyLock::new(|| Manager::new(Connection::session));
+static SYSTEM: LazyLock<Manager> = LazyLock::new(|| Manager::new(Connection::system));
+
+type Connector = fn() -> zbus::Result<Connection>;
+
+struct Manager {
+    connector: Connector,
+    state: Mutex<ManagerState>,
+}
+
+struct ManagerState {
+    connection: Option<Connection>,
+    generation: u64,
+    failures: u32,
+    retry_at: Option<Instant>,
+}
+
+impl Manager {
+    fn new(connector: Connector) -> Self {
+        Self {
+            connector,
+            state: Mutex::new(ManagerState {
+                connection: None,
+                generation: 0,
+                failures: 0,
+                retry_at: None,
+            }),
+        }
+    }
+
+    fn connection(&self) -> Option<(Connection, u64)> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(connection) = &state.connection {
+            if !connection.is_closed() {
+                return Some((connection.clone(), state.generation));
+            }
+            state.connection = None;
+            state.generation = state.generation.wrapping_add(1);
+            Self::schedule_retry(&mut state, Instant::now());
+        }
+        let now = Instant::now();
+        if state.retry_at.is_some_and(|at| now < at) {
+            return None;
+        }
+        match (self.connector)() {
+            Ok(connection) => {
+                state.generation = state.generation.wrapping_add(1);
+                state.connection = Some(connection.clone());
+                state.failures = 0;
+                state.retry_at = None;
+                Some((connection, state.generation))
+            }
+            Err(_) => {
+                Self::schedule_retry(&mut state, now);
+                None
+            }
+        }
+    }
+
+    fn schedule_retry(state: &mut ManagerState, now: Instant) {
+        state.failures = state.failures.saturating_add(1);
+        let shift = state.failures.saturating_sub(1).min(31);
+        let delay = RETRY_INITIAL.saturating_mul(1_u32 << shift).min(RETRY_MAX);
+        state.retry_at = Some(now + delay);
+    }
+
+    fn disconnected(&self, generation: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.generation == generation && state.connection.is_some() {
+            state.connection = None;
+            state.generation = state.generation.wrapping_add(1);
+            Self::schedule_retry(&mut state, Instant::now());
+        }
+    }
+
+    fn wait_for_retry(&self) {
+        let wait = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .retry_at
+                .map(|at| at.saturating_duration_since(Instant::now()))
+                .filter(|wait| !wait.is_zero())
+                .unwrap_or(RETRY_INITIAL)
+        };
+        thread::sleep(wait);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WhichBus {
+    Session,
+    System,
+}
+
+impl WhichBus {
+    fn manager(self) -> &'static Manager {
+        match self {
+            Self::Session => &SESSION,
+            Self::System => &SYSTEM,
+        }
+    }
+}
 
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
 #[derive(Clone, Copy)]
 pub struct Bus {
-    connection: Option<&'static Connection>,
+    which: WhichBus,
 }
 
 /// What a reply holds, every number as one kind, object paths and signatures as text.
@@ -61,6 +174,19 @@ pub enum Argument {
 
 /// A signal heard on the bus.
 #[derive(Debug, Clone, PartialEq)]
+pub enum SignalEvent {
+    Reconnected,
+    Signal(Signal),
+}
+
+/// A method subscription was attached on a connection, or a call arrived on it.
+pub enum MethodEvent {
+    Attached(Connection, u64),
+    Method(Method),
+}
+
+/// A signal heard on the bus.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Signal {
     // the unique name like :1.42, not a well-known one
     sender: String,
@@ -70,7 +196,7 @@ pub struct Signal {
 
 /// A call another program made to Kanade, waiting for its reply.
 pub struct Method {
-    connection: &'static Connection,
+    connection: Connection,
     message: Message,
     name: String,
     arguments: Vec<Value>,
@@ -82,15 +208,30 @@ impl Bus {
     /// The user's own programs: media players, notifications, the tray.
     pub fn session() -> Self {
         Self {
-            connection: SESSION.as_ref(),
+            which: WhichBus::Session,
         }
     }
 
     /// Programs every user shares: NetworkManager, UPower, logind.
     pub fn system() -> Self {
         Self {
-            connection: SYSTEM.as_ref(),
+            which: WhichBus::System,
         }
+    }
+
+    /// The generation of the live connection, without trying to reconnect.
+    pub fn generation(&self) -> Option<u64> {
+        let state = self
+            .which
+            .manager()
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .connection
+            .as_ref()
+            .filter(|connection| !connection.is_closed())
+            .map(|_| state.generation)
     }
 
     /// One value back as itself, several as a list, a failed call as nothing.
@@ -116,7 +257,7 @@ impl Bus {
         method: &str,
         arguments: &[Argument],
     ) -> Result<Value, String> {
-        let Some(connection) = self.connection else {
+        let Some((connection, _)) = self.which.manager().connection() else {
             return Err(String::from("no bus"));
         };
 
@@ -183,7 +324,10 @@ impl Bus {
             .expect("failed to watch signals: bad signal name")
             .build();
 
-        self.messages(rule.into_owned()).map(signal)
+        SignalIterator::new(*self, rule.into_owned(), false).filter_map(|event| match event {
+            SignalEvent::Signal(signal) => Some(signal),
+            SignalEvent::Reconnected => None,
+        })
     }
 
     /// As `signals`, only those the object at `path` sends, so other objects' never wake the thread.
@@ -203,12 +347,39 @@ impl Bus {
             .expect("failed to watch signals: bad signal name")
             .build();
 
-        self.messages(rule.into_owned()).map(signal)
+        SignalIterator::new(*self, rule.into_owned(), false).filter_map(|event| match event {
+            SignalEvent::Signal(signal) => Some(signal),
+            SignalEvent::Reconnected => None,
+        })
+    }
+
+    /// As `signals_from`, with a notification after each successful signal subscription.
+    pub fn signals_from_with_reconnect(
+        &self,
+        path: &str,
+        interface: &str,
+        name: &str,
+    ) -> impl Iterator<Item = SignalEvent> + use<> {
+        let rule = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .path(path)
+            .expect("failed to watch signals: bad path")
+            .interface(interface)
+            .expect("failed to watch signals: bad interface name")
+            .member(name)
+            .expect("failed to watch signals: bad signal name")
+            .build();
+
+        SignalIterator::new(*self, rule.into_owned(), true)
     }
 
     /// Each call to `path` and `interface`, waited for; watch before taking the name, so no
-    /// early call is missed.
-    pub fn methods(&self, path: &str, interface: &str) -> impl Iterator<Item = Method> + use<> {
+    /// early call is missed. Reattaches after bus reconnects and signals each new subscription.
+    pub fn methods_with_reconnect(
+        &self,
+        path: &str,
+        interface: &str,
+    ) -> Box<dyn Iterator<Item = MethodEvent> + Send> {
         let rule = MatchRule::builder()
             .msg_type(Type::MethodCall)
             .path(path)
@@ -217,20 +388,7 @@ impl Bus {
             .expect("failed to watch method calls: bad interface name")
             .build();
 
-        let connection = self.connection;
-
-        self.messages(rule.into_owned()).filter_map(move |message| {
-            Some(Method {
-                connection: connection?,
-                name: message
-                    .header()
-                    .member()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-                arguments: message_values(&message),
-                message,
-            })
-        })
+        Box::new(MethodIterator::new(*self, rule.into_owned()))
     }
 
     /// A signal from Kanade's object at `path`, to whoever listens.
@@ -258,7 +416,7 @@ impl Bus {
         name: &str,
         arguments: &[Argument],
     ) {
-        let Some(connection) = self.connection else {
+        let Some((connection, _)) = self.which.manager().connection() else {
             return;
         };
 
@@ -269,12 +427,9 @@ impl Bus {
         };
     }
 
-    /// False when another program already owns the name; Kanade never takes it from them.
-    pub fn own(&self, name: &str) -> bool {
-        let Some(connection) = self.connection else {
-            return false;
-        };
-
+    /// False when another program already owns the name; Kanade never takes it from them. Claim
+    /// it on the method subscription's connection, so calls sent to the name arrive on that server.
+    pub fn own_on(&self, connection: &Connection, name: &str) -> bool {
         let reply = connection.request_name_with_flags(name, RequestNameFlags::DoNotQueue.into());
 
         matches!(
@@ -282,14 +437,188 @@ impl Bus {
             Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner)
         )
     }
+}
 
-    // none without a bus; a message that fails to read is skipped
-    fn messages(self, rule: MatchRule<'static>) -> impl Iterator<Item = Message> + use<> {
-        self.connection
-            .and_then(|connection| MessageIterator::for_match_rule(rule, connection, None).ok())
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
+struct MethodIterator {
+    bus: Bus,
+    rule: MatchRule<'static>,
+    messages: Option<MessageIterator>,
+    connection: Option<Connection>,
+    generation: Option<u64>,
+    attached_pending: bool,
+}
+
+impl MethodIterator {
+    fn new(bus: Bus, rule: MatchRule<'static>) -> Self {
+        let mut iterator = Self {
+            bus,
+            rule,
+            messages: None,
+            connection: None,
+            generation: None,
+            attached_pending: false,
+        };
+        iterator.subscribe_once();
+        iterator
+    }
+
+    // the match is set up before the caller registers anything, so no early call is missed
+    fn subscribe_once(&mut self) {
+        let manager = self.bus.which.manager();
+        if let Some((connection, generation)) = manager.connection() {
+            match MessageIterator::for_match_rule(self.rule.clone(), &connection, None) {
+                Ok(messages) => {
+                    self.messages = Some(messages);
+                    self.connection = Some(connection);
+                    self.generation = Some(generation);
+                    self.attached_pending = true;
+                }
+                Err(_) => manager.disconnected(generation),
+            }
+        }
+    }
+}
+
+impl Iterator for MethodIterator {
+    type Item = MethodEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.attached_pending {
+                self.attached_pending = false;
+
+                if let (Some(connection), Some(generation)) = (&self.connection, self.generation) {
+                    return Some(MethodEvent::Attached(connection.clone(), generation));
+                }
+            }
+
+            if let Some(messages) = &mut self.messages {
+                match messages.next() {
+                    Some(Ok(message)) => {
+                        let connection = self.connection.as_ref()?.clone();
+                        return Some(MethodEvent::Method(Method {
+                            connection,
+                            name: message
+                                .header()
+                                .member()
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
+                            arguments: message_values(&message),
+                            message,
+                        }));
+                    }
+                    Some(Err(_)) | None => {
+                        self.messages = None;
+                        self.connection = None;
+                        if let Some(generation) = self.generation.take() {
+                            self.bus.which.manager().disconnected(generation);
+                        }
+                    }
+                }
+            }
+
+            let manager = self.bus.which.manager();
+            if let Some((connection, generation)) = manager.connection() {
+                match MessageIterator::for_match_rule(self.rule.clone(), &connection, None) {
+                    Ok(messages) => {
+                        self.messages = Some(messages);
+                        self.connection = Some(connection);
+                        self.generation = Some(generation);
+                        self.attached_pending = true;
+                    }
+                    Err(_) => {
+                        manager.disconnected(generation);
+                        manager.wait_for_retry();
+                    }
+                }
+            } else {
+                manager.wait_for_retry();
+            }
+        }
+    }
+}
+
+struct SignalIterator {
+    bus: Bus,
+    rule: MatchRule<'static>,
+    messages: Option<MessageIterator>,
+    generation: Option<u64>,
+    notify_reconnect: bool,
+    ever_subscribed: bool,
+    reconnect_pending: bool,
+}
+
+impl SignalIterator {
+    fn new(bus: Bus, rule: MatchRule<'static>, notify_reconnect: bool) -> Self {
+        let mut iterator = Self {
+            bus,
+            rule,
+            messages: None,
+            generation: None,
+            notify_reconnect,
+            ever_subscribed: false,
+            reconnect_pending: false,
+        };
+        iterator.subscribe_once();
+        iterator
+    }
+
+    fn subscribe_once(&mut self) {
+        let manager = self.bus.which.manager();
+        if let Some((connection, generation)) = manager.connection() {
+            match MessageIterator::for_match_rule(self.rule.clone(), &connection, None) {
+                Ok(messages) => {
+                    self.messages = Some(messages);
+                    self.generation = Some(generation);
+                    self.ever_subscribed = true;
+                }
+                Err(_) => manager.disconnected(generation),
+            }
+        }
+    }
+}
+
+impl Iterator for SignalIterator {
+    type Item = SignalEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(messages) = &mut self.messages {
+                match messages.next() {
+                    Some(Ok(message)) => return Some(SignalEvent::Signal(signal(message))),
+                    Some(Err(_)) | None => {
+                        self.messages = None;
+                        self.reconnect_pending = true;
+                        if let Some(generation) = self.generation.take() {
+                            self.bus.which.manager().disconnected(generation);
+                        }
+                    }
+                }
+            }
+
+            let manager = self.bus.which.manager();
+            if let Some((connection, generation)) = manager.connection() {
+                match MessageIterator::for_match_rule(self.rule.clone(), &connection, None) {
+                    Ok(messages) => {
+                        self.messages = Some(messages);
+                        self.generation = Some(generation);
+                        let should_notify = self.notify_reconnect
+                            && (!self.ever_subscribed || self.reconnect_pending);
+                        self.ever_subscribed = true;
+                        self.reconnect_pending = false;
+                        if should_notify {
+                            return Some(SignalEvent::Reconnected);
+                        }
+                    }
+                    Err(_) => {
+                        manager.disconnected(generation);
+                        manager.wait_for_retry();
+                    }
+                }
+            } else {
+                manager.wait_for_retry();
+            }
+        }
     }
 }
 

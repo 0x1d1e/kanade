@@ -1,14 +1,20 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 // the most a call may send, past the longest `kanade dmenu`, and how long it may take to
 const MOST: u64 = 24 * 1024 * 1024;
 const PATIENCE: Duration = Duration::from_secs(2);
+
+// Fixed writers and a short queue keep non-reading clients from growing threads or memory.
+const REPLY_WRITERS: usize = 4;
+const PENDING_REPLIES: usize = 16;
 
 pub struct IpcCall {
     pub(crate) name: String,
@@ -55,18 +61,71 @@ impl IpcReply {
     }
 
     /*
-     * the answer is written off the caller's thread: a caller that stopped reading fills its
-     * socket's buffer, and a write that waited on it where the handler runs would freeze the draw
-     * thread with it. Each answer gets its own thread, so one stuck caller holds up no other, and
-     * no lock is held while a write waits on a reader
+     * Replies run away from the event loop because a caller may stop reading. A full queue drops
+     * the answer and closes the stream; the caller sees EOF instead of blocking the shell.
      */
     pub fn send(self, reply: &str) {
-        let stream = self.stream;
-        let reply = reply.to_owned();
-
-        thread::spawn(move || written(stream, &reply));
+        let _ = REPLIES.enqueue((self.stream, reply.to_owned()));
     }
 }
+
+struct ReplyQueue {
+    pending: Mutex<VecDeque<(UnixStream, String)>>,
+    ready: Condvar,
+}
+
+impl ReplyQueue {
+    fn enqueue(&self, reply: (UnixStream, String)) -> Result<(), (UnixStream, String)> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if pending.len() == PENDING_REPLIES {
+            return Err(reply);
+        }
+        pending.push_back(reply);
+        self.ready.notify_one();
+        Ok(())
+    }
+
+    fn take(&self) -> (UnixStream, String) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            if let Some(reply) = pending.pop_front() {
+                return reply;
+            }
+            pending = self
+                .ready
+                .wait(pending)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+}
+
+static REPLIES: LazyLock<Arc<ReplyQueue>> = LazyLock::new(|| {
+    let queue = Arc::new(ReplyQueue {
+        pending: Mutex::new(VecDeque::with_capacity(PENDING_REPLIES)),
+        ready: Condvar::new(),
+    });
+
+    for _ in 0..REPLY_WRITERS {
+        let queue = Arc::clone(&queue);
+        thread::Builder::new()
+            .name(String::from("kanade-ipc-reply"))
+            .spawn(move || {
+                loop {
+                    let (stream, reply) = queue.take();
+                    let _ = catch_unwind(AssertUnwindSafe(|| written(stream, &reply)));
+                }
+            })
+            .expect("failed to start ipc reply worker");
+    }
+
+    queue
+});
 
 // the answer, given up on once the caller has stopped reading it
 fn written(mut stream: UnixStream, reply: &str) {
@@ -274,11 +333,8 @@ mod reply_tests {
             start.elapsed()
         );
 
-        /*
-         * the caller's end stays open, so the write waits on it rather than failing at once; it is
-         * left open for good, as the writing thread is still waiting on it
-         */
-        std::mem::forget(reading);
+        // Closing the peer releases the writer; its 1 s timeout bounds a write already in progress.
+        drop(reading);
     }
 
     // an answer reaches a caller that reads it whole

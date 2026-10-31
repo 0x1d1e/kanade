@@ -12,7 +12,7 @@ use std::hash::{BuildHasher, RandomState};
 use std::mem;
 use std::sync::{Mutex, Once};
 
-use crate::bus::{Argument, Bus, Method, Value};
+use crate::bus::{Argument, Bus, Method, MethodEvent, Value};
 use kanade_runtime::{MutexExt, service::Service};
 
 use super::BLUEZ;
@@ -86,15 +86,28 @@ static ANSWERING: Once = Once::new();
  */
 pub fn register() {
     ANSWERING.call_once(|| {
-        // before registering, so BlueZ's first question is not missed
-        let mut methods = Bus::system().methods(PATH, AGENT);
+        // before registering, so BlueZ's first question is not missed: the iterator subscribes
+        // before it is spawned, so the match is set up by the time `register_bluez` runs
+        let mut methods = Bus::system().methods_with_reconnect(PATH, AGENT);
 
         supervise::spawn("bluetooth agent", move || {
-            for method in &mut methods {
-                answer(method);
+            for event in &mut methods {
+                match event {
+                    MethodEvent::Attached(_, _) => register_bluez(),
+                    MethodEvent::Method(method) => answer(method),
+                }
             }
         });
     });
+
+    // on every call, not only the first: a pairing that starts now must not race the answering
+    // thread's own Attached, and BlueZ says AlreadyExists harmlessly when it already has us
+    register_bluez();
+}
+
+fn register_bluez() {
+    // A replacement BlueZ process has a new unique name.
+    *OWNER.locked() = None;
 
     Bus::system().call(
         BLUEZ,
@@ -103,9 +116,6 @@ pub fn register() {
         "RegisterAgent",
         &[Argument::Path(PATH.into()), Argument::from(CAPABILITY)],
     );
-
-    // asked again, as BlueZ registering may be one restarted under a new unique name
-    *OWNER.locked() = None;
 }
 
 fn answer(method: Method) {

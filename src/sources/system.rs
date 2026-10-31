@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, Once, mpsc};
 use std::{iter, mem, thread};
 
-use crate::bus::{Argument, Bus, Value};
+use crate::bus::{Argument, Bus, SignalEvent, Value};
 use crate::hooks::{self, Event};
 use kanade_runtime::MutexExt;
 use kanade_runtime::service::Service;
@@ -329,6 +329,12 @@ impl Daemons {
     }
 }
 
+// what a watch sends: a daemon to ask again, or that the bus came back
+enum Change {
+    Daemon(Daemon),
+    Reconnected,
+}
+
 static SPAWNED: Once = Once::new();
 
 // called by each of the three Modules that is on; the first call starts the one watcher for all
@@ -360,12 +366,33 @@ fn follow(daemons: Daemons) {
         let (interface, name) = watch.signal();
 
         // subscribed before the first read, so no change falls between them
-        let mut signals = Bus::system().signals(interface, name);
+        let mut signals: Box<dyn Iterator<Item = SignalEvent> + Send> =
+            if matches!(watch, Watch::Owner) {
+                Box::new(Bus::system().signals_from_with_reconnect(BUS_PATH, interface, name))
+            } else {
+                Box::new(
+                    Bus::system()
+                        .signals(interface, name)
+                        .map(SignalEvent::Signal),
+                )
+            };
         let sender = sender.clone();
 
         // a restart goes on with the same subscription, so no signal is lost to it
         supervise::spawn("system bus watch", move || {
-            for signal in signals.by_ref() {
+            for event in signals.by_ref() {
+                let signal = match event {
+                    SignalEvent::Reconnected => {
+                        // a new bus: the unique name cached from the old one is stale
+                        *OWNER.locked() = None;
+                        if sender.send(Change::Reconnected).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
+                    SignalEvent::Signal(signal) => signal,
+                };
+
                 if daemons.network
                     && let Some(heard) =
                         heard(watch, signal.sender(), signal.path(), signal.arguments())
@@ -382,7 +409,7 @@ fn follow(daemons: Daemons) {
                     continue;
                 };
 
-                if sender.send(daemon).is_err() {
+                if sender.send(Change::Daemon(daemon)).is_err() {
                     return;
                 }
             }
@@ -414,8 +441,26 @@ fn follow(daemons: Daemons) {
         }
 
         while let Ok(first) = changed.recv() {
-            // a burst, or what came during the last read, asks once
-            refresh_all(iter::once(first).chain(changed.try_iter()).collect());
+            // A reconnect refreshes every followed daemon, plus Wi-Fi only while its Surface shows.
+            let batch = iter::once(first)
+                .chain(changed.try_iter())
+                .collect::<Vec<_>>();
+            if batch
+                .iter()
+                .any(|change| matches!(change, Change::Reconnected))
+            {
+                refresh_all(daemons.followed());
+            } else {
+                refresh_all(
+                    batch
+                        .into_iter()
+                        .filter_map(|change| match change {
+                            Change::Daemon(daemon) => Some(daemon),
+                            Change::Reconnected => None,
+                        })
+                        .collect(),
+                );
+            }
         }
     });
 }

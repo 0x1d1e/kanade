@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime};
 
 use kanade_runtime::service::Service;
 
-use crate::bus::{Argument, Bus, Method, Value};
+use crate::bus::{Argument, Bus, Method, MethodEvent, Value};
 
 use super::{Notification, Notifications, Urgency};
 
@@ -38,17 +38,26 @@ fn replies() -> bool {
 pub fn run() {
     let bus = Bus::session();
 
-    // watched before owning the name, so no early call is missed
-    let methods = bus.methods(PATH, INTERFACE);
+    // Watch before owning the name, so no early call is missed.
+    let mut methods = bus.methods_with_reconnect(PATH, INTERFACE);
+    let mut ever_owned = false;
+    let mut attached = false;
 
-    if !bus.own(NAME) {
-        return;
-    }
-
-    Notifications::write().running = true;
-
-    for method in methods {
-        answer(&method);
+    for event in &mut methods {
+        match event {
+            // the name is taken on the connection the calls arrive on; a reattach that fails is
+            // retried on the next, and the Service says it is not running meanwhile
+            MethodEvent::Attached(connection, _) => {
+                attached = bus.own_on(&connection, NAME);
+                if !attached && !ever_owned {
+                    return;
+                }
+                ever_owned |= attached;
+                Notifications::write().running = attached;
+            }
+            MethodEvent::Method(method) if attached => answer(&method),
+            MethodEvent::Method(_) => {}
+        }
     }
 }
 

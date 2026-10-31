@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use super::lyrics;
 use super::palette::Palette;
-use crate::bus::{Argument, Bus, Signal, Value};
+use crate::bus::{Argument, Bus, Signal, SignalEvent, Value};
 use kanade_runtime::service::Service;
 use kanade_runtime::{Color, MutexExt};
 
@@ -286,6 +286,9 @@ impl Seen {
 enum Event {
     // a player opened, or closed when it has no owner
     Owner { name: String, owner: Option<String> },
+
+    // the session bus came back, with players opened or closed while it was away
+    Reconnected,
 
     // some owner's properties changed, which ones is read back in full
     Changed { owner: String },
@@ -784,6 +787,29 @@ fn follow_players(
         };
 
         match event {
+            Ok(Event::Reconnected) => {
+                let mut open = BTreeMap::new();
+                for name in names(bus) {
+                    if let Some(owner) = owner(bus, &name) {
+                        open.insert(name.clone(), read(bus, &name, &owner));
+                    }
+                }
+                players.open = open;
+                if players
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| !players.open.contains_key(active))
+                {
+                    players.active = None;
+                }
+                if watcher
+                    .selected
+                    .as_ref()
+                    .is_some_and(|selected| !players.open.contains_key(selected))
+                {
+                    watcher.selected = None;
+                }
+            }
             Ok(Event::Owner { name, owner: None }) => {
                 players.open.remove(&name);
             }
@@ -908,8 +934,8 @@ fn transport_call(bus: Bus, players: &mut Players, transport: Transport) -> Resu
 // watched before the first look, so a player opening in between is not missed
 fn feed(bus: Bus) -> &'static Feed {
     feed_with(|send| {
-        forward(
-            bus.signals(DBUS, "NameOwnerChanged"),
+        forward_reconnect(
+            bus.signals_from_with_reconnect("/org/freedesktop/DBus", DBUS, "NameOwnerChanged"),
             send.clone(),
             |signal| Event::owner(signal.arguments()),
         );
@@ -934,6 +960,27 @@ fn feed_with(watch: impl FnOnce(&Sender<Event>)) -> &'static Feed {
             events: Mutex::new(events),
         }
     })
+}
+
+// as `forward`, for the stream that also says when the bus came back
+fn forward_reconnect(
+    mut signals: impl Iterator<Item = SignalEvent> + Send + 'static,
+    events: Sender<Event>,
+    event: impl Fn(&Signal) -> Option<Event> + Send + 'static,
+) {
+    supervise::spawn("media bus watch", move || {
+        for signal in signals.by_ref() {
+            let event = match signal {
+                SignalEvent::Reconnected => Some(Event::Reconnected),
+                SignalEvent::Signal(signal) => event(&signal),
+            };
+            if let Some(event) = event
+                && events.send(event).is_err()
+            {
+                return;
+            }
+        }
+    });
 }
 
 // each signal stream blocks, so each gets a thread that hands what counts to the follower

@@ -28,7 +28,8 @@ use kanade_runtime::service::{self, Service};
 use zeroize::Zeroizing;
 
 use super::secret::Secret;
-use crate::bus::{Argument, Bus, Method, Value};
+use crate::backoff::Backoff;
+use crate::bus::{Argument, Bus, Method, MethodEvent, Value};
 use crate::clock::{self, WallTimer};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
@@ -53,6 +54,10 @@ const DBUS_PATH: &str = "/org/freedesktop/DBus";
 
 // how long the prompt waits for an answer before giving up, while nothing is typed
 const LONGEST: Duration = Duration::from_secs(1800);
+
+// how long registration waits before trying polkit again, doubling after each refusal
+const RETRY_FIRST: Duration = Duration::from_millis(250);
+const RETRY_LONGEST: Duration = Duration::from_secs(30);
 
 // three tries a request gets before polkit reads it as not authorized
 const TRIES: usize = 3;
@@ -98,6 +103,13 @@ static GIVES_UP: Mutex<Option<i64>> = Mutex::new(None);
 
 // the helper's socket of the check under way, so anything else can shut it now
 static ATTEMPTING: Mutex<Option<UnixStream>> = Mutex::new(None);
+
+/*
+ * the bus generation and polkitd unique name this agent is registered with: a new bus can reuse
+ * an old unique name, while polkit refuses a second agent for one subject on the same bus
+ */
+static REGISTERING: Mutex<()> = Mutex::new(());
+static REGISTERED: Mutex<Option<(u64, String)>> = Mutex::new(None);
 
 // the timer that lets nothing wait forever, none when the machine has no timerfd
 static TIMER: OnceLock<Option<Arc<WallTimer>>> = OnceLock::new();
@@ -152,24 +164,55 @@ pub fn start() {
     service::watch::<IslandService>(island_changed);
 
     supervise::spawn("polkit agent", move || {
-        let mut methods = Bus::system().methods(AGENT, AGENT_IFACE);
+        let mut methods = Bus::system().methods_with_reconnect(AGENT, AGENT_IFACE);
+        let mut backoff = Backoff::new(RETRY_FIRST, RETRY_LONGEST);
+        let mut said: Option<String> = None;
 
-        for method in &mut methods {
-            answer(method);
+        for event in &mut methods {
+            match event {
+                /*
+                 * nothing can reach the agent before polkit takes it, so wait here rather than
+                 * read calls it cannot send yet; a refusal may be polkitd not up, or one that
+                 * still holds an agent for this subject. A retry may outlive this subscription's
+                 * bus, so use the live bus generation; the cache decides whether it is registered.
+                 */
+                MethodEvent::Attached(_, mut generation) => loop {
+                    // A retry may outlive this subscription's bus, so use the bus it will talk to.
+                    generation = Bus::system().generation().unwrap_or(generation);
+                    match register_attached(generation) {
+                        Ok(()) => {
+                            backoff.reset();
+                            said = None;
+                            break;
+                        }
+                        Err(why) => {
+                            if said.as_ref() != Some(&why) {
+                                eprintln!("kanade: polkit agent not registered: {why}");
+                                said = Some(why);
+                            }
+                            thread::sleep(backoff.failed());
+                        }
+                    }
+                },
+                MethodEvent::Method(method) => answer(method),
+            }
         }
     });
 
-    // polkitd restarting takes a new unique name: it is answered again under it
+    // a new polkitd has none of the agents the old one had: it is answered again under it
     supervise::spawn("polkit watcher", move || {
         let mut owners = Bus::system().signals_from(DBUS_PATH, DBUS, "NameOwnerChanged");
-        // polkitd is usually already running: a name change alone would never register us
-        register();
 
         for signal in &mut owners {
-            let name = signal.arguments().first().map_or("", Value::text);
+            let [name, _, new] = signal.arguments() else {
+                continue;
+            };
 
-            if name == AUTHORITY {
-                register();
+            if name.text() == AUTHORITY
+                && !new.text().is_empty()
+                && let Err(why) = register(Bus::system().generation())
+            {
+                eprintln!("kanade: polkit agent not registered: {why}");
             }
         }
     });
@@ -948,9 +991,23 @@ fn identity(identities: &Value) -> Option<u32> {
     None
 }
 
-// Kanade registers where polkit asks: the agent's object, and the caller's session as the subject
-fn register() -> bool {
-    let Some(caller) = caller() else { return false };
+// Kanade registers where polkit asks: the agent's object, and the caller's session as the subject.
+// `Ok` once the polkitd running now has it, including when a try already under way took it
+fn register(generation: Option<u64>) -> Result<(), String> {
+    let _turns = REGISTERING.locked();
+    register_locked(generation)
+}
+
+fn register_attached(generation: u64) -> Result<(), String> {
+    let _turns = REGISTERING.locked();
+    register_locked(Some(generation))
+}
+
+fn register_locked(generation: Option<u64>) -> Result<(), String> {
+    let generation = generation.ok_or_else(|| String::from("no live system bus connection"))?;
+    let Some(caller) = caller() else {
+        return Err(String::from("logind names no session to register"));
+    };
 
     let subject = Argument::Struct(vec![
         Argument::from("unix-session"),
@@ -964,23 +1021,35 @@ fn register() -> bool {
     let capabilities = std::env::var_os("LANG")
         .map_or(String::from("C"), |lang| lang.to_string_lossy().to_string());
 
-    match Bus::system().try_call(
-        AUTHORITY,
-        AUTHORITY_PATH,
-        AUTHORITY_IFACE,
-        "RegisterAuthenticationAgent",
-        &[
-            subject,
-            Argument::from(capabilities.as_str()),
-            Argument::from(AGENT),
-        ],
-    ) {
-        Ok(_) => true,
-        Err(why) => {
-            eprintln!("kanade: polkit agent not registered: {why}");
-            false
-        }
+    let owner = crate::sources::bus::name_owner(Bus::system(), AUTHORITY);
+
+    if owner.is_empty() {
+        return Err(String::from("polkitd is not running"));
     }
+
+    if REGISTERED
+        .locked()
+        .as_ref()
+        .is_some_and(|(registered_generation, registered_owner)| {
+            *registered_generation == generation && registered_owner == &owner
+        })
+    {
+        return Ok(());
+    }
+
+    Bus::system()
+        .try_call(
+            AUTHORITY,
+            AUTHORITY_PATH,
+            AUTHORITY_IFACE,
+            "RegisterAuthenticationAgent",
+            &[
+                subject,
+                Argument::from(capabilities.as_str()),
+                Argument::from(AGENT),
+            ],
+        )
+        .map(|_| *REGISTERED.locked() = Some((generation, owner)))
 }
 
 const LOGIND: &str = "org.freedesktop.login1";

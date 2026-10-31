@@ -2,7 +2,8 @@ use std::fs::{self, File, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -10,16 +11,25 @@ use smithay_client_toolkit::reexports::calloop::{
     Interest, LoopHandle, Mode, PostAction, generic::Generic, ping::Ping,
 };
 
-use crate::ipc::{IpcCall, IpcHandlers, IpcReply, ipc_socket};
-use crate::queue::Queue;
-
 use super::WaylandState;
+use crate::ipc::{IpcCall, IpcHandlers, IpcReply, ipc_socket};
 
 // the lock that keeps a second shell of the session out, held until this process exits
 static CLAIM: OnceLock<File> = OnceLock::new();
 
-// calls read off the loop's thread, waiting for it to take them
-static READY: LazyLock<Queue<(IpcCall, IpcReply)>> = LazyLock::new(Queue::new);
+// A client that stalls must not create a thread per connection or an unbounded backlog.
+const READERS: usize = 8;
+const READY_CALLS: usize = 16;
+
+// Calls read off the loop's thread, waiting for it to take them.
+type ReadyCall = (IpcCall, IpcReply);
+type ReadyQueue = (SyncSender<ReadyCall>, Mutex<Receiver<ReadyCall>>);
+
+static READY: LazyLock<ReadyQueue> = LazyLock::new(|| {
+    let (send, receive) = mpsc::sync_channel(READY_CALLS);
+    (send, Mutex::new(receive))
+});
+static READER_SLOTS: LazyLock<Slots> = LazyLock::new(|| Slots::new(READERS));
 
 // the loop, woken when a call is ready
 static WAKE: OnceLock<Ping> = OnceLock::new();
@@ -74,7 +84,14 @@ pub fn insert(handle: &LoopHandle<'static, WaylandState>, handlers: IpcHandlers)
  * drips its call, costs the shell a thread and its own deadline, never a frame
  */
 fn request(stream: UnixStream) {
+    let Some(slot) = READER_SLOTS.try_acquire() else {
+        // Close overloaded clients immediately; a refusal payload would add another protocol.
+        drop(stream);
+        return;
+    };
+
     thread::spawn(move || {
+        let _slot = slot;
         // a client that never finishes sending must not hold this thread either
         if stream
             .set_read_timeout(Some(Duration::from_secs(1)))
@@ -87,7 +104,9 @@ fn request(stream: UnixStream) {
             return;
         };
 
-        READY.send((call, IpcReply::new(stream)));
+        if READY.0.try_send((call, IpcReply::new(stream))).is_err() {
+            return;
+        }
 
         if let Some(ping) = WAKE.get() {
             ping.ping();
@@ -97,7 +116,7 @@ fn request(stream: UnixStream) {
 
 // what the threads read since the loop last looked
 fn taken() -> Vec<(IpcCall, IpcReply)> {
-    let ready = READY.receiver();
+    let ready = READY.1.lock().unwrap_or_else(|error| error.into_inner());
 
     let mut calls = Vec::new();
 
@@ -106,6 +125,50 @@ fn taken() -> Vec<(IpcCall, IpcReply)> {
     }
 
     calls
+}
+
+struct Slots {
+    available: Mutex<usize>,
+}
+
+impl Slots {
+    fn new(count: usize) -> Self {
+        Self {
+            available: Mutex::new(count),
+        }
+    }
+
+    #[cfg(test)]
+    fn available(&self) -> usize {
+        *self
+            .available
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn try_acquire(&self) -> Option<Slot<'_>> {
+        let mut available = self
+            .available
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *available == 0 {
+            return None;
+        }
+        *available -= 1;
+        Some(Slot(self))
+    }
+}
+
+struct Slot<'a>(&'a Slots);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .available
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) += 1;
+    }
 }
 
 fn listen() -> UnixListener {
@@ -163,21 +226,15 @@ fn claim(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
     use std::time::Instant;
 
     use super::*;
-    use crate::unpoisoned::MutexExt;
     use std::sync::{Mutex, MutexGuard};
 
-    /*
-     * `READY` is the process's one queue of calls waiting for the loop, and `taken` is what the
-     * loop does with it: two tests draining it at once each see the other's call, or the empty
-     * queue the other was about to fill. Each test here takes the queue for its own
-     */
     fn the_queue_turn() -> MutexGuard<'static, ()> {
         static CALLS: Mutex<()> = Mutex::new(());
-
-        CALLS.locked()
+        CALLS.lock().unwrap_or_else(|error| error.into_inner())
     }
 
     /*
@@ -193,6 +250,9 @@ mod tests {
 
         let start = Instant::now();
 
+        let held = (0..READERS - 1)
+            .map(|_| READER_SLOTS.try_acquire().expect("reader slot available"))
+            .collect::<Vec<_>>();
         request(shell);
 
         assert!(
@@ -201,14 +261,63 @@ mod tests {
             start.elapsed()
         );
 
-        // nothing was handed to the loop, and the reader is still waiting on the client
+        // The read owns its last slot while the peer stays open and has sent nothing.
+        assert_eq!(READER_SLOTS.available(), 0);
         assert!(taken().is_empty());
 
-        // the client's end stays open, so the reader waits rather than seeing a call end early
-        std::mem::forget(client);
+        drop(client);
+        drop(held);
+        wait_for_reader_slot();
     }
 
-    // a call that arrives whole reaches the loop
+    fn wait_for_no_reader_slot() {
+        let start = Instant::now();
+        while READER_SLOTS.available() != 0 {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "readers did not occupy their slots"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_for_reader_slot() {
+        let start = Instant::now();
+        while READER_SLOTS.try_acquire().is_none() {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "reader slot was not released"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn stalled_clients_fill_the_reader_bound_and_extra_clients_are_closed() {
+        let _turn = the_queue_turn();
+        let mut clients = Vec::new();
+
+        for _ in 0..READERS {
+            let (shell, client) = UnixStream::pair().unwrap();
+            clients.push(client);
+            request(shell);
+        }
+
+        wait_for_no_reader_slot();
+
+        let (shell, mut refused) = UnixStream::pair().unwrap();
+        request(shell);
+        refused
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(refused.read(&mut byte).unwrap(), 0);
+        assert!(taken().is_empty());
+
+        drop(clients);
+        wait_for_reader_slot();
+    }
+
     #[test]
     fn a_call_reaches_the_loop() {
         let _turn = the_queue_turn();

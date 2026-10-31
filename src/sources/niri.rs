@@ -14,11 +14,13 @@ use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
 
 use super::json::{self, Json};
+use crate::backoff::Backoff;
 use crate::config;
 use crate::island::activity::Workspace;
 use crate::supervise;
@@ -1172,47 +1174,71 @@ pub fn config_load_state() -> ConfigLoadState {
     }
 }
 
+// how long to wait before reconnecting; a long stream starts the backoff over
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+const LAST_RETRY: Duration = Duration::from_secs(60);
+const HEALTHY: Duration = Duration::from_secs(60);
+
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
 pub fn follow() {
     FOLLOWING.store(true, Ordering::Relaxed);
 
-    // kept across a restart, so the new stream's first events post only what changed meanwhile
+    // It outlives a stream: a reconnect starts with fresh Known state and diffs against the state
+    // already posted, while the disconnect path withdraws anything that no longer exists.
     let mut posted = Seen::default();
 
     supervise::run("niri", || {
-        run(
-            connect().map(BufReader::new),
-            &mut posted,
-            |_, seen| {
-                let mut niri = Niri::write();
-                niri.seen = seen.clone();
-                niri.connected = true;
-            },
-            |heard| {
-                let hearing = WINDOWS.locked().clone();
+        let mut backoff = Backoff::new(FIRST_RETRY, LAST_RETRY);
+        // one line while niri is unreachable, not one per backoff attempt
+        let mut said_unreachable = false;
 
-                for then in hearing {
-                    then(heard.clone());
-                }
-            },
-            |name| {
-                let hearing = LAYOUTS.locked().clone();
+        loop {
+            let started = Instant::now();
+            let reached = run(
+                connect().map(BufReader::new),
+                &mut posted,
+                |_, seen| {
+                    let mut niri = Niri::write();
+                    niri.seen = seen.clone();
+                    niri.connected = true;
+                },
+                |heard| {
+                    let hearing = WINDOWS.locked().clone();
 
-                for then in hearing {
-                    then(name.clone());
-                }
-            },
-            || {
-                let hearing = CONFIGS.locked().clone();
+                    for then in hearing {
+                        then(heard.clone());
+                    }
+                },
+                |name| {
+                    let hearing = LAYOUTS.locked().clone();
 
-                for then in hearing {
-                    then();
-                }
-            },
-        );
+                    for then in hearing {
+                        then(name.clone());
+                    }
+                },
+                || {
+                    let hearing = CONFIGS.locked().clone();
+
+                    for then in hearing {
+                        then();
+                    }
+                },
+            );
+
+            let wait = backoff.after(started.elapsed(), HEALTHY);
+            if reached {
+                said_unreachable = false;
+                eprintln!("kanade: niri event stream lost; connecting again in {wait:?}");
+            } else if !said_unreachable {
+                eprintln!("kanade: niri is not reachable; connecting again in {wait:?}");
+                said_unreachable = true;
+            }
+            thread::sleep(wait);
+        }
     });
 }
 
+// watches one connection until it ends; whether niri accepted it
 fn run(
     stream: io::Result<impl BufRead>,
     posted: &mut Seen,
@@ -1220,32 +1246,38 @@ fn run(
     mut hear: impl FnMut(Heard),
     mut switched: impl FnMut(String),
     mut failed: impl FnMut(),
-) {
-    let lost = match stream {
-        Ok(stream) => watch(
+) -> bool {
+    let mut reached = false;
+
+    let _lost = match stream {
+        Ok(stream) => watch_accepted(
             stream,
             posted,
             &mut post,
             &mut hear,
             &mut switched,
             &mut failed,
+            || reached = true,
         ),
         Err(error) => error,
     };
 
-    // logged, no toast
-    eprintln!("kanade: niri event stream lost ({lost}), every monitor counts as focused");
+    // `follow` retries, and says so once; stream errors can include peer text, so they are not
+    // logged here
 
-    if *posted != Seen::default() {
+    let had_state = *posted != Seen::default();
+    if reached || had_state {
         post(posted, &Seen::default());
         *posted = Seen::default();
+
+        // the windows niri had may be gone by the time it is back; it lists them again then
+        hear(Heard::Lost);
+        tell_apps(AppHeard::Lost);
     }
 
     Niri::write().connected = false;
 
-    // the windows niri had may be gone by the time it is back; it lists them again then
-    hear(Heard::Lost);
-    tell_apps(AppHeard::Lost);
+    reached
 }
 
 fn connect() -> io::Result<UnixStream> {
@@ -1389,6 +1421,7 @@ fn exchange(stream: UnixStream, request: &str, patience: Duration) -> io::Result
  * changes nothing the core follows wakes nothing; window events go to `hear`, which sorts out its
  * own. Returns why it ended
  */
+#[cfg(test)]
 fn watch(
     lines: impl BufRead,
     posted: &mut Seen,
@@ -1396,6 +1429,19 @@ fn watch(
     hear: &mut impl FnMut(Heard),
     switched: &mut impl FnMut(String),
     failed: &mut impl FnMut(),
+) -> io::Error {
+    watch_accepted(lines, posted, post, hear, switched, failed, || {})
+}
+
+// as `watch`, with `accepted` run once niri has accepted the stream
+fn watch_accepted(
+    lines: impl BufRead,
+    posted: &mut Seen,
+    post: &mut impl FnMut(&Seen, &Seen),
+    hear: &mut impl FnMut(Heard),
+    switched: &mut impl FnMut(String),
+    failed: &mut impl FnMut(),
+    mut accepted: impl FnMut(),
 ) -> io::Error {
     let mut lines = lines.lines();
     let mut niri = Known::default();
@@ -1419,6 +1465,8 @@ fn watch(
     }
 
     Niri::write().connected = true;
+    eprintln!("kanade: niri event stream connected");
+    accepted();
     let _guard = ConnectedGuard;
 
     for line in lines {
@@ -1998,7 +2046,8 @@ mod tests {
         assert_eq!(posts.last(), Some(&Seen::default()));
         assert_eq!(posts.len(), 4);
 
-        // nothing was posted, so nothing has to be taken back
+        // a failed connection does nothing; an accepted empty stream still posts its default
+        // state once when it ends
         let mut posts = Vec::new();
 
         run(
@@ -2018,7 +2067,7 @@ mod tests {
             || {},
         );
 
-        assert_eq!(posts, []);
+        assert_eq!(posts, [Seen::default()]);
     }
 
     #[test]

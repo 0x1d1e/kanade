@@ -1,6 +1,6 @@
 # 132. Column and window controls are a Surface of their own
 
-Status: accepted. Builds on ADR 0028 (Kanade's own runtime), ADR 0030 (the largest body), ADR 0038 (Services), ADR 0071 (niri is not reconnected).
+Status: accepted. Builds on ADR 0028 (Kanade's own runtime), ADR 0030 (the largest body), ADR 0038 (Services), ADR 0071 (niri's stream reconnects after a loss).
 
 ## Context
 
@@ -35,4 +35,4 @@ Three placements were possible and two are excluded by `CONTEXT.md`, not by tast
 - `CONTEXT.md`'s Surface list gains `Window`; the Module is `window-surface`; `docs/wiki/Keyboard.md` gains its row, which a test parses.
 - The `Window` fields and the `Heard` extension touch the seam the Dock reads, which is this change's blast radius. A floating window and an empty column have no `pos_in_scrolling_layout`, so both are skipped and marked rather than drawn at a guessed place.
 - Moving to a workspace is the one action that cannot be verified from this VM's single output; the pills read the focused window's output's workspaces.
-- After a niri restart the Surface shows "No focused window" for the rest of the session, because ADR 0071 keeps the stream from reconnecting. That is the same silence every niri-reading Surface has, not a new failure.
+- After a niri restart the Surface shows "No focused window" until the reconnected stream lists the windows again, because ADR 0071 reconnects with a bounded backoff. That is the same brief silence every niri-reading Surface has, not a new failure.

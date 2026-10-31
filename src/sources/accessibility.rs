@@ -14,7 +14,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::bus::{Argument, Bus, Value};
+use crate::bus::{Argument, Bus, SignalEvent, Value};
 use crate::reload;
 
 const DESTINATION: &str = "org.freedesktop.portal.Desktop";
@@ -42,11 +42,11 @@ pub fn current() -> Preferences {
     }
 }
 
-/// Runs on its own thread for good, or ends at once without a session bus or portal signals.
+/// Runs on its own thread for good, following portal signals across session bus reconnects.
 pub fn follow() {
-    let signals = Bus::session().signals_from(PATH, SETTINGS, "SettingChanged");
+    let mut signals = Bus::session().signals_from_with_reconnect(PATH, SETTINGS, "SettingChanged");
 
-    // read after subscribing, so a change in between is heard
+    // Install the match before reading when the session bus is already available.
     let asked = read();
 
     if store(asked) {
@@ -57,23 +57,33 @@ pub fn follow() {
     // portal that restarts is followed
     let mut owner: Option<String> = None;
 
-    for signal in signals {
-        if !trusts(&mut owner, signal.sender(), || owner_of(DESTINATION)) {
-            continue;
-        }
+    for event in &mut signals {
+        match event {
+            SignalEvent::Reconnected => {
+                // Reread even when the portal emits no signal after reconnection.
+                owner = None;
+                if store(read()) {
+                    reload::reload();
+                }
+            }
+            SignalEvent::Signal(signal) => {
+                if !trusts(&mut owner, signal.sender(), || owner_of(DESTINATION)) {
+                    continue;
+                }
 
-        let [namespace, key, value] = signal.arguments() else {
-            continue;
-        };
+                let [namespace, key, value] = signal.arguments() else {
+                    continue;
+                };
 
-        let mut next = current();
+                let mut next = current();
+                if namespace.text() != NAMESPACE || !next.set(key.text(), value) {
+                    continue;
+                }
 
-        if namespace.text() != NAMESPACE || !next.set(key.text(), value) {
-            continue;
-        }
-
-        if store(next) {
-            reload::reload();
+                if store(next) {
+                    reload::reload();
+                }
+            }
         }
     }
 }
