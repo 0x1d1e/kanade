@@ -41,6 +41,7 @@ impl SeatHandler for WaylandState {
                 self.pointer_device = Some(pointer);
 
                 self.follow_data_device(qh, &seat);
+                self.follow_data_control(qh, &seat);
             }
 
             Capability::Keyboard => {
@@ -62,6 +63,7 @@ impl SeatHandler for WaylandState {
                 self.keyboard_device = Some(keyboard);
 
                 self.follow_data_device(qh, &seat);
+                self.follow_data_control(qh, &seat);
                 self.follow_ime(qh, &seat);
             }
 
@@ -87,6 +89,7 @@ impl SeatHandler for WaylandState {
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
         self.data_device = None;
+        self.drop_data_control();
 
         self.forget_ime_of(&seat);
         self.forget_idle();

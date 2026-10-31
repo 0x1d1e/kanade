@@ -1,22 +1,19 @@
 //! The clipboard (ADR 0011): a history of what was copied, text and images, newest first,
-//! bounded and kept only in memory. `wl-paste --watch` runs Kanade itself at each new selection
-//! (`hand_over`), which hands back that selection's content with its state and type, so what is
-//! kept is what that state was about. Restoring an entry hands
-//! it to `wl-copy --foreground`, a holder that serves it until another program takes the selection;
-//! restoring another kills it. The new selection is announced like any other, so a restored entry
-//! moves to the top, and that announcement is what says the restore is done: a paste then gets it. Removing an entry or clearing the history forgets only the history, never what
-//! is on the clipboard now. What was copied is never logged, and an entry's `Debug` leaves it out.
-//! A selection its owner marks sensitive, like a password manager's, is never read (ADR 0019): only
-//! one wl-paste says is `data` is kept, and only a wl-paste that tells a sensitive one
-//! (`SENSITIVE_SINCE`) is started, checked before each start.
+//! bounded and kept only in memory. Selection announcements arrive from the runtime's data-control
+//! protocol (ADR 0028). Restoring an entry hands it to `wl-copy --foreground`, a holder that serves
+//! it until another program takes the selection; restoring another kills it. The new selection is
+//! announced like any other, so a restored entry moves to the top, and that announcement is what says
+//! the restore is done: a paste then gets it. Removing an entry or clearing the history forgets only
+//! the history, never what is on the clipboard now. What was copied is never logged, and an entry's
+//! `Debug` leaves it out.
+//! A selection its owner marks sensitive, like a password manager's (`x-kde-passwordManagerHint`),
+//! is never read (ADR 0019): offers with that MIME type are rejected before reading.
 //! An entry may be pinned (ADR 0114): it sorts first, the bounds never evict it and Clear all keeps
 //! it. Pins, and only pins, are kept in a private file across restarts (ADR 0115, `pins`); the rest
 //! of the history stays in memory. The pictures' previews are files on tmpfs only, `preview`.
 
-use std::env;
-use std::ffi::OsStr;
 use std::fmt;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -25,81 +22,13 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
 
-use crate::sources::wake::{self, Failed};
+use crate::sources::wake;
 use crate::supervise;
 
 pub mod pins;
 pub mod preview;
 
-pub const PASTE: &str = "wl-paste";
 pub const COPY: &str = "wl-copy";
-
-// the argument wl-paste runs Kanade with at each new selection; not a verb
-pub const HAND_OVER: &str = "--clipboard-selection";
-
-/*
- * what wl-paste runs at each new selection: this Kanade, through setpriv so it dies with wl-paste,
- * which forks it and so does not pass on its own parent-death signal. One process, no shell
- */
-fn watch_command(exe: &str) -> Vec<&str> {
-    let mut command = vec!["--watch"];
-
-    if wake::guards() {
-        command.extend([wake::SETPRIV, "--pdeathsig", "KILL"]);
-    }
-
-    command.extend([exe, HAND_OVER]);
-    command
-}
-
-/*
- * the first wl-paste that says a selection is sensitive, one offering `x-kde-passwordManagerHint`:
- * an older one says `data` for it (2.2), or says nothing (2.1 and older)
- */
-pub const SENSITIVE_SINCE: (u32, u32) = (2, 3);
-
-// how long `wl-paste --version` may take
-const ASKED: Duration = Duration::from_secs(5);
-
-/*
- * wl-paste's version, if it says which selections are sensitive; else why not, as with none on the
- * PATH, so no history is kept
- */
-pub fn paste_version() -> Result<String, String> {
-    let printed =
-        wake::query_within(PASTE, &["--version"], ASKED).map_err(|failed| match failed {
-            Failed::Said(said) => said,
-            Failed::Overran(limit) => format!("`{PASTE} --version` took over {limit:?}"),
-        })?;
-
-    tells_sensitive(&printed)
-}
-
-// from what `wl-paste --version` printed: `wl-clipboard 2.3.0`, then its copyright
-fn tells_sensitive(printed: &str) -> Result<String, String> {
-    let version = printed
-        .lines()
-        .next()
-        .and_then(|line| line.strip_prefix("wl-clipboard "))
-        .map(str::trim);
-
-    let release = version.and_then(|version| {
-        let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
-        Some((parts.next()??, parts.next()??))
-    });
-
-    let (major, minor) = SENSITIVE_SINCE;
-
-    match (version, release) {
-        (Some(version), Some(release)) if release >= SENSITIVE_SINCE => {
-            Ok(format!("{PASTE} {version}"))
-        }
-        (Some(version), Some(_)) => Err(format!(
-            "{PASTE} {version} cannot tell a sensitive copy, Kanade needs {major}.{minor} or later"
-        )),
-        _ => Err(format!("cannot tell {PASTE}'s version")),
-    }
-}
 
 // the most entries kept, the most bytes one may have, and the most all of them together may
 pub const ENTRIES: usize = 50;
@@ -111,7 +40,7 @@ pub const PINS: usize = 20;
 pub const PIN_BYTES: usize = 16 << 20;
 
 // whether `mime` is a type a frame can carry: within MIME_BYTES, no space or control character
-fn framed(mime: &str) -> bool {
+pub(crate) fn framed(mime: &str) -> bool {
     (1..=MIME_BYTES).contains(&mime.len())
         && !mime.contains(|c: char| c.is_whitespace() || c.is_control())
 }
@@ -122,8 +51,8 @@ const TEXT: &str = "text/plain;charset=utf-8";
 // bytes an image has at an offset
 type Signature = (usize, &'static [u8]);
 
-// the longest type kept; one wl-paste hands over longer, or with a space, is not
-const MIME_BYTES: usize = 255;
+// the longest type kept
+pub(crate) const MIME_BYTES: usize = 255;
 
 /*
  * the images known by how they start, as (type, [(offset, signature)]), for a wl-paste that does
@@ -559,7 +488,7 @@ fn held() -> MutexGuard<'static, Option<Child>> {
     HELD.locked()
 }
 
-// starts its threads, each for good; without wl-paste there is no history
+// starts its threads, each for good; restoring entries uses wl-copy
 pub fn follow() {
     let (restores, heard) = mpsc::channel();
 
@@ -575,7 +504,7 @@ pub fn follow() {
 
     // wl-copy dies with the thread that started it, so this one lives as long as Kanade
     supervise::spawn("clipboard-copy", move || copy(&heard));
-    supervise::spawn("clipboard", paste);
+    kanade_runtime::on_clipboard(record_selection);
 }
 
 /*
@@ -711,8 +640,8 @@ fn copy(heard: &Receiver<Restore>) {
 }
 
 /*
- * holds `content`, then waits for wl-paste to announce it as the selection; a holder that ended
- * before, refused or replaced at once, never will
+ * holds `content`, then waits for runtime data-control to announce it as the selection; a holder that
+ * ended before, refused or replaced at once, never will
  */
 fn restored(content: &Content) -> io::Result<()> {
     let (announce, announced) = mpsc::channel();
@@ -835,158 +764,13 @@ fn textual(mime: &str) -> bool {
         || mime.contains("application/vnd.ms-publisher")
 }
 
-fn paste() {
-    let stop = wake::Stop::default();
+// records a selection received from the runtime's data-control protocol
+pub fn record_selection(mime: Option<String>, bytes: Vec<u8>) {
+    reap();
 
-    // this Kanade even once a rebuild replaced its file, while it runs
-    let exe = format!("/proc/{}/exe", std::process::id());
-
-    // before each start, as wl-paste may have been replaced by an older one since the last
-    let mut refused = None;
-    let tells = || {
-        paste_version().map(drop).map_err(|why| {
-            refused = Some(why.clone());
-            io::Error::other(why)
-        })
-    };
-
-    let error = wake::run_checked(PASTE, &watch_command(&exe), &stop, tells, |output| {
-        watch(output, &mut record)
-    });
-
-    // nothing stops it
-    let Some(error) = error else { return };
-
-    let why = match refused {
-        Some(why) => format!("{why}, no clipboard history"),
-        None => format!("cannot run wl-paste ({error}), no clipboard history"),
-    };
-
-    eprintln!("kanade: {why}");
-    supervise::stopped("clipboard", why);
-}
-
-/*
- * `kanade --clipboard-selection`, as wl-paste runs it at each new selection with the selection's
- * content on stdin and its state and type in the environment
- */
-pub fn hand_over_selection() {
-    let handed = hand_over(
-        env::var_os("CLIPBOARD_STATE").as_deref(),
-        env::var_os("CLIPBOARD_TYPE").as_deref(),
-        io::stdin().lock(),
-        io::stdout().lock(),
-    );
-
-    // wl-paste ignores how it exits, and Kanade reads a frame cut short as the watch ending
-    drop(handed);
-}
-
-/*
- * writes one frame for Kanade: `data <length>[ <type>]` and the content, when the selection's state
- * is `data`, it holds at most ENTRY_BYTES and its type, if said, is one Kanade can frame; else `-`
- * alone, the content unread. So a sensitive selection's, or one in a state Kanade does not know or
- * that is unset, never leaves wl-paste
- */
-fn hand_over(
-    state: Option<&OsStr>,
-    mime: Option<&OsStr>,
-    input: impl Read,
-    mut output: impl Write,
-) -> io::Result<()> {
-    let data = state.is_some_and(|state| state == "data");
-    let mime = match mime.map(OsStr::to_str) {
-        None => Ok(None),
-        Some(Some(mime)) if framed(mime) => Ok(Some(mime)),
-        Some(_) => Err(()),
-    };
-
-    let Ok(mime) = mime.and_then(|mime| if data { Ok(mime) } else { Err(()) }) else {
-        return output.write_all(b"-\n");
-    };
-
-    let mut bytes = Vec::new();
-    input
-        .take(u64::try_from(ENTRY_BYTES).unwrap_or(u64::MAX) + 1)
-        .read_to_end(&mut bytes)?;
-
-    if bytes.len() > ENTRY_BYTES {
-        return output.write_all(b"-\n");
+    if let Some(content) = Content::new(mime.as_deref(), bytes) {
+        record(content);
     }
-
-    match mime {
-        Some(mime) => writeln!(output, "data {} {mime}", bytes.len())?,
-        None => writeln!(output, "data {}", bytes.len())?,
-    }
-
-    output.write_all(&bytes)?;
-    output.flush()
-}
-
-/*
- * follows the frames `hand_over` wrote until the output ends, keeping each selection with data.
- * Returns why it ended, also a frame it cannot read
- */
-fn watch(mut frames: impl BufRead, record: &mut impl FnMut(Content)) -> io::Error {
-    let mut header = Vec::new();
-
-    loop {
-        header.clear();
-
-        // a header holds a length and a type within MIME_BYTES
-        let read = (&mut frames)
-            .take(MIME_BYTES as u64 + 64)
-            .read_until(b'\n', &mut header);
-
-        match read {
-            Ok(0) => return io::ErrorKind::UnexpectedEof.into(),
-            Ok(_) => {}
-            Err(error) => return error,
-        }
-
-        reap();
-
-        let Some(header) = header.strip_suffix(b"\n") else {
-            return io::Error::new(
-                io::ErrorKind::InvalidData,
-                "a clipboard frame without its end",
-            );
-        };
-
-        if header == b"-" {
-            continue;
-        }
-
-        let Some((len, mime)) = parse(header) else {
-            return io::Error::new(
-                io::ErrorKind::InvalidData,
-                "a clipboard frame Kanade cannot read",
-            );
-        };
-
-        let mut bytes = vec![0; len];
-        if let Err(error) = frames.read_exact(&mut bytes) {
-            return error;
-        }
-
-        if let Some(content) = Content::new(mime, bytes) {
-            record(content);
-        }
-    }
-}
-
-// a header's length, within ENTRY_BYTES, and type, if any
-fn parse(header: &[u8]) -> Option<(usize, Option<&str>)> {
-    let header = str::from_utf8(header).ok()?.strip_prefix("data ")?;
-
-    let (len, mime) = match header.split_once(' ') {
-        Some((len, mime)) => (len, Some(mime)),
-        None => (header, None),
-    };
-
-    let len = len.parse().ok().filter(|len| *len <= ENTRY_BYTES)?;
-
-    Some((len, mime))
 }
 
 // writes only a change, since a write wakes every window; a restore of the newest changes nothing
@@ -1303,114 +1087,53 @@ mod tests {
         assert!(clipboard.pin_ids().is_empty());
     }
 
-    // the frames `hand_over` writes for each (state, type, content), as wl-paste runs it
-    fn handed(selections: &[(Option<&str>, Option<&str>, &[u8])]) -> Vec<u8> {
-        let mut frames = Vec::new();
-
-        for (state, mime, content) in selections {
-            hand_over(
-                state.map(OsStr::new),
-                mime.map(OsStr::new),
-                *content,
-                &mut frames,
-            )
-            .unwrap();
-        }
-
-        frames
-    }
-
-    fn recorded(selections: &[(Option<&str>, Option<&str>, &[u8])]) -> Vec<Content> {
-        let mut recorded = Vec::new();
-
-        let lost = watch(handed(selections).as_slice(), &mut |content| {
-            recorded.push(content);
-        });
-
-        assert_eq!(lost.kind(), io::ErrorKind::UnexpectedEof);
-        recorded
-    }
-
-    const PLAIN: Option<&str> = Some("text/plain");
-
     #[test]
-    fn a_sensitive_selection_right_after_another_is_never_kept() {
-        let selections: [(Option<&str>, Option<&str>, &[u8]); 2] = [
-            (Some("data"), PLAIN, b"a"),
-            (Some("sensitive"), PLAIN, b"hunter2"),
-        ];
-
-        assert_eq!(recorded(&selections), [text("a")]);
-    }
-
-    #[test]
-    fn a_sensitive_selection_is_never_read() {
-        let mut frames = Vec::new();
-        let mut unread: &[u8] = b"hunter2";
-
-        hand_over(
-            Some(OsStr::new("sensitive")),
-            PLAIN.map(OsStr::new),
-            &mut unread,
-            &mut frames,
-        )
-        .unwrap();
-
-        assert_eq!(frames, b"-\n");
-        assert_eq!(unread, b"hunter2");
-    }
-
-    #[test]
-    fn a_selection_is_kept_whole_up_to_its_bounds() {
-        let png = [b"\x89PNG\r\n\x1a\n".as_slice(), &[0, 0xff, b'\n', 0x80]].concat();
-        let most = vec![b'x'; ENTRY_BYTES];
-        let over = vec![b'x'; ENTRY_BYTES + 1];
-
-        let selections: [(Option<&str>, Option<&str>, &[u8]); 4] = [
-            (Some("data"), Some("image/png"), &png),
-            (Some("data"), PLAIN, &over),
-            (Some("data"), PLAIN, &most),
-            (Some("data"), PLAIN, b"after"),
-        ];
-
-        let recorded = recorded(&selections);
-
-        assert_eq!(recorded.len(), 3);
-        assert_eq!(recorded[0].bytes(), png);
-        assert_eq!(recorded[1].len(), ENTRY_BYTES);
-        assert_eq!(recorded[2], text("after"));
-    }
-
-    #[test]
-    fn only_a_wl_paste_that_tells_a_sensitive_copy_is_followed() {
-        let copyright = "\nCopyright (C) 2018-2026 Sergey Bugaev\n";
-
-        for (version, told) in [
-            ("2.3.0", true),
-            ("2.3", true),
-            ("2.10.1", true),
-            ("3.0.0", true),
-            ("2.2.1", false),
-            ("2.1.0", false),
-            ("1.9", false),
-        ] {
-            let printed = format!("wl-clipboard {version}{copyright}");
-
-            assert_eq!(tells_sensitive(&printed).is_ok(), told, "{version}");
-        }
-
-        for printed in [
-            "",
-            "wl-clipboard\n",
-            "wl-clipboard x.y\n",
-            "something 2.3.0\n",
-        ] {
-            assert!(tells_sensitive(printed).is_err(), "{printed:?}");
-        }
-
+    fn content_from_mime_and_bytes() {
         assert_eq!(
-            tells_sensitive(&format!("wl-clipboard 2.3.0{copyright}")),
-            Ok(String::from("wl-paste 2.3.0"))
+            Content::new(Some("text/plain"), b"hello".to_vec()),
+            Some(text("hello"))
+        );
+        assert_eq!(
+            Content::new(Some("text/plain;charset=utf-8"), b"world".to_vec()),
+            Some(text("world"))
+        );
+        let png = [b"\x89PNG\r\n\x1a\n".as_slice(), &[0, 0xff, b'\n', 0x80]].concat();
+        assert_eq!(
+            Content::new(Some("image/png"), png.clone()),
+            Some(Content::Image {
+                mime: "image/png".into(),
+                bytes: png.into(),
+            })
+        );
+        // Magic bytes detection when mime is None
+        let jpeg = b"\xff\xd8\xff5678".to_vec();
+        assert_eq!(
+            Content::new(None, jpeg.clone()),
+            Some(Content::Image {
+                mime: "image/jpeg".into(),
+                bytes: jpeg.into(),
+            })
+        );
+        // Unsupported mime
+        assert_eq!(
+            Content::new(Some("application/octet-stream"), b"raw".to_vec()),
+            None
+        );
+    }
+
+    #[test]
+    fn record_selection_updates_clipboard() {
+        Clipboard::write().clear();
+        record_selection(Some("text/plain".into()), b"first".to_vec());
+        assert_eq!(
+            Clipboard::read().entries().first().map(|e| &e.content),
+            Some(&text("first"))
+        );
+
+        record_selection(Some("text/plain".into()), b"second".to_vec());
+        assert_eq!(
+            Clipboard::read().entries().first().map(|e| &e.content),
+            Some(&text("second"))
         );
     }
 }

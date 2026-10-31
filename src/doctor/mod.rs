@@ -25,7 +25,7 @@ use crate::modules::{self, Module, Provider};
 use crate::sddm;
 use crate::sources::json::Json;
 use crate::sources::{
-    binds, bus, cava, clipboard, keys, niri, pipewire, radios, recording, sound, wake, wallpaper,
+    binds, bus, cava, keys, niri, pipewire, radios, recording, sound, wake, wallpaper,
 };
 
 // the oldest niri Kanade follows (docs/archived/design.md Constraints)
@@ -639,10 +639,6 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                     pam_found(service, lock::pam_file(service))
                 }
                 Provider::Niri => niri_found(niri_version()),
-                Provider::Paste => match clipboard::paste_version() {
-                    Ok(version) => Found::Present(version),
-                    Err(why) => Found::Missing(why),
-                },
                 Provider::Keyboards => match keys::found() {
                     Ok(found) => Found::Present(found),
                     Err(why) => Found::Missing(why),

@@ -1,6 +1,6 @@
 # 11. Kanade adapters where Amane lacks a capability
 
-Status: accepted (design, roadmap 9 Shell essentials). Replaces "Extend Amane first" in `docs/design.md` Runtime + dependencies.
+Status: accepted (design, roadmap 9 Shell essentials). Replaces "Extend Amane first" in `docs/design.md` Runtime + dependencies. Amended by ADR 0028: clipboard ingestion is handled directly via data-control protocols in `crates/runtime` rather than `wl-paste --watch`; `wl-copy --foreground` is preserved as the holder for restore.
 
 ## Context
 
@@ -26,14 +26,14 @@ When the pinned Amane lacks a capability a Module needs, Kanade builds an adapte
 
 Every adapter keeps these rules:
 
-- **The Wayland boundary holds.** No Wayland client outside `src/doctor/`, enforced by `src/boundary.rs`, and the crates with a connection of their own (ADR 0025, 0028). A capability reachable only through a Wayland protocol, like wlr data-control for the clipboard, goes through an external tool that speaks it.
+- **The Wayland boundary holds.** No Wayland client outside `src/doctor/`, enforced by `src/boundary.rs`, and the crates with a connection of their own (ADR 0025, 0028). A capability reachable only through a Wayland protocol, like data-control for the clipboard, goes through `crates/runtime` directly (ADR 0028); `wl-copy --foreground` remains as the holder for restore.
 - **External semantics stop at the adapter.** It hands the rest of Kanade Kanade types, through a Service or `Island::write()`. Tool output, D-Bus paths and PipeWire ids go no further. `island/` stays unaware of it.
 - **No idle cost.** It wakes on announcements, not a timer (ADR 0004).
 - **A child process's lifetime follows its role.** Every one dies with Kanade (`setpriv --pdeathsig KILL`) and stays in the foreground, so the kernel can kill it.
-  - A **follower** reads announcements for as long as its Module is on (`pw-dump --monitor`, `wl-paste --watch`). It runs under `wake::run`, which restarts it with backoff when its output ends, as ADRs 0003 and 0004 do.
+  - A **follower** reads announcements for as long as its Module is on (`pw-dump --monitor`; `wl-paste --watch` superseded by runtime data-control). It runs under `wake::run`, which restarts it with backoff when its output ends, as ADRs 0003 and 0004 do.
   - An **action** does one thing and exits (`wpctl set-volume`, `wpctl set-default`), or reads one thing a follower's announcement leaves out (`pw-dump <id>` for a whole object). It is never restarted; a failure is reported to whoever asked.
   - A **holder** is state: it lives exactly as long as what it stands for (`systemd-inhibit` while caffeine is on, `wl-copy --foreground` while its entry owns the selection). The adapter starts and stops it. When it exits on its own, the state has ended and the adapter says so; it never restarts it, which could hold a lock nobody asked for or put back a stale selection.
-- **A missing adapter dependency never takes down the shell.** It follows the Module rules in `docs/design.md`: a Module's required backend missing disables that Module with a named reason (`clipboard` without `wl-paste`, `caffeine` without `systemd-inhibit`); one that provides only an optional capability degrades it (`audio` without `wpctl` keeps Amane's master volume and mute). `kanade doctor` reports either case. A disabled Module starts no process and opens no bus name (ADR 0008).
+- **A missing adapter dependency never takes down the shell.** It follows the Module rules in `docs/design.md`: a Module's required backend missing disables that Module with a named reason (`caffeine` without `systemd-inhibit`, `clipboard` restore without `wl-copy`); one that provides only an optional capability degrades it (`audio` without `wpctl` keeps Amane's master volume and mute). `kanade doctor` reports either case. A disabled Module starts no process and opens no bus name (ADR 0008).
 
 When a later pin of Amane gains a capability, Kanade may drop its adapter in that bump. It does not have to.
 

@@ -52,20 +52,6 @@ pub fn run(
 }
 
 /*
- * runs `program` as `run` does, but only once `check` passes before each start, the first and every
- * one after it ended; one that fails starts it no more, and is returned as why
- */
-pub fn run_checked(
-    program: &str,
-    args: &[&str],
-    stop: &Stop,
-    check: impl FnMut() -> io::Result<()>,
-    follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
-) -> Option<io::Error> {
-    keep(program, args, stop, spawn, check, follow)
-}
-
-/*
  * runs `program` as `run` does, but only through setpriv, never without, for a program that must
  * not outlive Kanade, like a daemon nothing else would stop. Without setpriv it cannot be started
  */

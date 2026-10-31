@@ -16,6 +16,8 @@ pub struct App {
 
     handlers: IpcHandlers,
     on_key_release: Option<fn()>,
+
+    data_control: bool,
 }
 
 impl App {
@@ -74,6 +76,20 @@ impl App {
         self
     }
 
+    // opt-in to clipboard selection tracking via data-control protocols
+    pub fn data_control(mut self) -> Self {
+        self.data_control = true;
+
+        self
+    }
+
+    pub fn on_clipboard(mut self, handler: fn(Option<String>, Vec<u8>)) -> Self {
+        self.data_control = true;
+        crate::wayland::data_control::set_handler(handler);
+
+        self
+    }
+
     pub fn run(self) {
         let no_windows = self.windows.is_empty() && self.normal_windows.is_empty();
 
@@ -96,6 +112,7 @@ impl App {
             self.normal_windows,
             self.per_monitor,
             self.handlers,
+            self.data_control,
         );
 
         backend.run();

@@ -1,27 +1,19 @@
 # 19. Clipboard sensitive content
 
-Status: accepted (roadmap 12 Polish, #162). Answers the clipboard sensitive-content policy of `docs/design.md` Security/privacy, the prerequisite for persistence.
+Status: accepted (roadmap 12 Polish, #162). Answers the clipboard sensitive-content policy of `docs/design.md` Security/privacy, the prerequisite for persistence. Amended by ADR 0028: with data-control in `crates/runtime`, sensitivity is filtered directly at the Wayland offer level. Offers with `x-kde-passwordManagerHint` are dropped and destroyed immediately without reading, superseding the `wl-paste` version check (`SENSITIVE_SINCE`), `CLIPBOARD_STATE` environment checks, and the doctor gate.
 
 Validated (#162) on niri with wl-clipboard 2.3.0: `wl-copy --sensitive` between two plain copies left only the plain ones in the history; a `wl-paste` printing version 2.2.1 started no watcher, and stderr, `kanade status` and `kanade doctor` said why. A watcher killed after its `wl-paste` was swapped for one acting as 2.2 was not started again, and a sensitive copy after it was not kept.
 
 ## Context
 
-The `clipboard` Module (#136, ADR 0011) keeps a history of what was copied, through `wl-paste --watch`. A password manager's copy must never enter it. On Wayland the convention is KDE's: the owner offers the `x-kde-passwordManagerHint` type next to the content, with `secret` as its data, as `wl-copy --sensitive` does.
+The `clipboard` Module (#136, ADR 0011) keeps a history of what was copied. Selection announcements arrive from the runtime's data-control protocol (`ext_data_control_manager_v1` or `zwlr_data_control_manager_v1`, ADR 0028). A password manager's copy must never enter it. On Wayland the convention is KDE's: the owner offers the `x-kde-passwordManagerHint` type next to the content, with `secret` as its data, as `wl-copy --sensitive` does.
 
-Kanade sees no offer itself: wl-paste does, and runs Kanade per selection with the content on stdin and `CLIPBOARD_STATE` set (`hand_over`). Checked in wl-clipboard's source:
-
-| wl-paste | `CLIPBOARD_STATE` of a selection offering the hint |
-|---|---|
-| 2.1 and older | unset |
-| 2.2 | `data`, as for any selection |
-| 2.3 and later | `sensitive` |
-
-2.3 marks a selection sensitive whenever the hint type is offered, without reading whether it says `secret` or `public`.
+Historically, Kanade saw no offer itself when using `wl-paste --watch`: wl-paste ran Kanade per selection with the content on stdin and `CLIPBOARD_STATE` set (`hand_over`). Under runtime data-control, Kanade receives the data offer and its offered MIME types directly before requesting transfer.
 
 ## Decision
 
-- **A selection marked sensitive is never read.** Only one whose `CLIPBOARD_STATE` is exactly `data` is handed to Kanade; `sensitive`, `nil`, `clear`, a state Kanade does not know, or none at all hands over `-` alone and leaves the content in wl-paste. Unset fails closed: it can only come from a wl-paste too old to tell.
-- **Only a wl-paste that tells runs.** Before each start of its watcher, the first and each restart after it ended, the `clipboard` Module runs `wl-paste --version`; older than 2.3, or a version it cannot read, and it starts no watcher, keeps no more history, says why on stderr and in `kanade status`. `kanade doctor` warns the same.
+- **A selection marked sensitive is never read.** When the data control device receives a selection offer, its MIME types are checked before calling `receive`. If `x-kde-passwordManagerHint` is present among the offered types, the offer is immediately destroyed without binding a pipe or reading data.
+- **Offer-level filtering supersedes tool version gating.** Because sensitivity is verified on the Wayland data offer itself before any bytes are requested, `wl-paste --version`, `SENSITIVE_SINCE`, `Provider::Paste`, the doctor check, `--clipboard-selection`, and `hand_over` are retired.
 - **The hint is the only signal.** Kanade does not guess at content (a pattern for keys or passwords) or at the copying app, which Wayland does not name.
 - **Persistence, when it comes, stores only what this lets in.** An entry is in the history only after passing this, so a store of the history needs no second filter.
 

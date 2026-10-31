@@ -12,10 +12,12 @@ vello = "0.11.0"
 # only for glsl shaders, vello already brings wgpu and this turns on its glsl reader
 wgpu = { version = "30.0.1", default-features = false, features = ["glsl"] }
 wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # the compositor's list of windows, for which are fullscreen
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # only for client_system, which hands the gpu libwayland's own display pointer
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
+rustix = { version = "1", default-features = false, features = ["std", "pipe", "event"] }
 fontconfig = "0.11"
 ttf-parser = "0.25.1"
 zune-jpeg = "0.5.15"

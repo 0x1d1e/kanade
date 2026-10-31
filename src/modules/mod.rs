@@ -94,9 +94,6 @@ pub enum Provider {
     // niri's IPC, which the Module cannot work without
     Niri,
 
-    // wl-paste, new enough to say which copies are sensitive (`clipboard::SENSITIVE_SINCE`)
-    Paste,
-
     // the keyboards' evdev devices, readable in the input group (`keys::found`)
     Keyboards,
 

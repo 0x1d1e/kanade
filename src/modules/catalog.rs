@@ -784,16 +784,10 @@ notifications dnd on until <HH:MM>
         requires: &[CORE],
         optional: &[],
         warns: None,
-        needs: &[
-            Need {
-                on: Provider::Paste,
-                without: "no clipboard history",
-            },
-            Need {
-                on: Provider::Program(clipboard::COPY),
-                without: "no restoring a clipboard entry",
-            },
-        ],
+        needs: &[Need {
+            on: Provider::Program(clipboard::COPY),
+            without: "no restoring a clipboard entry",
+        }],
         settings: &[],
         // clearing is the history's own; opening its Surface is `clipboard-surface`'s
         hooks: Hooks {
@@ -811,7 +805,7 @@ notifications dnd on until <HH:MM>
         }],
         start: |app| {
             clipboard::follow();
-            app
+            app.data_control()
         },
     },
     // power profiles, for Controls

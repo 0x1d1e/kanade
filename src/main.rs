@@ -51,11 +51,6 @@ use kanade_runtime::App;
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
 
-    if arguments == [sources::clipboard::HAND_OVER] {
-        sources::clipboard::hand_over_selection();
-        return ExitCode::SUCCESS;
-    }
-
     // a browser starts its native messaging host with the manifest's path and the extension
     if arguments
         .iter()

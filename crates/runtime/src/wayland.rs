@@ -1,4 +1,5 @@
 mod compositor;
+pub(crate) mod data_control;
 mod data_device;
 mod effect;
 mod idle;
@@ -91,6 +92,13 @@ struct WaylandState {
     data_device_manager: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,
 
+    // clipboard management via ext-data-control or zwlr-data-control
+    data_control_enabled: bool,
+    data_control_manager: Option<data_control::DataControlManager>,
+    data_control_device: Option<data_control::DataControlDevice>,
+    data_control_active_offer: Option<data_control::ActiveOffer>,
+    data_control_offers: HashMap<ObjectId, Vec<String>>,
+
     // both are needed for fractional scales like 1.25, none when the compositor lacks one
     fractional_scale: Option<WpFractionalScaleManagerV1>,
     viewporter: Option<WpViewporter>,
@@ -140,6 +148,7 @@ impl WaylandApp {
         normal_views: Vec<Named>,
         per_monitor: Vec<fn(&Monitor) -> LayerWindow>,
         handlers: IpcHandlers,
+        data_control: bool,
     ) -> Self {
         // the scale asked before the runtime started is the one windows open at
         ui_scale::adopt();
@@ -167,6 +176,11 @@ impl WaylandApp {
         let idle_notifier = idle::bind(&globals, &qh);
 
         let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
+        let data_control_manager = if data_control {
+            data_control::bind(&globals, &qh)
+        } else {
+            None
+        };
 
         let fractional_scale = globals.bind(&qh, 1..=1, ()).ok();
         let viewporter = globals.bind(&qh, 1..=1, ()).ok();
@@ -193,6 +207,12 @@ impl WaylandApp {
 
             data_device_manager,
             data_device: None,
+
+            data_control_enabled: data_control,
+            data_control_manager,
+            data_control_device: None,
+            data_control_active_offer: None,
+            data_control_offers: HashMap::new(),
 
             fractional_scale,
             viewporter,
