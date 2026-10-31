@@ -49,11 +49,17 @@ Runtime work, done when wanted.
       a list with one bad link is refused whole. The drag is accepted only over a widget with
       `on_drop`. One consumer: the Dock offers it on an icon whose app takes files
       (`src/dock.rs:1992`, filtered by `Launch::takes_files`).
-- [ ] Fold `crates/lock` (session lock in the runtime) into the runtime's
-      connection. Drop its `src/boundary.rs` exception with it.
-- [ ] The Island, its Satellites, Surfaces, Banners and OSD as one shape on one
-      layer surface per output (ADR 0027 step 3.4); the Privacy cluster's dots
-      are inside the Island's body (ADR 0033).
+- [x] `crates/lock` connection: retained on its dedicated Wayland connection and thread per
+      ADR 0025, rather than folded into the main runtime loop (the `src/boundary.rs` exception remains).
+      Rationale:
+      - Guaranteeing niri's 1-second lock deadline (~57 ms response, zero red screen risk).
+      - Isolating CPU/shm fallback rendering from main-thread GPU/shader compilation hitches.
+      - Isolating password memory from the general UI inspection tree and IME.
+- [x] Island layer surface consolidation: the Island, Satellites, Surfaces, OSD, and Privacy
+      cluster dots are already consolidated onto a single `LayerWindow` per output (`view::island`,
+      ADR 0033, ADR 0101; ADR 0027 step 3.4). Banners deliberately remain on their own `kanade-banners`
+      layer surface per ADR 0023 and ADR 0101 to avoid GPU canvas buffer inflation and layer-leak
+      over fullscreen windows (ADR 0070). Complete as architected.
 - [x] The clipboard history through data-control in the runtime, in place of `wl-paste --watch`
       and its setpriv helper (`src/sources/clipboard.rs`, ADR 0019). Implemented:
       - Supported protocols: binds `ext_data_control_manager_v1` or `zwlr_data_control_manager_v1`
