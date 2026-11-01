@@ -78,6 +78,82 @@ pub fn is_active() -> bool {
     Umbriel::read().connected || socket_path().is_some_and(|p| UnixStream::connect(p).is_ok())
 }
 
+/// Encodes a spawn command request as Umbriel IPC JSON action.
+pub fn spawn_action(command: &str) -> String {
+    format!(
+        r#"{{"cmd":"action","action":"spawn","command":{}}}"#,
+        json::quote(command)
+    )
+}
+
+/// Spawns a shell command via Umbriel compositor IPC over its Unix socket.
+pub fn spawn(command: &str) -> Result<(), String> {
+    let reply = request(&spawn_action(command))?;
+    decode_response(&reply.to_string())
+}
+
+/// Reads open windows from Umbriel's IPC query.
+pub fn windows() -> Result<Json, String> {
+    request(r#"{"cmd":"windows"}"#)
+}
+
+/// Encodes a window-focus action using Umbriel's hexadecimal window id.
+pub fn focus_window_action(id: &str) -> String {
+    format!(
+        r#"{{"cmd":"action","action":"window-focus","window":{}}}"#,
+        json::quote(id)
+    )
+}
+
+/// Focuses a window by Umbriel's hexadecimal window id.
+pub fn focus_window(id: &str) -> Result<(), String> {
+    let reply = request(&focus_window_action(id))?;
+    decode_response(&reply.to_string())
+}
+
+fn request(request: &str) -> Result<Json, String> {
+    let socket = socket_path().ok_or_else(|| String::from("umbriel socket not found"))?;
+    let mut stream =
+        UnixStream::connect(&socket).map_err(|e| format!("connecting to umbriel socket: {e}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .map_err(|e| format!("sending request to umbriel: {e}"))?;
+
+    let mut reply = String::new();
+    let bytes = BufReader::new(stream)
+        .read_line(&mut reply)
+        .map_err(|e| format!("reading umbriel response: {e}"))?;
+    if bytes == 0 {
+        return Err(String::from("umbriel closed socket without answering"));
+    }
+
+    json::parse(&reply).ok_or_else(|| format!("invalid JSON in umbriel response: {reply:?}"))
+}
+
+pub(crate) fn decode_response(reply: &str) -> Result<(), String> {
+    let response =
+        json::parse(reply).ok_or_else(|| format!("invalid JSON in umbriel response: {reply:?}"))?;
+
+    if let Some(err) = response.get("err").filter(|v| !v.is_null()) {
+        if let Some(msg) = err.as_str() {
+            return Err(format!("umbriel rejected request: {msg}"));
+        }
+        return Err(format!("umbriel rejected request: {err}"));
+    }
+
+    if response.get("ok").is_some() {
+        return Ok(());
+    }
+
+    Err(format!("unrecognized umbriel response: {reply}"))
+}
+
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
 const FIRST_RETRY: Duration = Duration::from_millis(500);
 const LAST_RETRY: Duration = Duration::from_secs(5);
@@ -299,5 +375,36 @@ mod tests {
         Umbriel::write().seen.focused_output = None;
         handle_event(&outputs_unfocused);
         assert_eq!(Umbriel::read().seen.focused_output.as_deref(), Some("DP-2"));
+    }
+
+    #[test]
+    fn spawn_action_encodes_json_request() {
+        assert_eq!(
+            spawn_action("exec 'firefox'"),
+            r#"{"cmd":"action","action":"spawn","command":"exec 'firefox'"}"#
+        );
+        assert_eq!(
+            spawn_action(r#"cd -- '/tmp' && exec 'foo "bar"'"#),
+            r#"{"cmd":"action","action":"spawn","command":"cd -- '/tmp' && exec 'foo \"bar\"'"}"#
+        );
+        assert_eq!(
+            focus_window_action("58f26771340d94c9fd41b7841be9e3e0"),
+            r#"{"cmd":"action","action":"window-focus","window":"58f26771340d94c9fd41b7841be9e3e0"}"#
+        );
+    }
+
+    #[test]
+    fn decode_response_parses_ok_and_err() {
+        assert_eq!(decode_response(r#"{"ok":null}"#), Ok(()));
+        assert_eq!(decode_response(r#"{"ok":true}"#), Ok(()));
+        assert_eq!(decode_response(r#"{"ok":[{"id":"1"}]}"#), Ok(()));
+        assert_eq!(
+            decode_response(r#"{"err":"executable not found"}"#),
+            Err(String::from(
+                "umbriel rejected request: executable not found"
+            ))
+        );
+        assert!(decode_response(r#"{"invalid":123}"#).is_err());
+        assert!(decode_response("not valid json").is_err());
     }
 }

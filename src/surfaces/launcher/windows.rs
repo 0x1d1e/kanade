@@ -11,8 +11,8 @@ use kanade_runtime::service::Service;
 
 use crate::modules;
 use crate::sources::json::Json;
-use crate::sources::niri;
 use crate::sources::windows::{App, Running, Windows};
+use crate::sources::{niri, umbriel};
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
 
@@ -21,7 +21,7 @@ const FROM: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    pub id: u64,
+    pub id: String,
 
     // its title, empty for a window without one
     pub title: String,
@@ -46,10 +46,10 @@ impl Service for Held {
     fn listen() {}
 }
 
-// the newest refresh asked of niri: an answer that is not its own is dropped, as it may come last
+// the newest refresh asked of its compositor: an answer that is not its own is dropped, as it may come last
 static ASKED: AtomicU64 = AtomicU64::new(0);
 
-// asks niri for the windows again on a thread of its own, when the `windows` Module runs
+// asks the active compositor for the windows again on a thread of its own, when the `windows` Module runs
 pub fn refresh() {
     if !modules::on("windows") {
         return;
@@ -57,14 +57,19 @@ pub fn refresh() {
 
     let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
 
-    thread::spawn(move || match niri::ask("\"Windows\"") {
-        Ok(reply) => {
-            // its own statement, so the read is released before the write
-            let entries = entries(&reply, Windows::read().running());
+    thread::spawn(move || {
+        let entries = if umbriel::is_active() {
+            umbriel::windows().map(|reply| entries(&reply, &[], true))
+        } else {
+            niri::ask("\"Windows\"")
+                .map(|reply| entries(&reply, Windows::read().running(), false))
+                .map_err(|error| error.to_string())
+        };
 
-            hold(ticket, entries);
+        match entries {
+            Ok(entries) => hold(ticket, entries),
+            Err(error) => eprintln!("launcher: windows: {error}"),
         }
-        Err(error) => eprintln!("launcher: windows: {error}"),
     });
 }
 
@@ -92,16 +97,30 @@ pub fn titles() -> Vec<Entry> {
 #[cfg(test)]
 pub(super) static TITLES_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-// the windows of niri's `Windows` reply, by title, each with its app as the Dock knows it
-fn entries(reply: &Json, running: &[Running]) -> Vec<Entry> {
-    let Some(windows) = reply.get("Windows").and_then(Json::as_array) else {
+// the windows of either compositor's reply, by title, each with its app as the Dock knows it
+fn entries(reply: &Json, running: &[Running], umbriel: bool) -> Vec<Entry> {
+    let Some(windows) = (if umbriel {
+        reply.get("ok").and_then(Json::as_array)
+    } else {
+        reply.get("Windows").and_then(Json::as_array)
+    }) else {
         return Vec::new();
     };
 
     let mut entries: Vec<Entry> = windows
         .iter()
         .filter_map(|window| {
-            let id = window.get("id")?.as_u64()?;
+            let raw_id = window.get("id")?;
+            let (id, window_id) = if umbriel {
+                let id = raw_id.as_str()?;
+                (
+                    id.to_owned(),
+                    u64::from_str_radix(id.trim_start_matches("0x"), 16).ok(),
+                )
+            } else {
+                let id = raw_id.as_u64()?;
+                (id.to_string(), Some(id))
+            };
             let text = |key| {
                 window
                     .get(key)
@@ -110,9 +129,11 @@ fn entries(reply: &Json, running: &[Running]) -> Vec<Entry> {
                     .to_owned()
             };
 
-            let app = running
-                .iter()
-                .find(|app| app.windows.iter().any(|window| window.id.0 == id));
+            let app = window_id.and_then(|id| {
+                running
+                    .iter()
+                    .find(|app| app.windows.iter().any(|window| window.id.0 == id))
+            });
 
             let (name, icon) = match app.map(|app| &app.app) {
                 Some(App::Desktop(entry)) => (entry.name.clone(), entry.icon_file.clone()),
@@ -128,7 +149,7 @@ fn entries(reply: &Json, running: &[Running]) -> Vec<Entry> {
         })
         .collect();
 
-    entries.sort_by_key(|entry| (entry.title.to_lowercase(), entry.id));
+    entries.sort_by_key(|entry| (entry.title.to_lowercase(), entry.id.clone()));
 
     entries
 }
@@ -182,7 +203,7 @@ impl LauncherProvider for Titles<'_> {
                             }))
                         }
                     },
-                    action: Action::Focus(entry.id),
+                    action: Action::Focus(entry.id.clone()),
                 })
             })
             .collect()
@@ -190,7 +211,7 @@ impl LauncherProvider for Titles<'_> {
 }
 
 // what niri is asked to do to focus the window
-pub fn focus(id: u64) -> String {
+pub fn focus(id: &str) -> String {
     format!(r#"{{"Action":{{"FocusWindow":{{"id":{id}}}}}}}"#)
 }
 
@@ -212,25 +233,49 @@ mod tests {
         )
         .unwrap();
 
-        let entries = entries(&reply, &[]);
+        let entries = entries(&reply, &[], false);
 
         assert_eq!(
             entries
                 .iter()
-                .map(|e| (e.id, e.title.as_str(), e.app.as_str()))
+                .map(|e| (e.id.as_str(), e.title.as_str(), e.app.as_str()))
                 .collect::<Vec<_>>(),
-            [(3, "", ""), (7, "b Notes", "notes")]
+            [("3", "", ""), ("7", "b Notes", "notes")]
         );
-        assert!(super::entries(&json::parse("{}").unwrap(), &[]).is_empty());
+        assert!(super::entries(&json::parse("{}").unwrap(), &[], false).is_empty());
     }
 
     fn entry(id: u64) -> Entry {
         Entry {
-            id,
+            id: id.to_string(),
             title: format!("window {id}"),
             app: String::new(),
             icon: None,
         }
+    }
+
+    #[test]
+    fn umbriel_windows_reply_reads_hexadecimal_ids() {
+        let reply = json::parse(
+            r#"{"ok":[
+                {"id":"58f26771340d94c9fd41b7841be9e3e0","title":"Test Window","app_id":"test-app"},
+                {"id":17,"title":"invalid id"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let entries = entries(&reply, &[], true);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "58f26771340d94c9fd41b7841be9e3e0");
+        assert_eq!(entries[0].title, "Test Window");
+        assert_eq!(entries[0].app, "test-app");
+        assert_eq!(
+            umbriel::focus_window_action(&entries[0].id),
+            r#"{"cmd":"action","action":"window-focus","window":"58f26771340d94c9fd41b7841be9e3e0"}"#
+        );
+        assert_eq!(Titles(&entries).find("").len(), 1);
+        assert_eq!(Titles(&entries).find("test").len(), 1);
     }
 
     // a slow answer to an earlier refresh came last and replaced the newer titles

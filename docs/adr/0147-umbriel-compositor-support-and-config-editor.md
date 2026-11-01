@@ -26,6 +26,7 @@ Users choosing Umbriel need the same seamless experience Kanade delivers under n
   - **Compositor palette**: Umbriel color schemes are generated from wallpaper Matugen roles into `~/.config/umbriel/kanade.toml` and linked via `[include.optional] files = ["kanade.toml"]`.
 - **Restore paths**: When appearance synchronization is disabled, original values of themes, icons, cursors, and fonts are cleanly restored across GTK, Qt, and desktop settings without leaving orphaned entries.
 - **Base distribution config**: `dist/umbriel/config.toml` ships with default autostart of Kanade, scrolling layout presets, blur layer rules for Kanade surfaces, JetBrainsMono Nerd Font typography, and Bibata cursor settings (`[input.cursor] theme = "Bibata-Modern-Classic", size = 24`).
+- **Compositor IPC spawn**: When Umbriel is active, desktop entry `Exec` commands and dropped files launch via Umbriel's Unix IPC socket (`{"cmd":"action","action":"spawn","command":"<shell command>"}`), ensuring apps receive the compositor's environment rather than Kanade's without failing on missing `NIRI_SOCKET`.
 
 ## Consequences
 

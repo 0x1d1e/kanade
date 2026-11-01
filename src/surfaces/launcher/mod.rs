@@ -2293,13 +2293,23 @@ fn press(monitor: &str, visit: u64, action: Action, query: &str) {
     }
 
     if let Action::Focus(id) = &action {
-        let id = *id;
+        let id = id.clone();
 
-        // off the view thread, as niri's answer may take its patience
-        thread::spawn(move || match niri::act(&windows::focus(id)) {
-            Ok(Acted::Done) => {}
-            Ok(Acted::Unknown(why)) => eprintln!("launcher: focus {id}: no clear answer: {why}"),
-            Err(error) => eprintln!("launcher: focus {id}: {error}"),
+        // off the view thread, as the compositor's answer may take its patience
+        thread::spawn(move || {
+            if sources::umbriel::is_active() {
+                if let Err(error) = sources::umbriel::focus_window(&id) {
+                    eprintln!("launcher: focus {id}: {error}");
+                }
+            } else {
+                match niri::act(&windows::focus(&id)) {
+                    Ok(Acted::Done) => {}
+                    Ok(Acted::Unknown(why)) => {
+                        eprintln!("launcher: focus {id}: no clear answer: {why}")
+                    }
+                    Err(error) => eprintln!("launcher: focus {id}: {error}"),
+                }
+            }
         });
 
         view::collapse(monitor);

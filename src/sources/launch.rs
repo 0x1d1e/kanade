@@ -270,7 +270,18 @@ impl Launch {
                 argv.insert(0, String::from(TERMINAL));
             }
 
-            act(&spawn(&argv))?;
+            if super::umbriel::is_active() {
+                let shell = format!(
+                    "exec {}",
+                    argv.iter()
+                        .map(|arg| quoted(arg))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                super::umbriel::spawn(&shell)?;
+            } else {
+                act(&spawn(&argv))?;
+            }
         }
 
         Ok(())
@@ -396,9 +407,15 @@ impl Command {
     fn run(&self) -> Result<(), String> {
         self.validate()?;
 
+        let shell = self.shell();
+
+        if super::umbriel::is_active() {
+            return super::umbriel::spawn(&shell);
+        }
+
         let action = format!(
             r#"{{"Action":{{"SpawnSh":{{"command":{}}}}}}}"#,
-            json::quote(&self.shell())
+            json::quote(&shell)
         );
 
         act(&action)
@@ -1108,5 +1125,23 @@ mod tests {
         .unwrap();
 
         assert!(launch.validate().is_ok());
+    }
+
+    #[test]
+    fn umbriel_spawn_request_encoding() {
+        let command = Launch::of(&Fields {
+            path: Some("/srv/app dir"),
+            terminal: true,
+            ..fields("htop --tree 'it''s'")
+        })
+        .and_then(|launch| launch.command)
+        .unwrap();
+
+        let shell = command.shell();
+        let request = super::super::umbriel::spawn_action(&shell);
+        assert_eq!(
+            request,
+            r#"{"cmd":"action","action":"spawn","command":"cd -- '/srv/app dir' && exec 'xdg-terminal-exec' 'htop' '--tree' 'its'"}"#
+        );
     }
 }

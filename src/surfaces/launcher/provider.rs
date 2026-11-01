@@ -62,8 +62,8 @@ pub enum Action {
     // one of its Desktop Actions: the app's way to start, its id for the recents, then the action's id
     Perform(Launch, String, String),
 
-    // focuses the open window of this niri id
-    Focus(u64),
+    // focuses the open window of this compositor id
+    Focus(String),
 
     // puts the text on the clipboard
     Copy(String),
