@@ -84,7 +84,7 @@ const HEIGHT: f32 = 640.0;
 const MIN_WIDTH: f32 = 680.0;
 const MIN_HEIGHT: f32 = 420.0;
 
-const SIDEBAR: f32 = 232.0;
+const SIDEBAR: f32 = 256.0;
 const SIDE_INSET: f32 = 16.0;
 const NAV: f32 = SIDEBAR - 2.0 * SIDE_INSET;
 
@@ -777,7 +777,7 @@ fn page_body(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Co
         )));
     }
 
-    items.push(Box::new(space(12.0)));
+    items.push(Box::new(space(PAD)));
 
     Column::new(items).width(content()).gap(SECTIONS)
 }
@@ -846,7 +846,7 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
         ));
     }
 
-    items.push(Box::new(space(12.0)));
+    items.push(Box::new(space(PAD)));
 
     Column::new(items).width(content()).gap(SECTIONS)
 }

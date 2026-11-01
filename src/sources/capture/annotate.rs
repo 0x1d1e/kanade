@@ -357,17 +357,23 @@ fn opened(path: String) {
     }
 }
 
-// the focused output's name, else the first monitor niri lists; none with no monitor to show on
+// the focused output's name, else the first monitor compositor lists; none with no monitor to show on
 fn focused_monitor() -> Option<String> {
     let monitors = kanade_runtime::Monitors::read();
     let focused = crate::sources::niri::Niri::read()
         .seen
         .focused_output
-        .clone();
-
-    focused
+        .clone()
         .filter(|name| monitors.has(name))
-        .or_else(|| monitors.all().first().map(|monitor| monitor.name.clone()))
+        .or_else(|| {
+            crate::sources::umbriel::Umbriel::read()
+                .seen
+                .focused_output
+                .clone()
+                .filter(|name| monitors.has(name))
+        });
+
+    focused.or_else(|| monitors.all().first().map(|monitor| monitor.name.clone()))
 }
 
 // the screenshot's size in pixels, refusing a file too large to read or an image too large to draw

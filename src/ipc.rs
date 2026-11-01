@@ -54,6 +54,8 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
         // answered once the user has picked or left niri's picker, so the client waits on the user
         Ok(Call::PickColor) => capture::pick(reply),
+        // screenshot on worker so interactive slurp or slow IO does not block the draw loop
+        Ok(Call::Screenshot(mode)) => capture::request(mode, reply),
         // answered once the three strokes are drawn or the overlay closes, so the client waits on the user
         Ok(Call::Gesture(gesture::Request::Record(name))) => gesture::record(name, reply),
         // answered when the source is done, or unknown once `LATER` passes (`crate::later`)

@@ -22,6 +22,7 @@ use crate::supervise;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Seen {
     pub overview: bool,
+    pub focused_output: Option<String>,
     pub focused_window: Option<String>,
     pub focused_workspace: Option<String>,
     pub layout: Option<String>,
@@ -113,7 +114,7 @@ fn run_stream() -> bool {
         return false;
     };
 
-    let sub_req = b"{\"cmd\":\"subscribe\",\"events\":[\"overview\",\"windows\",\"workspaces\",\"keyboard_layout\"]}\n";
+    let sub_req = b"{\"cmd\":\"subscribe\",\"events\":[\"overview\",\"windows\",\"workspaces\",\"keyboard_layout\",\"outputs\"]}\n";
     if stream.write_all(sub_req).is_err() {
         return false;
     }
@@ -141,30 +142,46 @@ pub(crate) fn handle_event(event: &Json) {
         return;
     };
 
+    let data = event.get("data").unwrap_or(event);
+
     let mut state = Umbriel::write();
     match event_type {
         "overview" => {
-            if let Some(open) = event.get("open").and_then(Json::as_bool) {
+            if let Some(open) = data
+                .get("open")
+                .or_else(|| event.get("open"))
+                .and_then(Json::as_bool)
+            {
                 state.seen.overview = open;
             }
         }
         "windows" => {
-            if let Some(windows) = event.get("windows").and_then(Json::as_array) {
+            let windows = data
+                .as_array()
+                .or_else(|| event.get("windows").and_then(Json::as_array));
+            if let Some(windows) = windows {
                 state.seen.windows_count = windows.len();
                 for w in windows {
                     if w.get("focused").and_then(Json::as_bool) == Some(true) {
                         state.seen.focused_window =
                             w.get("title").and_then(Json::as_str).map(String::from);
+                        if let Some(output) = w.get("output").and_then(Json::as_str) {
+                            state.seen.focused_output = Some(output.to_string());
+                        }
                     }
                 }
             }
         }
         "workspaces" => {
-            if let Some(workspaces) = event.get("workspaces").and_then(Json::as_array) {
+            let workspaces = data
+                .as_array()
+                .or_else(|| event.get("workspaces").and_then(Json::as_array));
+            if let Some(workspaces) = workspaces {
                 state.seen.workspaces_count = workspaces.len();
                 for ws in workspaces {
                     if ws.get("is_active").and_then(Json::as_bool) == Some(true)
                         || ws.get("is_focused").and_then(Json::as_bool) == Some(true)
+                        || ws.get("focused").and_then(Json::as_bool) == Some(true)
                     {
                         state.seen.focused_workspace =
                             ws.get("name").and_then(Json::as_str).map(String::from);
@@ -173,8 +190,45 @@ pub(crate) fn handle_event(event: &Json) {
             }
         }
         "keyboard_layout" => {
-            if let Some(layout) = event.get("layout").and_then(Json::as_str) {
+            if let Some(layout) = data
+                .get("layout")
+                .or_else(|| event.get("layout"))
+                .and_then(Json::as_str)
+            {
                 state.seen.layout = Some(layout.to_owned());
+            } else if let Some(name) = data
+                .get("names")
+                .and_then(Json::as_array)
+                .zip(data.get("current_index").and_then(Json::as_u64))
+                .and_then(|(names, idx)| names.get(idx as usize))
+                .and_then(Json::as_str)
+            {
+                state.seen.layout = Some(name.to_owned());
+            }
+        }
+        "outputs" => {
+            let outputs = data
+                .as_array()
+                .or_else(|| event.get("outputs").and_then(Json::as_array));
+            if let Some(outputs) = outputs {
+                let mut focused = None;
+                let mut first = None;
+                for out in outputs {
+                    if let Some(name) = out.get("name").and_then(Json::as_str) {
+                        if first.is_none() {
+                            first = Some(name.to_string());
+                        }
+                        if out.get("focused").and_then(Json::as_bool) == Some(true) {
+                            focused = Some(name.to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(out) = focused {
+                    state.seen.focused_output = Some(out);
+                } else if state.seen.focused_output.is_none() {
+                    state.seen.focused_output = first;
+                }
             }
         }
         _ => {}
@@ -221,5 +275,29 @@ mod tests {
             Umbriel::read().seen.focused_window.as_deref(),
             Some("Terminal")
         );
+
+        let outputs_json = json::parse(
+            r#"{"event":"outputs","data":[{"name":"eDP-1","focused":true},{"name":"HDMI-A-1","focused":false}]}"#,
+        )
+        .unwrap();
+        handle_event(&outputs_json);
+        assert_eq!(
+            Umbriel::read().seen.focused_output.as_deref(),
+            Some("eDP-1")
+        );
+
+        // When no output has focus, existing focused_output is preserved
+        let outputs_unfocused =
+            json::parse(r#"{"event":"outputs","data":[{"name":"DP-2","focused":false}]}"#).unwrap();
+        handle_event(&outputs_unfocused);
+        assert_eq!(
+            Umbriel::read().seen.focused_output.as_deref(),
+            Some("eDP-1")
+        );
+
+        // When no output has focus and focused_output is None, fallback to first output
+        Umbriel::write().seen.focused_output = None;
+        handle_event(&outputs_unfocused);
+        assert_eq!(Umbriel::read().seen.focused_output.as_deref(), Some("DP-2"));
     }
 }

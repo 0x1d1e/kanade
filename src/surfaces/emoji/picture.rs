@@ -64,6 +64,11 @@ pub fn picture(emoji: &str) -> Option<PathBuf> {
         return known.clone();
     }
 
+    if FACE.is_none() {
+        PICTURES.locked().insert(key, None);
+        return None;
+    }
+
     if !PENDING.locked().insert(key) {
         return None;
     }
@@ -74,8 +79,15 @@ pub fn picture(emoji: &str) -> Option<PathBuf> {
         return None;
     };
 
-    if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = requests.try_send(key) {
-        PENDING.locked().remove(key);
+    match requests.try_send(key) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            PENDING.locked().remove(key);
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            PENDING.locked().remove(key);
+            PICTURES.locked().insert(key, None);
+        }
     }
 
     None

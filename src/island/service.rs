@@ -956,7 +956,17 @@ impl IslandService {
 
             // a hold of the Peek a hover would show; an open Surface or a pointer Peek is left as it is
             Command::PeekDown | Command::PeekUp => {
-                let monitor = self.focused_output.as_deref().ok_or(NoFocus)?;
+                let fallback;
+                let monitor = match self.focused_output.as_deref() {
+                    Some(m) => m,
+                    None => {
+                        fallback = fallback_output();
+                        match fallback.as_deref() {
+                            Some(m) => m,
+                            None => return Err(NoFocus),
+                        }
+                    }
+                };
                 let down = matches!(command, Command::PeekDown);
                 let changes = match down {
                     true => self.presentations.can_hold(monitor),
@@ -985,11 +995,21 @@ impl IslandService {
             Command::Open(surface) | Command::Toggle(surface) => surface,
         };
 
-        let monitor = self
+        let fallback;
+        let monitor = match self
             .focused_output
             .as_deref()
             .or(open.map(|(monitor, _)| monitor))
-            .ok_or(NoFocus)?;
+        {
+            Some(monitor) => monitor,
+            None => {
+                fallback = fallback_output();
+                match fallback.as_deref() {
+                    Some(m) => m,
+                    None => return Err(NoFocus),
+                }
+            }
+        };
 
         // opening the Surface already showing still restarts the hold, which a pointer on it has none of
         if self.presentation(monitor) == Presentation::Expanded(surface)
@@ -1612,6 +1632,29 @@ pub(crate) fn focus_to_restore(
     match at_collapse {
         Some(now) if now != previous => None,
         _ => Some(previous),
+    }
+}
+
+// an output to fall back to when niri has reported no focused output
+fn fallback_output() -> Option<String> {
+    #[cfg(test)]
+    {
+        None
+    }
+
+    #[cfg(not(test))]
+    {
+        let monitors = Monitors::read();
+        if let Some(output) = crate::sources::umbriel::Umbriel::read()
+            .seen
+            .focused_output
+            .clone()
+            .filter(|name| monitors.has(name))
+        {
+            return Some(output);
+        }
+
+        monitors.all().first().map(|m| m.name.clone())
     }
 }
 

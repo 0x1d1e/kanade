@@ -30,7 +30,7 @@ use crate::view;
 use super::launcher::web;
 use super::search::{self, FIELD};
 use super::visit::Visited;
-use super::{Outline, store};
+use super::{Outline, RING, store};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
 fn width() -> f32 {
@@ -176,7 +176,7 @@ fn content(count: usize) -> f32 {
     if count == 0 {
         0.0
     } else {
-        count as f32 * ROW + (count - 1) as f32 * ROW_GAP
+        count as f32 * ROW + (count - 1) as f32 * ROW_GAP + RING
     }
 }
 
@@ -195,7 +195,7 @@ fn reveal(offset: f32, row: usize, content: f32) -> f32 {
 
     offset
         .min(top)
-        .max(top + ROW - room())
+        .max(top + ROW + RING - room())
         .clamp(0.0, most(content))
 }
 

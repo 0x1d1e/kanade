@@ -136,6 +136,12 @@ impl Niri {
     }
 }
 
+/// Whether niri IPC is connected or reachable on its socket.
+pub fn is_available() -> bool {
+    Niri::read().connected
+        || socket().is_ok_and(|path| std::os::unix::net::UnixStream::connect(path).is_ok())
+}
+
 /*
  * the one `Niri` is the process's, so a test that writes it is every other test's input: one that
  * reads it between a write and its undo sees a niri that is gone, or one casting nothing. Every

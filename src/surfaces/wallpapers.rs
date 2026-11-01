@@ -95,8 +95,11 @@ fn rows(count: usize) -> usize {
 
 fn content(count: usize) -> f32 {
     let rows = rows(count);
+    if rows == 0 {
+        return 0.0;
+    }
 
-    rows as f32 * tile_height() + rows.saturating_sub(1) as f32 * TILE_GAP
+    rows as f32 * tile_height() + rows.saturating_sub(1) as f32 * TILE_GAP + RING
 }
 
 // how far `count` pictures can scroll: none while they fit
@@ -112,7 +115,7 @@ fn top(row: usize) -> f32 {
 fn reveal(offset: f32, row: usize) -> f32 {
     let top = top(row);
 
-    offset.min(top).max(top + tile_height() - room())
+    offset.min(top).max(top + tile_height() + RING - room())
 }
 
 // the rows any part of shows at `offset`, as a range; only these are built
@@ -128,7 +131,7 @@ fn shown(offset: f32, count: usize) -> (usize, usize) {
 fn whole(offset: f32, count: usize) -> (usize, usize) {
     let last = rows(count).saturating_sub(1);
     let first = (offset / step()).ceil() as usize;
-    let end = ((offset + room() + TILE_GAP) / step()).floor() as usize;
+    let end = ((offset + room() + TILE_GAP - RING) / step()).floor() as usize;
 
     (first.min(last), end.saturating_sub(1).min(last))
 }
@@ -511,9 +514,9 @@ fn tiles(monitor: &str, found: &[PathBuf], current: &[PathBuf], pick: &Pick) -> 
         .child(
             Rectangle::new()
                 .width(width())
-                .height(top(end - first))
+                .height(top(end - first) + RING)
                 .align_child(Start, Start)
-                .translate(0.0, top(first) - pick.offset)
+                .translate(0.0, RING + top(first) - pick.offset)
                 .child(Column::new(rows).width(width()).gap(TILE_GAP)),
         );
 
@@ -799,7 +802,7 @@ fn settled(visit: u64, asked: u64, set: Result<(), &str>) {
 fn at_tile(monitor: &str, pick: &Pick, index: usize) -> Option<From> {
     let columns = columns();
     let x = INSET + (index % columns) as f32 * (tile_width() + TILE_GAP) + tile_width() / 2.0;
-    let y = INSET + FIELD + GAP + top(index / columns) - pick.offset + tile_height() / 2.0;
+    let y = INSET + FIELD + GAP + RING + top(index / columns) - pick.offset + tile_height() / 2.0;
 
     from(monitor, x, y)
 }

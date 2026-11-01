@@ -80,8 +80,7 @@ pub enum Asked {
 }
 
 /*
- * asks niri for a screenshot, saved to the path returned. An area is saved once the user confirms
- * it in niri's screenshot UI, and not at all if they leave it
+ * asks niri or Wayland tools (slurp/grim) for a screenshot, saved to the path returned.
  */
 pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     let dir = directory().ok_or("no screenshot folder: HOME is not set")?;
@@ -89,25 +88,126 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("no screenshot folder ({error}): {}", dir.display()))?;
 
-    let window = match mode {
-        Mode::Window => Some(window().map_err(backend)?.ok_or("no window to capture")?),
-        _ => None,
-    };
+    if niri::is_available() {
+        let window = match mode {
+            Mode::Window => Some(window().map_err(backend)?.ok_or("no window to capture")?),
+            _ => None,
+        };
 
-    let path = name(&dir, clock::stamp());
-    let path = path
-        .to_str()
-        .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
+        let path = name(&dir, clock::stamp());
+        let path = path
+            .to_str()
+            .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
 
-    // the editor opens on niri's announcement of this path, when it saves it; asked before the
-    // request, since niri may save before it answers
-    annotate::asked(path);
+        // the editor opens on niri's announcement of this path, when it saves it; asked before the
+        // request, since niri may save before it answers
+        annotate::asked(path);
 
-    match niri::act(&action(mode, path, window)).map_err(backend)? {
-        Acted::Done => Ok(Asked::Taken(path.to_owned())),
-        Acted::Unknown(why) => Ok(Asked::Unknown(format!(
-            "niri got the request, but {why}; the screenshot may still be saved at {path}"
-        ))),
+        match niri::act(&action(mode, path, window)).map_err(backend)? {
+            Acted::Done => Ok(Asked::Taken(path.to_owned())),
+            Acted::Unknown(why) => Ok(Asked::Unknown(format!(
+                "niri got the request, but {why}; the screenshot may still be saved at {path}"
+            ))),
+        }
+    } else {
+        screenshot_external(mode, &dir)
+    }
+}
+
+fn screenshot_external(mode: Mode, dir: &Path) -> Result<Asked, String> {
+    match mode {
+        Mode::Window => Err(String::from(
+            "window screenshot is not supported under umbriel (no window capture API)",
+        )),
+        Mode::Area => {
+            let output = Command::new("slurp")
+                .output()
+                .map_err(|error| format!("slurp failed to run: {error}"))?;
+
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                if !err.is_empty() {
+                    return Err(format!("slurp error: {err}"));
+                }
+                return Err(String::from("capture canceled"));
+            }
+
+            let geometry = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if geometry.is_empty() {
+                return Err(String::from("no region selected"));
+            }
+
+            let path = name(dir, clock::stamp());
+            let path_str = path
+                .to_str()
+                .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
+
+            annotate::asked(path_str);
+
+            let grim_status = Command::new("grim")
+                .args(["-g", &geometry, path_str])
+                .status()
+                .map_err(|error| format!("grim failed to run: {error}"))?;
+
+            if !grim_status.success() {
+                return Err(String::from("grim failed to capture screenshot"));
+            }
+
+            annotate::heard(Some(path_str.to_owned()));
+            Ok(Asked::Taken(path_str.to_owned()))
+        }
+        Mode::Output => {
+            let monitors = kanade_runtime::Monitors::read();
+            let output_name = super::umbriel::Umbriel::read()
+                .seen
+                .focused_output
+                .clone()
+                .filter(|name| monitors.has(name))
+                .or_else(|| monitors.all().first().map(|m| m.name.clone()));
+
+            let path = name(dir, clock::stamp());
+            let path_str = path
+                .to_str()
+                .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
+
+            annotate::asked(path_str);
+
+            let mut cmd = Command::new("grim");
+            if let Some(ref name) = output_name {
+                cmd.args(["-o", name]);
+            }
+            cmd.arg(path_str);
+
+            let grim_status = cmd
+                .status()
+                .map_err(|error| format!("grim failed to run: {error}"))?;
+
+            if !grim_status.success() {
+                return Err(String::from("grim failed to capture screenshot"));
+            }
+
+            annotate::heard(Some(path_str.to_owned()));
+            Ok(Asked::Taken(path_str.to_owned()))
+        }
+    }
+}
+
+/// Dispatches screenshot capture on a worker thread so interactive selection never blocks drawing.
+pub fn request(mode: Mode, reply: IpcReply) {
+    let spawned = thread::Builder::new()
+        .name(String::from("capture-screenshot"))
+        .spawn(move || {
+            let answer = match screenshot(mode) {
+                Ok(Asked::Taken(path)) => Reply::Done(path),
+                Ok(Asked::Unknown(why)) => Reply::Unknown(why),
+                Err(error) => Reply::Refused(error),
+            };
+
+            reply.send(&answer.encode());
+        });
+
+    if let Err(error) = spawned {
+        eprintln!("capture: {error}");
     }
 }
 
@@ -390,5 +490,16 @@ mod tests {
         ] {
             assert!(picked(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn mode_parse_and_window_external_rejection() {
+        assert_eq!(Mode::parse("area"), Some(Mode::Area));
+        assert_eq!(Mode::parse("window"), Some(Mode::Window));
+        assert_eq!(Mode::parse("output"), Some(Mode::Output));
+        assert_eq!(Mode::parse("screen"), None);
+
+        let temp = std::env::temp_dir();
+        assert!(screenshot_external(Mode::Window, &temp).is_err());
     }
 }
