@@ -24,6 +24,10 @@ impl Monitors {
     pub fn has(&self, name: &str) -> bool {
         self.all.iter().any(|monitor| monitor.name == name)
     }
+
+    pub fn publish(all: Vec<Monitor>) {
+        publish(all);
+    }
 }
 
 impl Service for Monitors {

@@ -227,11 +227,14 @@ pub fn click(at: At) {
 
 fn window_icon(window: &FocusedWindow) -> (Box<dyn Widget>, Option<String>) {
     let windows = Windows::read();
-    let running = windows
-        .running()
-        .iter()
-        .filter(|_| !umbriel::is_active())
-        .find(|app| app.windows.iter().any(|w| w.id.0 == window.id));
+    let running = if umbriel::is_active() {
+        None
+    } else {
+        windows
+            .running()
+            .iter()
+            .find(|app| app.windows.iter().any(|w| w.id.0 == window.id))
+    };
 
     let (icon_path, app_name) = match running {
         Some(running) => match &running.app {
@@ -697,5 +700,12 @@ mod tests {
         );
 
         assert!(relevant_workspaces(&all_ws, None).is_empty());
+    }
+
+    #[test]
+    fn window_icon_resolves_icon_and_app_id() {
+        let window = test_window(1);
+        let (_widget, app_name) = window_icon(&window);
+        assert_eq!(app_name.as_deref(), Some("alacritty"));
     }
 }

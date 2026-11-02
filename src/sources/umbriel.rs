@@ -584,16 +584,17 @@ fn update_windows_from_raw(state: &mut Umbriel) {
         let column_width = if fw.floating {
             None
         } else {
-            let output_width = fw
+            let out_name = fw
                 .output
                 .as_deref()
-                .or(state.seen.focused_output.as_deref())
+                .or(state.seen.focused_output.as_deref());
+            let output_width = out_name
                 .and_then(|name| state.output_widths.get(name).copied())
                 .or_else(|| {
                     kanade_runtime::Monitors::read()
                         .all()
                         .iter()
-                        .find(|m| fw.output.as_deref() == Some(&m.name))
+                        .find(|m| out_name == Some(&m.name))
                         .map(|m| m.width as f64)
                 })
                 .filter(|width| *width > 0.0);
@@ -679,8 +680,11 @@ fn update_workspaces(state: &mut Umbriel, workspaces: &[Json]) {
     state.seen.workspaces_count = workspaces.len();
 
     let mut parsed_workspaces = Vec::with_capacity(workspaces.len());
-    let mut focused_ws_name = None;
-    let mut focused_ws_output = None;
+    let mut explicit_focused_name = None;
+    let mut explicit_focused_output = None;
+    let mut active_for_current_output = None;
+    let mut first_active_name = None;
+    let mut first_active_output = None;
 
     for ws in workspaces {
         let output = ws.get("output").and_then(Json::as_str).map(String::from);
@@ -716,12 +720,15 @@ fn update_workspaces(state: &mut Umbriel, workspaces: &[Json]) {
         );
 
         if is_focused {
-            focused_ws_name = raw_name.map(String::from);
-            focused_ws_output = output.clone();
-        } else if is_active && focused_ws_name.is_none() {
-            focused_ws_name = raw_name.map(String::from);
-            if focused_ws_output.is_none() {
-                focused_ws_output = output.clone();
+            explicit_focused_name = raw_name.map(String::from);
+            explicit_focused_output = output.clone();
+        } else if is_active {
+            if first_active_name.is_none() {
+                first_active_name = raw_name.map(String::from);
+                first_active_output = output.clone();
+            }
+            if output.as_ref() == state.seen.focused_output.as_ref() {
+                active_for_current_output = raw_name.map(String::from);
             }
         }
 
@@ -735,10 +742,15 @@ fn update_workspaces(state: &mut Umbriel, workspaces: &[Json]) {
         });
     }
 
-    if let Some(out) = focused_ws_output {
+    if let Some(out) = explicit_focused_output {
         state.seen.focused_output = Some(out);
+        state.seen.focused_workspace = explicit_focused_name;
+    } else {
+        if state.seen.focused_output.is_none() {
+            state.seen.focused_output = first_active_output;
+        }
+        state.seen.focused_workspace = active_for_current_output.or(first_active_name);
     }
-    state.seen.focused_workspace = focused_ws_name;
 
     parsed_workspaces.sort_by_key(|w| (w.output.clone(), w.index, w.id));
     state.seen.workspaces = parsed_workspaces;
@@ -1194,5 +1206,65 @@ mod tests {
         apply_event(&mut state, &empty_focus);
         apply_event(&mut state, &windows);
         assert!(state.seen.focused_window.is_none());
+    }
+
+    #[test]
+    fn multi_monitor_remembered_focus_preservation_when_seat_inactive() {
+        let mut state = Umbriel::default();
+
+        let initial_ws = json::parse(
+            r#"{"event":"workspaces","data":[
+                {"id":"DP-1:1","index":1,"name":"ws-dp","named":true,"output":"DP-1","active":true,"focused":false},
+                {"id":"HDMI-A-1:1","index":1,"name":"ws-hdmi","named":true,"output":"HDMI-A-1","active":true,"focused":true}
+            ]}"#,
+        )
+        .unwrap();
+        apply_event(&mut state, &initial_ws);
+        assert_eq!(state.seen.focused_output.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(state.seen.focused_workspace.as_deref(), Some("ws-hdmi"));
+
+        // Island takes keyboard focus: no workspace is focused, but both monitors remain active.
+        // DP-1 comes first in the array. Preserved focused_output should not be clobbered.
+        let unfocused_ws = json::parse(
+            r#"{"event":"workspaces","data":[
+                {"id":"DP-1:1","index":1,"name":"ws-dp","named":true,"output":"DP-1","active":true,"focused":false},
+                {"id":"HDMI-A-1:1","index":1,"name":"ws-hdmi","named":true,"output":"HDMI-A-1","active":true,"focused":false}
+            ]}"#,
+        )
+        .unwrap();
+        apply_event(&mut state, &unfocused_ws);
+        assert_eq!(state.seen.focused_output.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(state.seen.focused_workspace.as_deref(), Some("ws-hdmi"));
+
+        // If focused_output was previously None, fallback selects the first active output.
+        let mut fresh_state = Umbriel::default();
+        apply_event(&mut fresh_state, &unfocused_ws);
+        assert_eq!(fresh_state.seen.focused_output.as_deref(), Some("DP-1"));
+        assert_eq!(fresh_state.seen.focused_workspace.as_deref(), Some("ws-dp"));
+    }
+
+    #[test]
+    fn fallback_monitor_lookup_when_focused_window_lacks_explicit_output() {
+        let mut state = Umbriel::default();
+        state.seen.focused_output = Some("DP-FALLBACK".to_string());
+
+        kanade_runtime::Monitors::publish(vec![kanade_runtime::Monitor {
+            name: "DP-FALLBACK".to_string(),
+            width: 2560,
+            height: 1440,
+        }]);
+
+        let win_json = json::parse(
+            r#"{"event":"windows","data":[
+                {"id":"fallback-win","title":"App","floating":false,"workspace":"ws1","column":0,"row":0,"w":1280.0,"h":1440.0,"active":true,"focused":true}
+            ]}"#,
+        )
+        .unwrap();
+        apply_event(&mut state, &win_json);
+
+        let fw = state.seen.focused_window.expect("focused window");
+        assert_eq!(fw.column_width, Some(1280.0 / 2560.0));
+
+        kanade_runtime::Monitors::publish(vec![]);
     }
 }
