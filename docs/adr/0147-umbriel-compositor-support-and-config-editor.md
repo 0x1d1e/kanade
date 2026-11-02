@@ -34,6 +34,8 @@ Users choosing Umbriel need the same seamless experience Kanade delivers under n
 
 `sources::compositor::active()` chooses a reachable Umbriel socket first, then niri, or neither. Startup follows only that compositor's event stream; a missing socket ends its reconnect loop. Window, Strip, capture, launcher and keybinding selection share this decision. Settings navigation, keyboard traversal, launcher destinations and search expose only the active compositor page; opening `compositor` or the other compositor routes to the active page.
 
+The Desk's overview visibility and moving wallpaper's overview pause share `sources::compositor::overview()` and `watch_overview()`: each owning Module subscribes to the selected compositor's Service at start and takes its initial snapshot. No inactive compositor events or IPC polling drive these consumers, and a Module that is off registers no watcher. This extends the niri-only overview paths in ADRs 0137 and 0144 to Umbriel.
+
 Both compositor pages use the same Outputs canvas, monitor cards and trial controller. Umbriel's `outputs` reply supplies the shared monitor model. Trials send `output-set` actions and never write the config. Keep writes `[output."<connector>"]` properties (`enabled`, `mode`, `position`, `scale`, `transform`, `vrr`) through the validated Umbriel editor, then requests `umbriel msg config-reload`; reset and undo reload too. VRR uses `disabled`, `always`, or `fullscreen`. Umbriel's pending recovery file is `umbriel-outputs-pending.json`, separate from niri's record. A rejected live action leaves no trial or config edit; an unanswered action retains recovery state. Umbriel versions without `output-set` can display monitors but reject trials explicitly.
 
 ## Consequences

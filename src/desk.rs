@@ -30,15 +30,15 @@ use crate::island::geometry::{self, Rect};
 use crate::island::service::IslandService;
 use crate::later::Later;
 use crate::sources::calendar;
+use crate::sources::compositor;
 use crate::sources::media::{self, Transport};
-use crate::sources::niri::Niri;
 use crate::sources::playback::{Caption, Keys, Remote};
 use crate::sources::reminders;
 use crate::sources::weather::Weather;
 use crate::theme::DISABLED;
 use crate::{clock, modules, theme, view};
 
-// whether niri's overview is open; the Desk is hidden while it is
+// whether the selected compositor's overview is open; the Desk is hidden while it is
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Overview(bool);
 
@@ -50,10 +50,9 @@ impl Service for Overview {
     fn listen() {}
 }
 
-// a watcher of `Niri`: the Desk's windows redraw when the overview opens or closes, not at each of
-// niri's events; the same again changes nothing
+// The Desk redraws only when the selected compositor's overview opens or closes.
 pub fn follow_overview() {
-    let open = Niri::read().seen.overview;
+    let open = compositor::overview();
     let mut overview = Overview::write();
 
     if overview.0 == open {

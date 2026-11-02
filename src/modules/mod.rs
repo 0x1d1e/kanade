@@ -91,8 +91,8 @@ pub enum Provider {
     // the PAM service file `lock.pam_service` names, which checks a password
     Pam,
 
-    // niri's IPC, which the Module cannot work without
-    Niri,
+    // the selected compositor's IPC, which the Module cannot work without
+    Compositor,
 
     // the keyboards' evdev devices, readable in the input group (`keys::found`)
     Keyboards,

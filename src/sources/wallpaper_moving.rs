@@ -13,7 +13,7 @@
 //! thread that hands each to the runtime's image path as plain RGBA: the decode is never on a draw
 //! thread, nothing is encoded, and a long animation costs no more memory than a short one.
 //!
-//! Pacing pauses, without losing the shot on screen, while the session is locked, while niri's
+//! Pacing pauses, without losing the shot on screen, while the session is locked, while the compositor's
 //! overview is open, and over an output a fullscreen window covers. Each of those is a Service the
 //! shell already follows, so nothing here polls, and a paused wallpaper draws no frame at all.
 
@@ -34,7 +34,7 @@ use kanade_runtime::{
 use kanade_runtime::{MOST_PIXELS, MutexExt};
 
 use super::wallpaper::Output;
-use super::{fullscreen, niri::Niri};
+use super::{compositor, fullscreen};
 use crate::lock;
 
 // the most a moving wallpaper's file may be
@@ -78,7 +78,7 @@ impl Moving {
 
 /*
  * whether a moving wallpaper advances, as the Services the shell already follows say: paused while
- * niri's overview is open, and over each output a fullscreen window covers. A watcher keeps it, so a
+ * the selected compositor's overview is open, and over each output a fullscreen window covers. A watcher keeps it, so a
  * change reaches the pacing at once and a still one wakes nothing; the session's lock is read where
  * it is decided, as no Service carries it (ADR 0144)
  */
@@ -100,7 +100,7 @@ impl Service for Resting {
 
 // reads what holds a moving wallpaper back; the same again changes nothing, so wakes nothing
 pub fn follow() {
-    let overview = Niri::read().seen.overview;
+    let overview = compositor::overview();
     let covered: Vec<String> = Monitors::read()
         .all()
         .iter()

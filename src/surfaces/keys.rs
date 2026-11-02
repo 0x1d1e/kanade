@@ -7,7 +7,7 @@
 //! `sources::binds`). A config niri's binds cannot be read from says which file and why above the
 //! rest, which still lists Kanade's own keys.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
@@ -222,15 +222,15 @@ fn lay(read: &Result<Vec<Bind>, Unread>, query: &str) -> Laid {
 
             if binds.is_empty() && terms.is_empty() {
                 items.push(Item::Notice(
-                    String::from("niri binds no keys"),
-                    binds::config()
+                    format!("{} binds no keys", compositor_name()),
+                    compositor_config()
                         .map(|path| format!("{} has no binds", path.display()))
                         .unwrap_or_default(),
                 ));
             }
         }
         Err(unread) if terms.is_empty() => items.push(Item::Notice(
-            String::from("niri's keybinds could not be read"),
+            format!("{}'s keybinds could not be read", compositor_name()),
             format!("{}: {}", unread.file.display(), unread.why),
         )),
         Err(_) => {}
@@ -615,9 +615,25 @@ fn cap(key: &str) -> Box<dyn Widget> {
     )
 }
 
+fn compositor_name() -> &'static str {
+    if crate::sources::compositor::active() == crate::sources::compositor::Compositor::Umbriel {
+        "Umbriel"
+    } else {
+        "niri"
+    }
+}
+
+fn compositor_config() -> Option<PathBuf> {
+    if crate::sources::compositor::active() == crate::sources::compositor::Compositor::Umbriel {
+        binds::umbriel_config()
+    } else {
+        binds::config()
+    }
+}
+
 // where the binds come from, and how many there are, of how many while searching
 fn footer(laid: &Laid, lookup: &Lookup) -> Row {
-    let from = binds::config()
+    let from = compositor_config()
         .map(|path| format!("From {}", shown(&path)))
         .unwrap_or_default();
 

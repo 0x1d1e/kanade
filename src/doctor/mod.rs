@@ -25,8 +25,8 @@ use crate::modules::{self, Module, Provider};
 use crate::sddm;
 use crate::sources::json::Json;
 use crate::sources::{
-    binds, bus, cava, keys, niri, pipewire, radios, recording, sound, umbriel as umbriel_source,
-    wake, wallpaper,
+    binds, bus, cava, compositor, keys, niri, pipewire, radios, recording, sound,
+    umbriel as umbriel_source, wake, wallpaper,
 };
 
 // the oldest niri Kanade follows (docs/archived/design.md Constraints)
@@ -133,8 +133,7 @@ fn gather(shell: Check, pid: Option<u32>) -> Vec<Check> {
         unit(pid),
     ];
 
-    checks.extend(niri());
-    checks.extend(umbriel());
+    checks.extend(compositor());
 
     let blur = config.appearance.finish == Finish::Blur;
 
@@ -376,6 +375,14 @@ fn umbriel() -> Vec<Check> {
     };
 
     vec![binary, socket, config_check, rules]
+}
+
+// the compositor Kanade is following: Umbriel when its socket answers, else niri
+fn compositor() -> Vec<Check> {
+    match compositor::active() {
+        compositor::Compositor::Umbriel => umbriel(),
+        _ => niri(),
+    }
 }
 
 fn niri() -> Vec<Check> {
@@ -704,7 +711,7 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                     let service = lock::service_of(config);
                     pam_found(service, lock::pam_file(service))
                 }
-                Provider::Niri => niri_found(niri_version()),
+                Provider::Compositor => compositor_found(),
                 Provider::Keyboards => match keys::found() {
                     Ok(found) => Found::Present(found),
                     Err(why) => Found::Missing(why),
@@ -721,6 +728,9 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
             };
 
             checks.push(found.check(module.name, need.without));
+        }
+        if module.name == "capture" {
+            checks.extend(capture_limits());
         }
     }
 
@@ -937,6 +947,9 @@ fn pam_found(service: &str, file: Option<PathBuf>) -> Found {
  * layers are Top, Bottom or Overlay, which the rule does not apply to
  */
 fn backdrop(config: &Config) -> Option<Check> {
+    if compositor::active() == compositor::Compositor::Umbriel {
+        return None;
+    }
     if modules::resolve(modules::ALL, |name| config.off(name)).on("wallpaper") {
         let path = binds::config()?;
         let found = binds::places_within_backdrop(&path, wallpaper::DAEMON, &mut |file| {
@@ -986,6 +999,9 @@ const BLURRED: [&str; 3] = ["kanade", "kanade-dock", "kanade-banners"];
  * sets `background-effect { xray false }` (ADR 0057). Asked only while the finish is `blur`
  */
 fn blur_check() -> Option<Check> {
+    if compositor::active() == compositor::Compositor::Umbriel {
+        return None;
+    }
     let path = binds::config()?;
     let found = binds::xrayed(&path, &BLURRED, &mut |file| fs::read_to_string(file));
 
@@ -1023,6 +1039,9 @@ fn blur_check() -> Option<Check> {
  * while the `banners` Module runs
  */
 fn screencast_check(config: &Config) -> Option<Check> {
+    if compositor::active() == compositor::Compositor::Umbriel {
+        return None;
+    }
     if !modules::resolve(modules::ALL, |name| config.off(name)).on("banners") {
         return None;
     }
@@ -1134,6 +1153,39 @@ fn recording_check(config: &Config) -> Option<Check> {
     })
 }
 
+// the compositor a Module follows: Umbriel's socket, else niri's version
+fn compositor_found() -> Found {
+    match compositor::active() {
+        compositor::Compositor::Umbriel => match umbriel_source::socket_path() {
+            Some(path) => Found::Present(format!("umbriel socket: {}", path.display())),
+            None => Found::Absent(String::from("umbriel: socket not found")),
+        },
+        compositor::Compositor::Niri => niri_found(niri_version()),
+        compositor::Compositor::None => Found::Absent(String::from("niri: NIRI_SOCKET is not set")),
+    }
+}
+
+// capture under Umbriel uses grim, and slurp for an area; the rest stays niri-only
+fn capture_limits() -> Vec<Check> {
+    if compositor::active() != compositor::Compositor::Umbriel {
+        return Vec::new();
+    }
+
+    let mut checks = Vec::new();
+    for program in ["grim", "slurp"] {
+        let found = program_found(program, env::var_os("PATH"));
+        let without = match program {
+            "grim" => "no screenshot of an output or an area",
+            _ => "no screenshot of an area",
+        };
+        checks.push(found.check("capture", without));
+    }
+    checks.push(Check::warn(String::from(
+        "module capture: window screenshots, the color picker, dynamic cast targets and Stop sharing need niri; screen and window recording need niri IPC",
+    )));
+    checks
+}
+
 // niri as a Module needs it: reachable, and new enough for what Kanade asks of it
 fn niri_found(version: Result<String, String>) -> Found {
     match version {
@@ -1183,6 +1235,81 @@ fn holder(name: &str, holder: Option<String>, running: bool) -> Found {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_follows_the_selected_compositor_for_windows_dock_and_capture() {
+        use std::os::unix::net::UnixListener;
+        use std::process::Command;
+
+        let dir = std::env::temp_dir().join(format!("kanade-doctor-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let niri = dir.join("niri.sock");
+        let umbriel = dir.join("umbriel.sock");
+        let check = |expected: &str| {
+            assert!(
+                Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "doctor::tests::doctor_selection_child",])
+                    .env("NIRI_SOCKET", &niri)
+                    .env("UMBRIEL_SOCKET", &umbriel)
+                    .env("XDG_RUNTIME_DIR", &dir)
+                    .env("KANADE_TEST_DOCTOR", expected)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        check("none");
+        let umbriel_listener = UnixListener::bind(&umbriel).unwrap();
+        let niri_listener = UnixListener::bind(&niri).unwrap();
+        // both sockets answer; Umbriel is preferred over niri
+        check("umbriel");
+        drop(umbriel_listener);
+        check("niri");
+        drop(niri_listener);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn doctor_selection_child() {
+        let Ok(expected) = std::env::var("KANADE_TEST_DOCTOR") else {
+            return;
+        };
+        let selected = match expected.as_str() {
+            "niri" => compositor::Compositor::Niri,
+            "umbriel" => compositor::Compositor::Umbriel,
+            _ => compositor::Compositor::None,
+        };
+        assert_eq!(compositor::active(), selected);
+
+        let found = compositor_found();
+        match selected {
+            compositor::Compositor::Umbriel => {
+                assert!(matches!(found, Found::Present(ref text) if text.starts_with("umbriel")));
+            }
+            compositor::Compositor::Niri => {
+                assert!(matches!(found, Found::Absent(ref text) if text.starts_with("niri:")));
+            }
+            compositor::Compositor::None => {
+                assert!(matches!(found, Found::Absent(ref text) if text.contains("NIRI_SOCKET")));
+            }
+        }
+
+        let limits = capture_limits();
+        let layer = backdrop(&Config::default()).is_some()
+            || screencast_check(&Config::default()).is_some();
+        if selected == compositor::Compositor::Umbriel {
+            assert!(limits.iter().any(|check| check.text.contains("grim")));
+            assert!(limits.iter().any(|check| check.text.contains("slurp")));
+            assert!(limits.iter().any(|check| {
+                check.verdict == Verdict::Warn && check.text.contains("window screenshots")
+            }));
+            assert!(!limits.iter().any(|check| check.verdict == Verdict::Fail));
+            assert!(!layer);
+        } else {
+            assert!(limits.is_empty());
+        }
+    }
 
     #[test]
     fn doctor_formats_niri_windows_and_layers() {

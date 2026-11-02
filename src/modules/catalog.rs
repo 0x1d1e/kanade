@@ -207,7 +207,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         needs: &[Need {
-            on: Provider::Niri,
+            on: Provider::Compositor,
             without: "no running windows",
         }],
         settings: config::WINDOWS,
@@ -230,7 +230,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[
             Need {
-                on: Provider::Niri,
+                on: Provider::Compositor,
                 without: "no running apps, and a click neither launches nor focuses",
             },
             Need {
@@ -680,15 +680,12 @@ notifications dnd on until <HH:MM>
         requires: &[CORE],
         optional: &["media", "weather", "calendar"],
         warns: None,
-        needs: &[Need {
-            on: Provider::Niri,
-            without: "shown in niri's overview",
-        }],
+        needs: &[],
         settings: config::DESK,
         hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
-            service::watch::<Niri>(desk::follow_overview);
+            crate::sources::compositor::watch_overview(desk::follow_overview);
 
             // the notes card's file is read and written by a thread of its own, so no drawing
             // waits on the disk (ADR 0140)
@@ -948,8 +945,8 @@ notifications dnd on until <HH:MM>
             // a moving wallpaper is drawn by the shell itself, over the still awww drew (ADR 0144)
             supervise::spawn("wallpaper-moving", wallpaper_moving::run);
 
-            // what holds a moving wallpaper back: the lock, niri's overview, a fullscreen window
-            service::watch::<Niri>(wallpaper_moving::follow);
+            // what holds a moving wallpaper back: the lock, compositor overview, a fullscreen window
+            crate::sources::compositor::watch_overview(wallpaper_moving::follow);
             service::watch::<fullscreen::Fullscreen>(wallpaper_moving::follow);
             service::watch::<Toplevels>(wallpaper_moving::follow);
             service::watch::<wallpaper_moving::Resting>(wallpaper_moving::paused);
@@ -1329,7 +1326,7 @@ notifications dnd on until <HH:MM>
         warns: None,
         needs: &[
             Need {
-                on: Provider::Niri,
+                on: Provider::Compositor,
                 without: "no screenshot backend",
             },
             Need {

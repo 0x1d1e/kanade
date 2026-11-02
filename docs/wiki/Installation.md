@@ -12,7 +12,7 @@ Packages are not installed with `pacman -S`. The script uses `paru` if it is on 
 
 A fresh TTY install still adds niri with its portal, the GPU's Vulkan driver, audio, fonts, kitty, qt6ct and awww for Kanade's default random wallpaper, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Kanade is the session's polkit authentication agent itself (ADR 0146); the installer does not add polkit-gnome. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY. Run it again to update. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
 
-- `--shell-only` installs Kanade without the desktop packages, for a niri desktop you already have. It does not install a niri config unless you also choose Niri (`--niri`) or SDDM (`--sddm`); those install the default config only when yours is missing. Explicit Niri or SDDM installs also include awww; pure shell-only without either omits it.
+- `--shell-only` installs Kanade without the desktop packages, for a niri or Umbriel desktop you already have. It does not install a niri config unless you also choose Niri (`--niri`) or SDDM (`--sddm`); those install the default config only when yours is missing. Explicit Niri or SDDM installs also include awww; pure shell-only without either omits it.
 - `--no-niri` skips the niri package and does not write a niri config, even on a desktop install. `--sddm` still installs the niri package.
 - `--niri` installs the niri package without the rest of the desktop packages. With `--shell-only` it also installs the default niri config when yours is missing.
 - `--sddm` installs `sddm`, `qt6-declarative` and `qt6-5compat` with the helper, and `niri` if that package is not already being installed. After `~/.cargo/bin/kanade` is in place, the script creates the root-owned overlay and the user-owned data directory, runs `kanade sddm setup` as root and `kanade sddm sync` as you, and writes `/etc/sddm.conf.d/zz-kanade.conf` only when `metadata.desktop` is there and the file differs. That file sets `[Theme]` only. It does not turn `sddm.sync` on. A login screen of niri writes `/etc/sddm.conf.d/zy-kanade-greeter.conf` and a root-owned `/usr/local/share/kanade-sddm/niri-greeter.kdl`, separate from the theme file. keep writes neither and deletes nothing. If `sddm.service` is not already enabled, the script removes a `display-manager.service` symlink that points elsewhere, disables an enabled `gdm`, `lightdm`, `lxdm`, `greetd` or `plasmalogin`, and runs `systemctl enable sddm` with no `--now`. It does not start SDDM. If `sddm` is already enabled, other display managers are left alone and the theme is still refreshed. A failed step stops, and SDDM is not pointed at a theme that was not installed.
@@ -26,7 +26,7 @@ The binary goes to `~/.cargo/bin`, where the unit expects it, and the shell comp
 
 Kanade needs:
 
-- niri, which it talks to over `$NIRI_SOCKET`.
+- niri or Umbriel. Kanade selects a reachable Umbriel IPC socket (`$UMBRIEL_SOCKET`, else `$XDG_RUNTIME_DIR/umbriel-$WAYLAND_DISPLAY.sock`) first, then niri over `$NIRI_SOCKET`. See the Umbriel setup below; the installer still installs niri by default.
 - A Rust toolchain and these system libraries with their headers: a C compiler, pkg-config, wayland, libxkbcommon, fontconfig, freetype, expat, vulkan-loader, libpulseaudio and linux-pam.
 - Optional, see [Limitations](Limitations.md): `pactl`, `udevadm`, `dbus-monitor`, `setpriv` (util-linux) and `pw-dump` (pipewire).
 - For the clipboard history: `wl-copy` (wl-clipboard), required for restoring entries.
@@ -79,7 +79,15 @@ layer-rule {
 
 Only one Kanade runs per session. A second one stops at start with `failed to listen: kanade is already running`.
 
-## Run
+## Umbriel
+
+Install Umbriel separately; `scripts/install` does not install its package. Use `--shell-only` for an existing desktop, or `--no-niri` to keep the desktop packages while skipping niri. The installer also copies `dist/umbriel/config.toml` to `$XDG_CONFIG_HOME/umbriel/config.toml` (default `~/.config/umbriel/config.toml`) when missing, including on a shell-only install, and keeps an existing file.
+
+The supplied Umbriel config starts `kanade` through `[general] autostart = ["kanade"]`. In an existing config, add `kanade` to that list once, preserving other entries, and ensure `~/.cargo/bin` is on the compositor's PATH. The supplied `kanade.service` is enabled under `niri.service`; it does not start with Umbriel automatically. Use one startup method per session. Launching Kanade through Umbriel's autostart does not give it the unit's automatic crash restart.
+
+The default config includes the `blur-kanade` layer rule. For an existing Umbriel config, Settings under Compositor offers the rule, or `kanade umbriel-config rules apply blur-kanade` writes it on request. The KDL layer rules above apply only to niri. Umbriel area screenshots need `slurp` and `grim`, output screenshots need `grim`, and copying the saved PNG needs `wl-copy`; a copy failure does not discard the saved screenshot. Window screenshots, the color picker and niri's cast controls remain unavailable under Umbriel. See [Settings](Settings.md), [Limitations](Limitations.md) and [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md).
+
+## Run with niri
 
 Kanade runs as a systemd user unit wanted by `niri.service`, so it starts with niri, stops with its graphical session, and restarts after a crash. niri's service binds to `graphical-session.target` and starts it, including when launched by `niri-session` or a display manager. A crash while the session is locked leaves niri locked on its red screen until the restart locks it again; see [niri's systemd integration](https://github.com/YaLTeR/niri/wiki/Example-systemd-Setup).
 

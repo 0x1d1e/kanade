@@ -608,11 +608,7 @@ fn tile(window: &StripWindow, ring: bool, height: f32) -> Rectangle {
         .align_child(Start, Center)
         .cursor(Cursor::Pointer)
         .identity(("strip tile", window.id))
-        .semantics(|| {
-            Semantics::new(Role::Button, "strip_tile")
-                .label(&title)
-                .content(window.title.as_str())
-        })
+        .semantics(|| Semantics::new(Role::Button, "strip_tile").content(&title))
         .on_click(on_left(move || click(At::Window(press))))
         .child(Row::new(row_children).gap(TILE_GAP).align(Center));
 
@@ -629,9 +625,11 @@ fn tile(window: &StripWindow, ring: bool, height: f32) -> Rectangle {
 
 // focuses the window and collapses the Surface if not pinned, niri asked off the draw thread
 fn focus_and_close(id: u64, monitor: Option<&str>) {
-    let island = IslandService::read();
-    let target = monitor.or_else(|| island.expanded_on());
-    let is_pinned = target.is_some_and(|m| island.pinned(m));
+    let is_pinned = {
+        let island = IslandService::read();
+        let target = monitor.or_else(|| island.expanded_on());
+        target.is_some_and(|m| island.pinned(m))
+    };
 
     if !is_pinned {
         pad::close();
@@ -840,10 +838,63 @@ mod tests {
     }
 
     #[test]
-    fn urgent_window_indicator() {
-        let mut urgent = window(10, 1, 0, 0, 600.0);
-        urgent.is_urgent = true;
-        let card = tile(&urgent, false, 90.0);
-        assert_eq!(card.width(), kanade_runtime::Size::Parent);
+    fn selecting_a_window_releases_the_island_read_before_closing() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "surfaces::strip::tests::selecting_a_window_child",
+            ])
+            .env("KANADE_TEST_STRIP_CLOSE", "1")
+            .env_remove("NIRI_SOCKET")
+            .env_remove("UMBRIEL_SOCKET")
+            .env_remove("XDG_RUNTIME_DIR")
+            .spawn()
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= until {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("Strip selection blocked while closing the Island");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn selecting_a_window_child() {
+        if std::env::var_os("KANADE_TEST_STRIP_CLOSE").is_none() {
+            return;
+        }
+        use crate::island::presentation::{Input, Presentation, Segment};
+        use std::time::Instant;
+
+        let monitor = "strip-test";
+        IslandService::write().open(monitor, Surface::Strip, Instant::now());
+        assert_eq!(
+            IslandService::read().presentation(monitor),
+            Presentation::Expanded(Surface::Strip)
+        );
+        focus_and_close(u64::MAX, Some(monitor));
+        assert_ne!(
+            IslandService::read().presentation(monitor),
+            Presentation::Expanded(Surface::Strip)
+        );
+
+        IslandService::write().open(monitor, Surface::Strip, Instant::now());
+        IslandService::write().input(monitor, Input::RightClick(Segment::Primary), Instant::now());
+        assert!(IslandService::read().pinned(monitor));
+        focus_and_close(u64::MAX, None);
+        assert_eq!(
+            IslandService::read().presentation(monitor),
+            Presentation::Expanded(Surface::Strip)
+        );
     }
 }

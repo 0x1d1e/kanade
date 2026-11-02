@@ -19,6 +19,32 @@ use syn::{
     LitStr, Macro, Meta, MetaList, Path as SynPath, Token, UseRename, UseTree,
 };
 
+// Strip labels are source text only. Window titles and app ids must go through content(),
+// whose Structure-mode redaction is exercised by the runtime's semantic-tree tests.
+#[test]
+fn strip_semantic_labels_cannot_publish_window_content() {
+    #[derive(Default)]
+    struct Labels(Vec<String>);
+    impl<'ast> Visit<'ast> for Labels {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "label"
+                && !matches!(call.args.first(), Some(Expr::Lit(lit)) if matches!(lit.lit, Lit::Str(_)))
+            {
+                self.0
+                    .push("Strip semantic label contains outside content".into());
+            }
+            visit::visit_expr_method_call(self, call);
+        }
+    }
+    let check = |text: &str| {
+        let mut labels = Labels::default();
+        labels.visit_file(&syn::parse_file(text).unwrap());
+        labels.0
+    };
+    assert!(!check("fn tile() { node.label(&window.title); }").is_empty());
+    assert!(check(include_str!("surfaces/strip.rs")).is_empty());
+}
+
 const SERVICE: &str = "service";
 
 // the runtime that draws, which island/ never names

@@ -5,7 +5,7 @@
 <h1 align="center">Kanade</h1>
 
 <p align="center">
-  One island that changes shape for what is happening: a desktop shell for niri, in Rust.
+  One island that changes shape for what is happening: a desktop shell for niri and Umbriel, in Rust.
 </p>
 
 <p align="center">
@@ -58,8 +58,8 @@ Expanding the Island opens one of its dedicated Surfaces, navigable by keyboard 
 - **Weather**: Current conditions alongside hourly and multi-day forecasts retrieved from Open-Meteo.
 - **Timer**: Quick countdown timer, stopwatch, and configurable pomodoro intervals with automatic phase transitions.
 - **Capture**: Full-screen, output, or region screenshots, screen color picker, and output, area, or window screen recording.
-- **Wallpapers**: Visual wallpaper browser and selector driven by awww, integrating with Matugen for dynamic palette generation; with `wallpaper.moving` on, an animated GIF or APNG picked as the wallpaper is drawn by Kanade itself, at its own speed, pausing while the session is locked, niri's overview is open or a fullscreen window covers its output.
-- **Keys**: Searchable cheatsheet of active niri keybindings and Kanade shell shortcuts.
+- **Wallpapers**: Visual wallpaper browser and selector driven by awww, integrating with Matugen for dynamic palette generation; with `wallpaper.moving` on, an animated GIF or APNG picked as the wallpaper is drawn by Kanade itself, at its own speed, pausing while the session is locked, the selected compositor's overview (niri or Umbriel) is open or a fullscreen window covers its output.
+- **Keys**: Searchable cheatsheet of compositor keybindings and Kanade shell shortcuts.
 - **Session**: Lock, logout, suspend, reboot, and power off controls with a grace-period countdown and inhibitor warnings.
 - **Tray**: StatusNotifierItem system tray host exposing application status icons and sub-surface menus.
 - **Files**: A read-only shelf of the desktop's recent files, newest first, searched by name and folder; Enter opens the file and Right its folder. Not a file manager: nothing is deleted, renamed, moved, copied or dragged out.
@@ -83,7 +83,7 @@ Beyond the Island, Kanade coordinates the surrounding desktop environment:
 
 ## Scope & Non-Goals
 
-- **niri specific**: Kanade is designed specifically for niri, integrating with its IPC socket, window layout, and layer-shell protocols. Hyprland and Sway are unsupported.
+- **Supported compositors**: Kanade integrates with niri and Umbriel over their IPC sockets. It selects a reachable Umbriel socket first, then niri. Window and Strip Surfaces, the Dock, Launcher window selection, keybindings and compositor Settings follow the selected compositor. Hyprland and Sway are unsupported; capture and other compositor-specific limits are listed in [Limitations](docs/wiki/Limitations.md).
 - **No permanent status bar**: Kanade does not offer a static tray strip or permanent resource meters (such as continuous CPU, RAM, or network graphs). Information surfaces only when an Activity demands attention or when explicitly summoned.
 - **Not a video wallpaper renderer**: Kanade manages wallpaper selection and palette extraction through awww and Matugen, and draws desktop wallpapers through it; only an animated GIF or APNG picked with `wallpaper.moving` on is drawn by Kanade itself.
 
@@ -131,7 +131,7 @@ sudo pacman -S --needed niri rust base-devel pkgconf wayland libxkbcommon fontco
   expat vulkan-icd-loader libpulse pam
 ```
 
-A Vulkan driver matching your GPU is also required: `vulkan-intel` for Intel, `vulkan-radeon` for AMD, or `nvidia-utils` for NVIDIA. niri must run as a systemd graphical session (`niri-session` or display manager).
+A Vulkan driver matching your GPU is also required: `vulkan-intel` for Intel, `vulkan-radeon` for AMD, or `nvidia-utils` for NVIDIA. The command above installs niri; for an Umbriel session, install Umbriel separately and omit `niri`. The supplied systemd unit starts with niri's graphical session (`niri-session` or display manager); Umbriel startup and screenshot helpers are covered in [Installation](docs/wiki/Installation.md).
 
 ### Optional
 
@@ -163,7 +163,7 @@ Kanade runs without these packages, but individual features require them:
 | [Installation](docs/wiki/Installation.md) | Package requirements, manual builds, systemd service management, and niri layer rules. |
 | [CLI](docs/wiki/CLI.md) | Command-line IPC syntax and available verbs for controlling Kanade. |
 | [Configuration](docs/wiki/Configuration.md) | Configuration file format, option reference, and defaults. |
-| [Settings](docs/wiki/Settings.md) | Built-in graphical settings editor and niri configuration support. |
+| [Settings](docs/wiki/Settings.md) | Built-in graphical settings editor and niri/Umbriel configuration support. |
 | [Keyboard](docs/wiki/Keyboard.md) | Keyboard shortcuts for every Surface and recommended niri keybindings. |
 | [Limitations](docs/wiki/Limitations.md) | Documented design boundaries, trade-offs, and known gaps. |
 | [Agent hooks](docs/wiki/Agent-hooks.md) | Recipe for connecting Claude Code sessions as Live Activities. |

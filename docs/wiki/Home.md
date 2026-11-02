@@ -1,13 +1,13 @@
 # Kanade wiki
 
-Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri), centered on an adaptive activity island. See the [README](../../README.md) for what it is.
+Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri) and Umbriel, centered on an adaptive activity island. See the [README](../../README.md) for what it is and [Installation](Installation.md) for compositor setup.
 
 | Page | Covers |
 |---|---|
 | [Installation](Installation.md) | requirements, building, running as a systemd user unit, recovering a crashing shell |
 | [CLI](CLI.md) | every `kanade <verb>`, and exit statuses |
 | [Configuration](Configuration.md) | config layers, every key and its default, Modules |
-| [Settings](Settings.md) | the Settings window, and its niri page that edits niri's config |
+| [Settings](Settings.md) | the Settings window, compositor config editing for niri and Umbriel, and Outputs trials |
 | [Agent hooks](Agent-hooks.md) | showing a Claude Code session as a live Activity, and adapting another agent |
 | [Dictation](Dictation.md) | speaking to text with the Gemini API, what is sent to Google, setting up the key and consent |
 | [Google Calendar](Google-Calendar.md) | signing in with your own OAuth client |
