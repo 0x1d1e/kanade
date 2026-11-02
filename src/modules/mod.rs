@@ -369,8 +369,13 @@ pub fn start(mut app: App) -> App {
     }
 
     // after every Module has taken the window and screenshot events it hears, so none is missed
-    supervise::spawn("niri", niri::follow);
-    supervise::spawn("umbriel", umbriel::follow);
+    match crate::sources::compositor::Compositor::current() {
+        crate::sources::compositor::Compositor::Niri => supervise::spawn("niri", niri::follow),
+        crate::sources::compositor::Compositor::Umbriel => {
+            supervise::spawn("umbriel", umbriel::follow)
+        }
+        crate::sources::compositor::Compositor::None => {}
+    }
     if config::get().appearance.accessibility {
         supervise::spawn("accessibility", accessibility::follow);
     }

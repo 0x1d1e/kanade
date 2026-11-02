@@ -20,9 +20,12 @@ pub fn section(settings: &Settings, roles: &ThemeRoles) -> Column {
     if let Some(why) = &state.error {
         items.push(Box::new(notice(why, theme::window_signals().warning)));
     } else if !state.loaded {
-        items.push(plain("Asking niri for its outputs\u{2026}", roles));
+        items.push(plain(
+            "Asking the compositor for its outputs\u{2026}",
+            roles,
+        ));
     } else if state.monitors.is_empty() {
-        items.push(plain("niri lists no outputs", roles));
+        items.push(plain("The compositor lists no outputs", roles));
     }
 
     if !state.monitors.is_empty() {
@@ -93,7 +96,7 @@ fn blocker(settings: &Settings, monitor: &Monitor) -> Option<String> {
     let state = &settings.outputs;
 
     if let Some(why) = &state.blocked {
-        return Some(format!("niri's config is read-only here: {why}"));
+        return Some(format!("The compositor's config is read-only here: {why}"));
     }
 
     if let Some(owner) = &monitor.config.owner {
@@ -169,7 +172,7 @@ fn monitor_view(monitor: &Monitor, settings: &Settings, roles: &ThemeRoles) -> B
     .align(Center);
 
     let block = format!(
-        "Saved in the block output \"{}\" of niri's config",
+        "Saved in the output configuration for {}",
         monitor.config.block
     );
     let detail = [blocked.clone(), monitor.config.note.clone()]
@@ -442,7 +445,7 @@ fn scale_row(
     let output = &monitor.output;
     let name = output.name.clone();
     let scale = output.logical.map_or(1.0, |logical| logical.scale);
-    let help = "Makes everything larger: 2 is twice the size. niri rounds it to a scale the screen can show";
+    let help = "Makes everything larger: 2 is twice the size. the compositor rounds it to a scale the screen can show";
     let (_, _, step) = SCALES;
 
     let control: Box<dyn Widget> = if acts {
@@ -1085,14 +1088,14 @@ fn disconnected_view(
     .align(Center);
 
     let block = format!(
-        "Saved in the block output \"{}\" of niri's config",
+        "Saved in the output configuration for {}",
         disconnected.config.block
     );
     let detail = [
         state
             .blocked
             .clone()
-            .map(|w| format!("niri's config is read-only here: {w}")),
+            .map(|w| format!("The compositor's config is read-only here: {w}")),
         disconnected.config.owner.clone(),
         disconnected.config.note.clone(),
     ]
@@ -1144,6 +1147,16 @@ fn disconnected_view(
             "off",
             "Off",
             "Whether the monitor is configured to be disabled",
+        ),
+        (
+            "enabled",
+            "Enabled",
+            "Whether the monitor is configured to be enabled",
+        ),
+        (
+            "vrr",
+            "Variable refresh rate",
+            "VRR setting configured for this monitor",
         ),
     ];
 

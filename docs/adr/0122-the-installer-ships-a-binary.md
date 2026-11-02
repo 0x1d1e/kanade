@@ -1,6 +1,6 @@
 # 122. The installer ships a binary
 
-Status: accepted.
+Status: superseded for binary distribution. Installation now builds from source (amendment below).
 
 ## Context
 
@@ -23,3 +23,9 @@ A piped `curl | sh` used to clone `release/0.1` and `cargo install` it. That com
 - `kanade`, `kanade.sha256`, `kanade-install`, `kanade-install.sha256`, and `kanade.rev` sit on the `install-0.1` prerelease. They are replaced in place, not `v0.1.0`. They are built locally from `release/0.1` on Arch x86_64 and uploaded by hand. GitHub Actions does not build or upload them.
 
 Files: `scripts/install`, `crates/install`.
+
+## Amendment: build from main
+
+The release branch and GitHub releases have been removed. The piped installer clones `main` and runs `cargo install --locked --root "$HOME/.cargo" --path .`; `--ref` selects another branch or tag, and a local checkout builds itself. Build dependencies are installed before compiling. No release assets or installer TUI are downloaded. `--yes` remains accepted for compatibility. Package selection, unit backup, compositor config preservation and SDDM setup keep their existing rules.
+
+`kanade update` uses `cargo install --locked --git https://github.com/0x1d1e/kanade --branch main --root "$HOME/.cargo" --force kanade`, then refreshes the embedded unit and restarts an active service. A failed build leaves the installed binary untouched. Release checksum and architecture gates no longer apply; the build uses the machine's libraries. The TUI crate remains available to build separately.

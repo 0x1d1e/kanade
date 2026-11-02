@@ -125,7 +125,7 @@ fn grid(focused: Option<&FocusedWindow>, workspaces: &[WorkspaceInfo]) -> Vec<Ve
 }
 
 fn act(at: At) {
-    if umbriel::is_active() {
+    if crate::sources::compositor::active() == crate::sources::compositor::Compositor::Umbriel {
         if Umbriel::read().seen.focused_window.is_none() {
             return;
         }
@@ -189,7 +189,9 @@ fn act(at: At) {
 }
 
 pub fn key(monitor: &str, key: Key) -> bool {
-    let (focused, workspaces) = if umbriel::is_active() {
+    let (focused, workspaces) = if crate::sources::compositor::active()
+        == crate::sources::compositor::Compositor::Umbriel
+    {
         let umbriel = Umbriel::read();
         (
             umbriel.seen.focused_window.clone(),
@@ -227,7 +229,9 @@ pub fn click(at: At) {
 
 fn window_icon(window: &FocusedWindow) -> (Box<dyn Widget>, Option<String>) {
     let windows = Windows::read();
-    let running = if umbriel::is_active() {
+    let running = if crate::sources::compositor::active()
+        == crate::sources::compositor::Compositor::Umbriel
+    {
         None
     } else {
         windows
@@ -404,7 +408,8 @@ fn workspace_pill(
 }
 
 pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
-    let is_umbriel = umbriel::is_active();
+    let is_umbriel =
+        crate::sources::compositor::active() == crate::sources::compositor::Compositor::Umbriel;
     let (focused, workspaces, maximized) = if is_umbriel {
         let umbriel = Umbriel::read();
         (

@@ -340,22 +340,136 @@ fn wake() -> bool {
     WAKE.get().is_some_and(|wake| wake.send(()).is_ok())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Request {
+    Lock,
+    Sleep,
+    Cancel,
+    Reboot { now: bool },
+    PowerOff { now: bool },
+    LogOut { now: bool },
+}
+
+impl Request {
+    pub fn is_ending(&self) -> bool {
+        matches!(
+            self,
+            Request::Reboot { .. } | Request::PowerOff { .. } | Request::LogOut { .. }
+        )
+    }
+}
+
+impl From<Leave> for Request {
+    fn from(leave: Leave) -> Self {
+        match leave {
+            Leave::Lock => Request::Lock,
+            Leave::Sleep => Request::Sleep,
+            Leave::Ending(Ending::Restart) => Request::Reboot { now: false },
+            Leave::Ending(Ending::PowerOff) => Request::PowerOff { now: false },
+            Leave::Ending(Ending::LogOut) => Request::LogOut { now: false },
+            Leave::Ending(Ending::Suspend) => Request::Sleep,
+            Leave::Ending(Ending::Hibernate) => Request::Sleep,
+        }
+    }
+}
+
+pub fn cancel_active() -> Result<String, String> {
+    let mut pending = pending();
+    let serial = pending.counting.map(|c| c.serial);
+    let Some(serial) = serial else {
+        return Err(String::from("no session countdown is active"));
+    };
+    pending.counting = None;
+    drop(pending);
+    IslandService::write().withdraw(&counting_id(serial), Instant::now());
+    wake();
+    Ok(String::from("countdown cancelled"))
+}
+
+#[allow(dead_code)]
+pub fn end_active_now() -> Result<String, String> {
+    let serial = pending().counting.map(|c| c.serial);
+    let Some(serial) = serial else {
+        return Err(String::from("no session countdown is active"));
+    };
+    end_now(serial);
+    Ok(String::from("session ending now"))
+}
+
+pub fn execute_immediate(end: Ending) -> Result<String, String> {
+    if let Some(counting) = pending().counting.take() {
+        IslandService::write().withdraw(&counting_id(counting.serial), Instant::now());
+        wake();
+    }
+    let asked = pending().ask();
+    let leave = Leave::Ending(end);
+    let call = move || {
+        super::clipboard::pins::flush();
+
+        match end {
+            Ending::Restart => hooks::fire_and_wait(Event::Reboot),
+            Ending::PowerOff => hooks::fire_and_wait(Event::Poweroff),
+            Ending::LogOut => hooks::fire_and_wait(Event::Logout),
+            Ending::Suspend | Ending::Hibernate => {}
+        }
+
+        match end {
+            Ending::Restart => manager(&system()?, "Reboot"),
+            Ending::PowerOff => manager(&system()?, "PowerOff"),
+            Ending::LogOut => terminate(&system()?),
+            Ending::Suspend => manager(&system()?, "Suspend"),
+            Ending::Hibernate => manager(&system()?, "Hibernate"),
+        }
+    };
+
+    match asked {
+        Ok(()) => {
+            drop(ask(Asked(leave), call));
+            Ok(format!(
+                "{} now; a refusal shows on the island",
+                doing(end).to_lowercase()
+            ))
+        }
+        Err(why) => {
+            failed(leave, String::from(why));
+            Err(String::from(why))
+        }
+    }
+}
+
 /*
  * does what `leave` asks and says so, or why it did not; logind's refusal shows on the island
  * later. Call it from the draw thread, which the lock screen lives on
  */
-pub fn request(leave: Leave) -> Result<String, String> {
-    match leave {
-        Leave::Lock => lock(),
-        Leave::Sleep => {
+pub fn request(request: impl Into<Request>) -> Result<String, String> {
+    match request.into() {
+        Request::Lock => lock(),
+        Request::Sleep => {
             suspend()?;
             Ok(String::from("suspending; a refusal shows on the island"))
         }
-        Leave::Ending(end) => {
-            start(end, Cause::Asked, Instant::now())?;
+        Request::Cancel => cancel_active(),
+        Request::Reboot { now: true } => execute_immediate(Ending::Restart),
+        Request::Reboot { now: false } => {
+            start(Ending::Restart, Cause::Asked, Instant::now())?;
             Ok(format!(
-                "{} in {} s; cancel on the island or in `kanade session menu`",
-                doing(end).to_lowercase(),
+                "restarting in {} s; cancel on the island, with `kanade session cancel` or in `kanade session menu`",
+                COUNTDOWN.as_secs()
+            ))
+        }
+        Request::PowerOff { now: true } => execute_immediate(Ending::PowerOff),
+        Request::PowerOff { now: false } => {
+            start(Ending::PowerOff, Cause::Asked, Instant::now())?;
+            Ok(format!(
+                "powering off in {} s; cancel on the island, with `kanade session cancel` or in `kanade session menu`",
+                COUNTDOWN.as_secs()
+            ))
+        }
+        Request::LogOut { now: true } => execute_immediate(Ending::LogOut),
+        Request::LogOut { now: false } => {
+            start(Ending::LogOut, Cause::Asked, Instant::now())?;
+            Ok(format!(
+                "logging out in {} s; cancel on the island, with `kanade session cancel` or in `kanade session menu`",
                 COUNTDOWN.as_secs()
             ))
         }

@@ -602,6 +602,7 @@ impl State {
 
     fn done(&mut self, done: Done) {
         self.loaded = true;
+        self.footer = done.reload_error;
         self.installed = done.read.installed;
         self.config_missing = done.read.config_missing;
         self.values = done.read.values;
@@ -696,6 +697,16 @@ impl State {
             "The thread editing Umbriel's config stopped unexpectedly; try again",
         ));
         self.generation += 1;
+    }
+
+    pub fn set_undoable(after: Option<String>) {
+        let stamp = umbriel_config::target(None)
+            .ok()
+            .map(|file| Stamp::of(&file));
+        let mut settings = Settings::write();
+        settings.umbriel.undoable = true;
+        settings.umbriel.undo_after = after;
+        settings.umbriel.undo_stamp = stamp;
     }
 
     pub fn reopen(&mut self) {
@@ -868,6 +879,7 @@ struct Done {
     undo: bool,
     save: bool,
     outcome: Option<Result<String, String>>,
+    reload_error: Option<String>,
     written: bool,
     after: Option<String>,
     stamp: Stamp,
@@ -920,6 +932,7 @@ fn post(job: Job) {
             undo,
             save,
             outcome: (!matches!(job, Job::Read)).then_some(Err(why.clone())),
+            reload_error: None,
             written: false,
             after: None,
             stamp: Stamp(None),
@@ -1032,6 +1045,9 @@ fn run_job(job: Job) -> Watch {
     let seen = vec![config];
 
     Settings::write().umbriel.done(done);
+    if Settings::read().page == PAGE {
+        super::outputs::refresh();
+    }
 
     Watch {
         files,
@@ -1054,6 +1070,7 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
                     undo,
                     save,
                     outcome: (!matches!(job, Job::Read)).then(|| Err(why.clone())),
+                    reload_error: None,
                     written: false,
                     after: None,
                     stamp: Stamp(None),
@@ -1094,6 +1111,15 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
         Job::Undo { after } => Some(editor.undo_only(after.as_deref())),
     };
     let after = Stamp::of(&file);
+    // Persistence succeeded even when the compositor cannot reload. Complete the staged
+    // operation and preserve Undo, while reporting that the live config may still be old.
+    let reload_error = if outcome.as_ref().is_some_and(Result::is_ok) && before != after {
+        crate::settings::outputs::umbriel::reload()
+            .err()
+            .map(|why| format!("Config written, but Umbriel reload failed: {why}"))
+    } else {
+        None
+    };
     let read = read_all(&editor);
     let files = vec![file];
 
@@ -1103,6 +1129,7 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
             undo,
             save,
             outcome,
+            reload_error,
             written: before != after,
             after: if before != after {
                 editor.last_change_hash().ok()
@@ -1177,6 +1204,29 @@ mod tests {
         state.discard();
         assert!(!state.has_staged());
         assert!(!state.is_saving());
+    }
+
+    #[test]
+    fn written_save_keeps_undo_when_reload_fails() {
+        let mut state = State::default();
+        state.stage("layout.gap", vec![("layout.gap", Some(String::from("16")))]);
+        state.flush().unwrap();
+        state.done(Done {
+            row: None,
+            undo: false,
+            save: true,
+            outcome: Some(Ok(String::from("gap = 16"))),
+            reload_error: Some(String::from("Config written, but Umbriel reload failed")),
+            written: true,
+            after: Some(String::from("saved-hash")),
+            stamp: Stamp(None),
+            read: Read::default(),
+        });
+        assert!(!state.has_staged());
+        assert!(!state.is_saving());
+        assert!(state.undoable);
+        assert_eq!(state.undo_after.as_deref(), Some("saved-hash"));
+        assert!(state.footer.as_deref().unwrap().contains("reload failed"));
     }
 
     #[test]

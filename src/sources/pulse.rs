@@ -98,8 +98,27 @@ impl Audio {
         worker::run_latest(SPEAKER, move || set(Device::Output, volume.min(100)));
     }
 
-    pub fn toggle_mute() {
+    pub fn step_volume(up: bool, step: u8) -> u8 {
+        let current = Audio::read().volume;
+        let want = if up {
+            current.saturating_add(step).min(100)
+        } else {
+            current.saturating_sub(step)
+        };
+        Self::set_volume(want);
+        want
+    }
+
+    pub fn set_muted(muted: bool) {
+        worker::run(move || set_muted(Device::Output, muted));
+    }
+
+    pub fn toggle_muted() {
         worker::run(|| toggle(Device::Output));
+    }
+
+    pub fn toggle_mute() {
+        Self::toggle_muted();
     }
 
     // anything above 100 is treated as 100
@@ -107,8 +126,116 @@ impl Audio {
         worker::run_latest(MICROPHONE, move || set(Device::Input, volume.min(100)));
     }
 
-    pub fn toggle_microphone_mute() {
+    pub fn set_microphone_muted(muted: bool) {
+        worker::run(move || set_muted(Device::Input, muted));
+    }
+
+    pub fn toggle_microphone_muted() {
         worker::run(|| toggle(Device::Input));
+    }
+
+    pub fn toggle_microphone_mute() {
+        Self::toggle_microphone_muted();
+    }
+
+    pub fn status_query() -> (u8, bool, u8, bool) {
+        let audio = Audio::read();
+        (
+            audio.volume,
+            audio.muted,
+            audio.microphone_volume,
+            audio.microphone_muted,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchAction {
+    Toggle,
+    On,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Request {
+    Up(Option<u8>),
+    Down(Option<u8>),
+    Set(u8),
+    Mute(Option<SwitchAction>),
+    MicMute(Option<SwitchAction>),
+    Status,
+}
+
+impl Request {
+    pub fn parse(arguments: &[&str]) -> Option<Request> {
+        match arguments {
+            ["up"] => Some(Request::Up(None)),
+            ["up", step] => step.parse().ok().map(|s| Request::Up(Some(s))),
+            ["down"] => Some(Request::Down(None)),
+            ["down", step] => step.parse().ok().map(|s| Request::Down(Some(s))),
+            ["set", percent] => percent.parse().ok().filter(|&p| p <= 100).map(Request::Set),
+            ["mute"] => Some(Request::Mute(None)),
+            ["mute", "toggle"] => Some(Request::Mute(Some(SwitchAction::Toggle))),
+            ["mute", "on"] => Some(Request::Mute(Some(SwitchAction::On))),
+            ["mute", "off"] => Some(Request::Mute(Some(SwitchAction::Off))),
+            ["mic-mute"] => Some(Request::MicMute(None)),
+            ["mic-mute", "toggle"] => Some(Request::MicMute(Some(SwitchAction::Toggle))),
+            ["mic-mute", "on"] => Some(Request::MicMute(Some(SwitchAction::On))),
+            ["mic-mute", "off"] => Some(Request::MicMute(Some(SwitchAction::Off))),
+            ["status"] => Some(Request::Status),
+            _ => None,
+        }
+    }
+}
+
+pub fn request(request: Request) -> Result<String, String> {
+    match request {
+        Request::Status => {
+            let (vol, muted, mic_vol, mic_muted) = Audio::status_query();
+            let mute_str = if muted { "muted" } else { "unmuted" };
+            let mic_mute_str = if mic_muted { "muted" } else { "unmuted" };
+            Ok(format!(
+                "speaker: {vol}% [{mute_str}]\nmicrophone: {mic_vol}% [{mic_mute_str}]"
+            ))
+        }
+        Request::Up(step) => {
+            let step = step.unwrap_or(5);
+            let want = Audio::step_volume(true, step);
+            let _ = crate::sources::osd::ask_volume();
+            Ok(format!("{want}%"))
+        }
+        Request::Down(step) => {
+            let step = step.unwrap_or(5);
+            let want = Audio::step_volume(false, step);
+            let _ = crate::sources::osd::ask_volume();
+            Ok(format!("{want}%"))
+        }
+        Request::Set(percent) => {
+            Audio::set_volume(percent);
+            let _ = crate::sources::osd::ask_volume();
+            Ok(format!("{percent}%"))
+        }
+        Request::Mute(action) => {
+            let current = Audio::read().muted();
+            let new_state = match action {
+                None | Some(SwitchAction::Toggle) => !current,
+                Some(SwitchAction::On) => true,
+                Some(SwitchAction::Off) => false,
+            };
+            Audio::set_muted(new_state);
+            let _ = crate::sources::osd::ask_volume();
+            Ok(String::from(if new_state { "muted" } else { "unmuted" }))
+        }
+        Request::MicMute(action) => {
+            let current = Audio::read().microphone_muted();
+            let new_state = match action {
+                None | Some(SwitchAction::Toggle) => !current,
+                Some(SwitchAction::On) => true,
+                Some(SwitchAction::Off) => false,
+            };
+            Audio::set_microphone_muted(new_state);
+            Ok(String::from(if new_state { "muted" } else { "unmuted" }))
+        }
     }
 }
 

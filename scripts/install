@@ -3,8 +3,7 @@
 # TTY install the desktop pieces and a default niri config. Run again to update. The unit is
 # Kanade's own and is replaced (the old one kept as kanade.service.bak.DATE); change it with
 # `systemctl --user edit kanade.service`. A niri config of yours is never replaced.
-# The curl URL only reads this script from main. A piped run with no --ref downloads the Arch
-# x86_64 binary from the install-0.1 release, or compiles release/0.1 if that asset is absent.
+# The curl URL reads this script from main. A piped run builds main, or the branch/tag in --ref.
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --shell-only
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --yes
@@ -18,13 +17,11 @@
 #     --sddm-greeter keep|niri   login screen display server, with --sddm (default keep, or niri on hybrid NVIDIA)
 #     --uninstall   removes Kanade's binary, completions, unit, icon, build checkout and the root-owned SDDM
 #                   files it wrote; configs, the unit's .bak copies and packages stay
-#     --yes         skip the TUI; a piped run with a terminal otherwise execs kanade-install
-#     --ref REF     compile that branch or tag instead of downloading install-0.1; refused from a checkout
+#     --yes         accepted for compatibility; installation builds from source
+#     --ref REF     compile that branch or tag instead of main; refused from a checkout
 set -eu
 
 repo=https://github.com/0x1d1e/kanade
-release=https://github.com/0x1d1e/kanade/releases/download/install-0.1
-script_url=https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install
 usage='usage: install [--optional] [--shell-only] [--no-niri] [--niri] [--sddm] [--sddm-greeter keep|niri] [--uninstall] [--yes] [--ref REF]'
 
 # one branch or tag name. Not empty, not an option, not a range, not a URL, not a shell word.
@@ -35,60 +32,6 @@ ref_ok() {
             ;;
     esac
     return 0
-}
-
-# 0 saved, 2 missing (HTTP 404), 1 anything else. A short body is not a successful download.
-fetch() {
-    url=$1
-    dest=$2
-    rm -f "$dest"
-    code=$(curl -sS -L --retry 2 -o "$dest" -w '%{http_code}' "$url") || code=000
-    if [ "$code" = 200 ] && [ -s "$dest" ]; then
-        return 0
-    fi
-    if [ "$code" = 200 ]; then
-        echo "failed: $url is short" >&2
-        rm -f "$dest"
-        return 1
-    fi
-    rm -f "$dest"
-    if [ "$code" = 404 ]; then
-        return 2
-    fi
-    echo "failed to download $url (HTTP $code)" >&2
-    return 1
-}
-
-# sha256sum -c, in the file's directory, so the name in the checksum file matches. A mismatch or a
-# short file stops. Callers must not install, and must not fall back to compiling, after this fails.
-verify() {
-    file=$1
-    sum=$2
-    name=$(basename "$file")
-    if [ ! -s "$file" ] || [ ! -s "$sum" ]; then
-        echo "failed: $name is short or its checksum is short" >&2
-        return 1
-    fi
-    size=$(wc -c < "$file")
-    if [ "$size" -lt 1024 ]; then
-        echo "failed: $name is short" >&2
-        return 1
-    fi
-    dir=$(dirname "$file")
-    sumname=$(basename "$sum")
-    if ! (cd "$dir" && sha256sum -c "$sumname"); then
-        echo "failed: $name checksum mismatch" >&2
-        return 1
-    fi
-}
-
-# same sentence as crates/install. Printed before any install.
-refuse_machine() {
-    machine=$(uname -m)
-    if [ "$machine" != x86_64 ]; then
-        echo "failed: this machine is $machine, Kanade's install binary is x86_64 only" >&2
-        exit 1
-    fi
 }
 
 # paru if it is already on PATH, otherwise yay if that is. Neither: pacman installs paru, then paru.
@@ -112,7 +55,7 @@ ensure_helper() {
     helper=paru
 }
 
-# Kanade's packages. Not pacman -S. compile=1 adds the build packages the fallback and --ref need.
+# Kanade's packages, including build dependencies.
 install_packages() {
     packages="wayland libxkbcommon fontconfig freetype2 expat vulkan-icd-loader libpulse pam systemd dbus util-linux"
     if [ "$compile" = 1 ]; then
@@ -174,7 +117,7 @@ install_packages() {
     fi
 }
 
-# clone or update $ref and cargo install it. The download path does not call this.
+# Clone or update $ref and build it; a checkout builds its own tree.
 compile_tree() {
     if [ -f "$0" ] && [ -f "$(dirname "$0")/../dist/kanade.service" ]; then
         cd "$(dirname "$0")/.."
@@ -191,116 +134,6 @@ compile_tree() {
         dist=$src/dist
     fi
     cargo install --locked --root "$root" --path .
-}
-
-# download kanade + checksum into $1. 0 verified, ready to install. Exits on a bad checksum or any
-# download error other than a missing asset. Returns 1 only for HTTP 404, which the caller compiles.
-fetch_binary() {
-    dir=$1
-    fetch "$release/kanade" "$dir/kanade" && status=0 || status=$?
-    if [ "$status" = 2 ]; then
-        echo "install-0.1 has no kanade asset (HTTP 404), compiling release/0.1" >&2
-        return 1
-    fi
-    if [ "$status" != 0 ]; then
-        exit 1
-    fi
-    fetch "$release/kanade.sha256" "$dir/kanade.sha256" && status=0 || status=$?
-    if [ "$status" != 0 ]; then
-        echo "failed: kanade.sha256 missing or not downloaded" >&2
-        exit 1
-    fi
-    verify "$dir/kanade" "$dir/kanade.sha256" || exit 1
-
-    rev=
-    fetch "$release/kanade.rev" "$dir/kanade.rev" && status=0 || status=$?
-    if [ "$status" = 0 ]; then
-        rev=$(tr -d '[:space:]' < "$dir/kanade.rev")
-        if [ -n "$rev" ]; then
-            echo "kanade $rev"
-        fi
-    fi
-    # absent, or a rev download that is not the binary: do not fail the verified binary
-    case "$rev" in
-        [0-9a-f][0-9a-f]*) tree=$rev ;;
-        *) tree=release/0.1 ;;
-    esac
-    raw=https://raw.githubusercontent.com/0x1d1e/kanade/$tree
-    mkdir -p "$dir/dist/niri" "$dir/dist/umbriel"
-    fetch_dist "$raw/dist/kanade.service" "$dir/dist/kanade.service" "$tree"
-    fetch_dist "$raw/dist/kanade.png" "$dir/dist/kanade.png" "$tree"
-    fetch_dist "$raw/dist/niri/config.kdl" "$dir/dist/niri/config.kdl" "$tree"
-    fetch_dist "$raw/dist/umbriel/config.toml" "$dir/dist/umbriel/config.toml" "$tree"
-    dist=$dir/dist
-}
-
-fetch_dist() {
-    fetch "$1" "$2" && status=0 || status=$?
-    if [ "$status" != 0 ]; then
-        echo "failed to download $(basename "$2") from $3" >&2
-        exit 1
-    fi
-}
-
-# piped, with a terminal, and without --yes: the TUI collects the toggles and runs this script again.
-# A missing kanade-install asset continues here. A checksum mismatch does not.
-launch_tui() {
-    if ! command -v curl > /dev/null || ! command -v sha256sum > /dev/null; then
-        echo "failed to find curl or sha256sum, continuing without the TUI" >&2
-        return 0
-    fi
-    tmp=$(mktemp -d)
-    if ! curl -fsSL "$script_url" -o "$tmp/install"; then
-        echo "failed to save a copy of the install script, continuing without the TUI" >&2
-        rm -rf "$tmp"
-        return 0
-    fi
-    fetch "$release/kanade-install" "$tmp/kanade-install" && status=0 || status=$?
-    if [ "$status" = 2 ]; then
-        echo "install-0.1 has no kanade-install asset (HTTP 404), continuing without the TUI" >&2
-        rm -rf "$tmp"
-        return 0
-    fi
-    if [ "$status" != 0 ]; then
-        rm -rf "$tmp"
-        exit 1
-    fi
-    fetch "$release/kanade-install.sha256" "$tmp/kanade-install.sha256" && status=0 || status=$?
-    if [ "$status" != 0 ]; then
-        echo "failed: kanade-install.sha256 missing or not downloaded" >&2
-        rm -rf "$tmp"
-        exit 1
-    fi
-    if ! verify "$tmp/kanade-install" "$tmp/kanade-install.sha256"; then
-        rm -rf "$tmp"
-        exit 1
-    fi
-    chmod 755 "$tmp/kanade-install"
-    set -- --script "$tmp/install"
-    if [ "$desktop" = 0 ]; then
-        set -- "$@" --shell-only
-    fi
-    if [ "$no_niri" = 1 ]; then
-        set -- "$@" --no-niri
-    fi
-    if [ "$want_niri" = 1 ]; then
-        set -- "$@" --niri
-    fi
-    if [ "$sddm" = 1 ]; then
-        set -- "$@" --sddm
-    fi
-    if [ "$sddm_greeter_set" = 1 ]; then
-        set -- "$@" --sddm-greeter "$sddm_greeter"
-    fi
-    if [ "$optional" = 1 ]; then
-        set -- "$@" --optional
-    fi
-    # The TUI runs as a child rather than as this shell's replacement (`exec`), so the copy of this
-    # script it reads is removed when it ends, however it ends
-    trap 'rm -rf "$tmp"' EXIT
-    status=0
-    "$tmp/kanade-install" "$@" < /dev/tty > /dev/tty 2>&1 || status=$?
-    exit "$status"
 }
 
 # an NVIDIA GPU beside another device. Xorg can start on the one with no screens; niri does not.
@@ -436,8 +269,7 @@ main() {
     sddm_greeter=keep
     sddm_greeter_set=0
     uninstall=0
-    yes=0
-    ref=release/0.1
+    ref=main
     ref_set=0
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -458,7 +290,7 @@ main() {
                 esac
                 ;;
             --uninstall) uninstall=1 ;;
-            --yes) yes=1 ;;
+            --yes) ;;
             --ref)
                 shift
                 if [ $# -eq 0 ]; then
@@ -485,17 +317,6 @@ main() {
     if [ "$ref_set" = 1 ] && ! ref_ok "$ref"; then
         echo "--ref takes one branch or tag name" >&2
         exit 2
-    fi
-
-    # --yes, --uninstall, --ref, or no terminal: do not download the TUI. Refuse before downloading
-    # it, so a non-Arch or non-x86_64 machine never execs the binary.
-    if [ "$piped" = 1 ] && [ "$have_tty" = 1 ] && [ "$yes" = 0 ] && [ "$uninstall" = 0 ] && [ "$ref_set" = 0 ]; then
-        if ! command -v pacman > /dev/null; then
-            echo "failed to find pacman, Kanade installs on Arch Linux and derivatives only" >&2
-            exit 1
-        fi
-        refuse_machine
-        launch_tui
     fi
 
     if [ "$piped" = 1 ]; then
@@ -594,35 +415,9 @@ main() {
         exit 1
     fi
 
-    checkout=0
-    if [ -f "$0" ] && [ -f "$(dirname "$0")/../dist/kanade.service" ]; then
-        checkout=1
-    fi
-
-    compile=0
-    work=
-    if [ "$checkout" = 1 ] || [ "$ref_set" = 1 ]; then
-        compile=1
-    else
-        refuse_machine
-        if ! command -v curl > /dev/null || ! command -v sha256sum > /dev/null; then
-            echo "failed to find curl or sha256sum" >&2
-            exit 1
-        fi
-        work=$(mktemp -d)
-        trap 'rm -rf "$work"' EXIT
-        if ! fetch_binary "$work"; then
-            compile=1
-        fi
-    fi
-
+    compile=1
     install_packages
-
-    if [ "$compile" = 1 ]; then
-        compile_tree
-    else
-        install -Dm755 "$work/kanade" "$root/bin/kanade"
-    fi
+    compile_tree
 
     if [ "$sddm" = 1 ]; then
         if [ "$sddm_greeter_set" = 0 ] && hybrid_nvidia; then

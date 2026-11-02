@@ -89,7 +89,7 @@ Beyond the Island, Kanade coordinates the surrounding desktop environment:
 
 ## Quick Start & Installation
 
-On Arch Linux x86_64, the script is fetched from `main`. A piped run with a terminal opens a short TUI (`kanade-install`) unless you pass `--yes`. With no `--ref`, it downloads the Arch binary from the `install-0.1` release, checks sha256, and installs it to `~/.cargo/bin`. That binary is dynamically linked to Arch's PulseAudio (`libpulsecommon-17.0.so` and the rest of that closure). It is not static and not portable. A missing asset compiles `release/0.1`; a bad checksum does not. Packages come from `paru`, or from `yay` if paru is not on PATH and yay already is. If neither is on PATH, `sudo pacman -S --needed paru` installs paru and that is used. If that fails, the install stops. See [Installation](docs/wiki/Installation.md).
+On Arch Linux and derivatives, the script installs dependencies, clones `main` and builds Kanade with `cargo install --locked --path .` into `~/.cargo/bin`. Run it again to update. Packages come from `paru`, or an existing `yay`; if neither is available, the script installs paru through pacman. See [Installation](docs/wiki/Installation.md).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
@@ -98,9 +98,9 @@ curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install 
 For existing niri setups or selective installs, pass options after `sh -s --`:
 
 - `--shell-only`: Installs Kanade without the desktop packages, and does not install a niri config.
-- `--yes`: Skips the TUI.
+- `--yes`: Accepted for compatibility.
 - `--optional`: Installs optional feature packages and enables Bluetooth, UPower, and power-profiles-daemon services.
-- `--ref`: Compiles that branch or tag, including `--ref main`. Does not download the `install-0.1` binary.
+- `--ref REF`: Builds that branch or tag instead of `main`.
 - `--uninstall`: Removes the Kanade binary, completions, systemd unit, and desktop icon, and keeps the `kanade.service.bak.*` copies; removes the root-owned SDDM files `--sddm` wrote, with `sudo`, and nothing else.
 
 ### Manual Build
@@ -181,4 +181,4 @@ Kanade runs without these packages, but individual features require them:
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](LICENSE).

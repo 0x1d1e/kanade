@@ -137,7 +137,7 @@ impl Niri {
 }
 
 /// Whether niri IPC is connected or reachable on its socket.
-pub fn is_available() -> bool {
+pub fn is_active() -> bool {
     Niri::read().connected
         || socket().is_ok_and(|path| std::os::unix::net::UnixStream::connect(path).is_ok())
 }
@@ -1199,6 +1199,9 @@ pub fn follow() {
         let mut said_unreachable = false;
 
         loop {
+            if !socket().is_ok_and(|path| std::path::Path::new(&path).exists()) {
+                return;
+            }
             let started = Instant::now();
             let reached = run(
                 connect().map(BufReader::new),

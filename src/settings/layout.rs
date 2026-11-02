@@ -3,6 +3,30 @@
 //! group of the Modules page; the tests hold both.
 
 use crate::icon::Icon;
+use crate::sources::compositor::Compositor;
+
+pub fn visible_pages(comp: Compositor) -> Vec<&'static Page> {
+    PAGES
+        .iter()
+        .filter(|page| match page.name {
+            "niri" => comp == Compositor::Niri,
+            "umbriel" => comp == Compositor::Umbriel,
+            _ => true,
+        })
+        .collect()
+}
+
+pub fn route_page(page: &'static str, comp: Compositor) -> &'static str {
+    if matches!(page, "compositor" | "niri" | "umbriel") {
+        match comp {
+            Compositor::Niri => "niri",
+            Compositor::Umbriel => "umbriel",
+            Compositor::None => PAGES[0].name,
+        }
+    } else {
+        page
+    }
+}
 
 // a page of the window
 pub struct Page {
@@ -736,10 +760,14 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "umbriel",
         title: "Umbriel",
-        summary: "Edit Umbriel's own config.toml: its layout, appearance, blur, focus, keyboard, touchpad, mouse and cursor",
+        summary: "Edit Umbriel's own config.toml: its monitors, layout, appearance, blur, focus, keyboard, touchpad, mouse and cursor",
         group: "Compositor",
         icon: Icon::Columns,
         sections: &[
+            Section {
+                title: "Outputs",
+                rows: &[Row::Outputs],
+            },
             Section {
                 title: "Layout",
                 rows: &[
@@ -820,6 +848,32 @@ pub fn page_of(key: &str) -> Option<&'static Page> {
 mod tests {
     use super::*;
     use crate::modules::{self, CORE};
+
+    #[test]
+    fn compositor_pages_and_routes_follow_detection() {
+        for comp in [Compositor::Niri, Compositor::Umbriel, Compositor::None] {
+            let shown = visible_pages(comp);
+            assert_eq!(
+                shown.iter().any(|p| p.name == "niri"),
+                comp == Compositor::Niri
+            );
+            assert_eq!(
+                shown.iter().any(|p| p.name == "umbriel"),
+                comp == Compositor::Umbriel
+            );
+            for requested in ["compositor", "niri", "umbriel"] {
+                let routed = route_page(requested, comp);
+                assert!(shown.iter().any(|page| page.name == routed));
+                if comp == Compositor::Umbriel {
+                    assert_eq!(routed, "umbriel");
+                }
+                if comp == Compositor::Niri {
+                    assert_eq!(routed, "niri");
+                }
+            }
+            assert_eq!(route_page("dock", comp), "dock");
+        }
+    }
 
     #[test]
     fn every_setting_is_shown_once_or_owned_by_another_control() {

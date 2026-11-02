@@ -1,7 +1,7 @@
 # Kanade's SDDM theme
 
 `kanade/` is the login screen, drawn to match the lock screen (`crates/lock/src/paint.rs` is the
-reference: where the two differ, the lock screen is right and this is the bug). MIT, written from
+reference: where the two differ, the lock screen is right and this is the bug). Apache-2.0, written from
 scratch in QML; see `kanade/NOTICE`. `kanade sddm` installs it (below).
 
 ## Layout

@@ -33,7 +33,7 @@ struct Seen {
 }
 
 fn seen() -> Seen {
-    if umbriel::is_active() {
+    if crate::sources::compositor::active() == crate::sources::compositor::Compositor::Umbriel {
         let source = Umbriel::read();
         Seen {
             focused_window: source.seen.focused_window.clone(),
@@ -637,7 +637,9 @@ fn focus_and_close(id: u64, monitor: Option<&str>) {
         pad::close();
     }
 
-    let hex = if umbriel::is_active() {
+    let hex = if crate::sources::compositor::active()
+        == crate::sources::compositor::Compositor::Umbriel
+    {
         let Some(hex) = umbriel::window_hex(id) else {
             return;
         };

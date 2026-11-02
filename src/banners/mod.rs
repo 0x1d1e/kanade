@@ -248,6 +248,10 @@ pub fn showing(monitor: &str) -> bool {
     modules::on("banners") && !Banners::read().shown_on(monitor).is_empty()
 }
 
+pub fn active(monitor: &str) -> bool {
+    showing(monitor)
+}
+
 // a watcher of `Niri`: the Banners follow the focus to its output; the same again changes nothing
 pub fn follow_focus() {
     let focused = Niri::read().seen.focused_output.clone();

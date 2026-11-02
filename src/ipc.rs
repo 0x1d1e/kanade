@@ -27,8 +27,8 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
     apps, bluetooth, brightness, caffeine, charge_limit, dictation, focus, fullscreen, google,
-    live, media, network, night_light, power, reminders, session, subscriptions, usage, wallpaper,
-    weather,
+    live, media, network, night_light, power, pulse, reminders, session, subscriptions, usage,
+    wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -104,6 +104,10 @@ pub fn draws(arguments: &[String]) -> Draws {
         Call::Brightness(brightness::Request::Status) => false,
 
         Call::Brightness(_) => true,
+
+        Call::Volume(pulse::Request::Status) => false,
+
+        Call::Volume(_) => true,
 
         Call::Island(_)
         | Call::Timer(_)
@@ -229,10 +233,13 @@ fn run(call: Call) -> Reply {
         Call::Brightness(request) => {
             brightness::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        Call::Volume(request) => pulse::request(request).map_or_else(Reply::Refused, Reply::Done),
         Call::LockStatus => Reply::Done(lock::status()),
         Call::IdleStatus => Reply::Done(idle::status()),
         // logind is asked on a thread of its own
-        Call::Session(leave) => session::request(leave).map_or_else(Reply::Refused, Reply::Done),
+        Call::Session(request) => {
+            session::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         // on the draw thread, which the window's text inputs live on

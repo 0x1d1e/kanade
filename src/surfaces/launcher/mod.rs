@@ -833,6 +833,7 @@ fn hands_off(visit: u64, key: Key, query: &str, offered: &Destinations) -> Optio
         "@" if offered.wallpapers => Some(Destination::Wallpapers),
         ":" if offered.emoji => Some(Destination::Emoji),
         ">" if offered.clipboard => Some(Destination::Clipboard),
+        "~" if offered.files => Some(Destination::Files),
         _ => None,
     }
 }
@@ -919,6 +920,11 @@ fn commands(offered: bool, recording: Rec) -> Commands {
         lock: modules::on("lock"),
         wallpaper: modules::on("wallpaper"),
         dictation: modules::on("dictation"),
+        media: modules::on("media"),
+        timer: modules::on("timer"),
+        clipboard: modules::on("clipboard"),
+        weather: modules::on("weather"),
+        audio: modules::on("audio"),
         recording,
     }
 }
@@ -3215,6 +3221,7 @@ mod tests {
             wallpapers: true,
             emoji: true,
             clipboard: true,
+            files: true,
             ..Destinations::default()
         };
         let off = Destinations::default();
@@ -3231,19 +3238,26 @@ mod tests {
             hands_off(0, Key::Character('>'), ">", &on),
             Some(Destination::Clipboard)
         );
+        assert_eq!(
+            hands_off(0, Key::Character('~'), "~", &on),
+            Some(Destination::Files)
+        );
 
         // a key that types nothing leaves the same query without handing off
         assert_eq!(hands_off(0, Key::Backspace, "@", &on), None);
         assert_eq!(hands_off(0, Key::Home, ":", &on), None);
         assert_eq!(hands_off(0, Key::Delete, ">", &on), None);
+        assert_eq!(hands_off(0, Key::Delete, "~", &on), None);
 
         // a longer query, or one the prefix was typed into, is an ordinary search
         assert_eq!(hands_off(0, Key::Character('f'), "@f", &on), None);
         assert_eq!(hands_off(0, Key::Character('@'), "@bar", &on), None);
+        assert_eq!(hands_off(0, Key::Character('~'), "~/", &on), None);
 
         // with the Module off the character stays an ordinary search
         assert_eq!(hands_off(0, Key::Character('@'), "@", &off), None);
         assert_eq!(hands_off(0, Key::Character(':'), ":", &off), None);
+        assert_eq!(hands_off(0, Key::Character('~'), "~", &off), None);
 
         // a dmenu's visit answers from its stdin lines alone. This test writes the global
         // `Choosing`, and `found` branches on `choose::of(visit)`, so the visit must not collide

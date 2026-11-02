@@ -296,6 +296,7 @@ impl LauncherProvider for Destinations {
             answers.extend(pages(&query));
             if !empty {
                 answers.extend(placed(&query));
+                answers.extend(non_schema(&query));
             }
         }
 
@@ -356,6 +357,77 @@ fn placed(query: &str) -> impl Iterator<Item = Answer> {
     })
 }
 
+struct NonSchemaDestination {
+    title: &'static str,
+    detail: &'static str,
+    icon: Icon,
+    keywords: &'static [&'static str],
+    page: fn() -> &'static str,
+}
+
+const NON_SCHEMA: &[NonSchemaDestination] = &[
+    NonSchemaDestination {
+        title: "Displays",
+        detail: "Settings - Outputs",
+        icon: Icon::Columns,
+        keywords: &[
+            "display",
+            "displays",
+            "monitor",
+            "monitors",
+            "resolution",
+            "scale",
+            "scaling",
+            "refresh rate",
+            "vrr",
+            "outputs",
+        ],
+        page: || {
+            if crate::sources::compositor::active()
+                == crate::sources::compositor::Compositor::Umbriel
+            {
+                "umbriel"
+            } else {
+                "niri"
+            }
+        },
+    },
+    NonSchemaDestination {
+        title: "Health Checks",
+        detail: "Settings - Health",
+        icon: Icon::Check,
+        keywords: &["health", "doctor", "diagnostics", "status", "health checks"],
+        page: || "health",
+    },
+    NonSchemaDestination {
+        title: "Login Screen",
+        detail: "Settings - Login",
+        icon: Icon::Lock,
+        keywords: &["login", "sddm", "greeter", "theme", "login screen"],
+        page: || "sddm",
+    },
+];
+
+fn non_schema(query: &str) -> impl Iterator<Item = Answer> {
+    NON_SCHEMA.iter().filter_map(move |item| {
+        let fit = item
+            .keywords
+            .iter()
+            .filter_map(|kw| provider::fit(query, kw))
+            .min()
+            .or_else(|| provider::fit(query, &item.title.to_lowercase()))?;
+
+        Some(Answer {
+            fit,
+            filler: false,
+            title: item.title.to_owned(),
+            detail: item.detail.to_owned(),
+            mark: Mark::Icon(item.icon),
+            action: Action::Open(Destination::Settings((item.page)())),
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +448,31 @@ mod tests {
                 "{query}"
             );
         }
+    }
+
+    #[test]
+    fn non_schema_settings_sections_resolve() {
+        let destinations = Destinations {
+            settings: true,
+            ..Destinations::default()
+        };
+
+        let monitor_answers = destinations.find("monitor");
+        assert!(
+            monitor_answers.iter().any(|a| a.title == "Displays"),
+            "monitor query should resolve to Displays destination"
+        );
+
+        let health_answers = destinations.find("health");
+        assert!(
+            health_answers.iter().any(|a| a.title == "Health Checks"),
+            "health query should resolve to Health Checks destination"
+        );
+
+        let login_answers = destinations.find("sddm");
+        assert!(
+            login_answers.iter().any(|a| a.title == "Login Screen"),
+            "sddm query should resolve to Login Screen destination"
+        );
     }
 }

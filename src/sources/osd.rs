@@ -462,10 +462,7 @@ pub fn show(asked: Asked, reads: Reads) -> Result<(), String> {
         }
         // shown by the volume thread, once it read it
         Asked::Volume => {
-            return VOLUME
-                .get()
-                .ok_or_else(|| String::from("the volume thread is not running"))
-                .and_then(|volume| ask(volume, Instant::now()));
+            return ask_volume();
         }
         // a keybind asks right after it set it, so read now
         Asked::Brightness => match brightness() {
@@ -476,6 +473,14 @@ pub fn show(asked: Asked, reads: Reads) -> Result<(), String> {
 
     post(level, Shown::show);
     Ok(())
+}
+
+/// Asks the volume thread to immediately read the speaker volume and post visual OSD feedback.
+pub fn ask_volume() -> Result<(), String> {
+    VOLUME
+        .get()
+        .ok_or_else(|| String::from("the volume thread is not running"))
+        .and_then(|volume| ask(volume, Instant::now()))
 }
 
 /*

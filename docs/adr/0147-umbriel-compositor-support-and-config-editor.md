@@ -30,6 +30,12 @@ Users choosing Umbriel need the same seamless experience Kanade delivers under n
 - **Base distribution config**: `dist/umbriel/config.toml` ships with default autostart of Kanade, scrolling layout presets, blur layer rules for Kanade surfaces, JetBrainsMono Nerd Font typography, and Bibata cursor settings (`[input.cursor] theme = "Bibata-Modern-Classic", size = 24`).
 - **Compositor IPC spawn**: When Umbriel is active, desktop entry `Exec` commands and dropped files launch via Umbriel's Unix IPC socket (`{"cmd":"action","action":"spawn","command":"<shell command>"}`), ensuring apps receive the compositor's environment rather than Kanade's without failing on missing `NIRI_SOCKET`.
 
+## Autodetection and output settings
+
+`sources::compositor::active()` chooses a reachable Umbriel socket first, then niri, or neither. Startup follows only that compositor's event stream; a missing socket ends its reconnect loop. Window, Strip, capture, launcher and keybinding selection share this decision. Settings navigation, keyboard traversal, launcher destinations and search expose only the active compositor page; opening `compositor` or the other compositor routes to the active page.
+
+Both compositor pages use the same Outputs canvas, monitor cards and trial controller. Umbriel's `outputs` reply supplies the shared monitor model. Trials send `output-set` actions and never write the config. Keep writes `[output."<connector>"]` properties (`enabled`, `mode`, `position`, `scale`, `transform`, `vrr`) through the validated Umbriel editor, then requests `umbriel msg config-reload`; reset and undo reload too. VRR uses `disabled`, `always`, or `fullscreen`. Umbriel's pending recovery file is `umbriel-outputs-pending.json`, separate from niri's record. A rejected live action leaves no trial or config edit; an unanswered action retains recovery state. Umbriel versions without `output-set` can display monitors but reject trials explicitly.
+
 ## Consequences
 
 - Kanade seamlessly supports both niri and Umbriel sessions.

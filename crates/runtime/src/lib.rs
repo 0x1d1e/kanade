@@ -1,6 +1,6 @@
 //! Kanade's runtime: the Wayland event loop, windows, input, layout, drawing
-//! and the Service store every view reads (ADR 0028). Parts are under a
-//! third-party MIT notice, see THIRD_PARTY_NOTICES.md.
+//! and the Service store every view reads (ADR 0028). Third-party licenses
+//! are listed in THIRD_PARTY_NOTICES.md.
 //!
 //! The only `unsafe` is glibc's allocator tuning (`allocator.rs`) and handing
 //! the GPU libwayland's surface (`graphics/gpu/target.rs`).

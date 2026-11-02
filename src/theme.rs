@@ -221,9 +221,6 @@ pub const REGION_BADGE_BG: Color = Color::rgba(20, 20, 22, 230);
 pub const REGION_BADGE_BORDER: Color = Color::rgba(255, 255, 255, 50);
 pub const REGION_BADGE_TEXT: Color = Color::WHITE;
 
-// the OSD's capsule over an open Surface: darker, as it floats over the Island, not the desktop
-pub const SHADOW_HUD: Color = Color::rgba(0, 0, 0, 89);
-
 /*
  * over the wallpaper behind the lock screen, of mean luma `light` if known: barely over a dark one,
  * as much as light text needs over a light one, more for `lock.backdrop` dimmed. One not decoded

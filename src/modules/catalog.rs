@@ -7,7 +7,6 @@ use kanade_runtime::{Monitors, Toplevels};
 
 use crate::cli::{Call, Verb};
 use crate::clock::WallClock;
-use crate::island::activity::{Ending, Leave};
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
@@ -26,7 +25,7 @@ use crate::sources::{
     clipboard, devices, dictation, focus, fullscreen, google, keys, launch, launcher_entry, live,
     lyrics, media, network, night_light,
     niri::{self, Niri},
-    notifications, osd, pipewire, polkit, power, privacy, radios, recording, reminders,
+    notifications, osd, pipewire, polkit, power, privacy, pulse, radios, recording, reminders,
     screen_time, seat, session, sleep, subscriptions, system, timer, tray, usage, wake, wallpaper,
     wallpaper_moving, weather, windows, workspace,
 };
@@ -466,7 +465,20 @@ pub const ALL: &[Module] = &[
         ],
         settings: &[],
         hooks: Hooks::NONE,
-        verbs: &[],
+        verbs: &[Verb {
+            name: "volume",
+            about: "Speaker and microphone volume and mute",
+            usage: || {
+                String::from(
+                    "volume up [<step>]|down [<step>]|set <percent>|mute [toggle|on|off]|mic-mute [toggle|on|off]|status\n  <step>: points to step (default 5)\n  <percent>: 0–100",
+                )
+            },
+            parse: |arguments| {
+                pulse::Request::parse(arguments)
+                    .map(Call::Volume)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
             service::watch::<Mixer>(devices::follow_output);
             supervise::spawn("audio", audio::follow);
@@ -1862,13 +1874,27 @@ usage key
         verbs: &[Verb {
             name: "session",
             about: "Open the session menu, suspend, reboot, power off, log out",
-            usage: || String::from("session menu|suspend|reboot|poweroff|logout"),
+            usage: || {
+                String::from(
+                    "session menu|suspend|reboot [now|--now]|poweroff [now|--now]|logout [now|--now]|cancel",
+                )
+            },
             parse: |arguments| match arguments {
                 ["menu"] => Ok(Call::Island(Command::Open(Surface::Session))),
-                ["suspend"] => Ok(Call::Session(Leave::Sleep)),
-                ["reboot"] => Ok(Call::Session(Leave::Ending(Ending::Restart))),
-                ["poweroff"] => Ok(Call::Session(Leave::Ending(Ending::PowerOff))),
-                ["logout"] => Ok(Call::Session(Leave::Ending(Ending::LogOut))),
+                ["suspend"] => Ok(Call::Session(session::Request::Sleep)),
+                ["cancel"] => Ok(Call::Session(session::Request::Cancel)),
+                ["reboot"] => Ok(Call::Session(session::Request::Reboot { now: false })),
+                ["reboot", "now" | "--now"] => {
+                    Ok(Call::Session(session::Request::Reboot { now: true }))
+                }
+                ["poweroff"] => Ok(Call::Session(session::Request::PowerOff { now: false })),
+                ["poweroff", "now" | "--now"] => {
+                    Ok(Call::Session(session::Request::PowerOff { now: true }))
+                }
+                ["logout"] => Ok(Call::Session(session::Request::LogOut { now: false })),
+                ["logout", "now" | "--now"] => {
+                    Ok(Call::Session(session::Request::LogOut { now: true }))
+                }
                 _ => Err(Unparsed::Usage),
             },
         }],
@@ -1924,16 +1950,16 @@ usage key
                 let pages: Vec<&str> = settings::pages().collect();
 
                 format!(
-                    "settings open [<page>]|close\n  <page>: {}",
+                    "settings [open] [<page>]|close\n  <page>: {}",
                     pages.join("|")
                 )
             },
             parse: |arguments| match arguments {
-                ["open"] => Ok(Call::Settings(None)),
-                ["open", page] => settings::page(page)
+                [] | ["open"] => Ok(Call::Settings(None)),
+                ["close"] => Ok(Call::CloseSettings),
+                ["open", page] | [page] => settings::page(page)
                     .map(|page| Call::Settings(Some(page)))
                     .ok_or(Unparsed::Usage),
-                ["close"] => Ok(Call::CloseSettings),
                 _ => Err(Unparsed::Usage),
             },
         }],

@@ -251,17 +251,6 @@ impl Arbiter {
         }
     }
 
-    /*
-     * the primary an island last settled on, when it became the primary, and when it expires if
-     * Transient: a repost keeps its since and pushes its expiry back
-     */
-    pub fn shown(&self, island: Island) -> Option<(&Id, Instant, Option<Instant>)> {
-        let shown = self.shown[usize::from(island.focused)].as_ref()?;
-        let entry = self.activities.get(&shown.id)?;
-
-        Some((&shown.id, shown.since, entry.expiry()))
-    }
-
     // the live Activities on an island, highest first
     fn ranked(&self, now: Instant, focused: bool, output: &str) -> Vec<&Entry> {
         let mut entries: Vec<&Entry> = self

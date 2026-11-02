@@ -88,7 +88,7 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("no screenshot folder ({error}): {}", dir.display()))?;
 
-    if niri::is_available() {
+    if super::compositor::active() == super::compositor::Compositor::Niri {
         let window = match mode {
             Mode::Window => Some(window().map_err(backend)?.ok_or("no window to capture")?),
             _ => None,

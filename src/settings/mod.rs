@@ -222,11 +222,20 @@ pub fn pages() -> impl Iterator<Item = &'static str> {
 
 // the page of this name, or the one showing a Module's settings, as pages were named before
 pub fn page(name: &str) -> Option<&'static str> {
-    pages().find(|&page| page == name).or_else(|| {
-        let module = modules::ALL.iter().find(|module| module.name == name)?;
+    if name == "compositor" {
+        return Some(layout::route_page(
+            "compositor",
+            crate::sources::compositor::active(),
+        ));
+    }
+    pages()
+        .find(|&page| page == name)
+        .map(|page| layout::route_page(page, crate::sources::compositor::active()))
+        .or_else(|| {
+            let module = modules::ALL.iter().find(|module| module.name == name)?;
 
-        layout::page_of(module.settings.first()?.key).map(|page| page.name)
-    })
+            layout::page_of(module.settings.first()?.key).map(|page| page.name)
+        })
 }
 
 // a page, as the Launcher lists it
@@ -238,12 +247,14 @@ pub struct Listed {
 }
 
 pub fn listed() -> impl Iterator<Item = Listed> {
-    layout::PAGES.iter().map(|page| Listed {
-        name: page.name,
-        title: page.title,
-        summary: page.summary,
-        icon: page.icon,
-    })
+    layout::visible_pages(crate::sources::compositor::active())
+        .into_iter()
+        .map(|page| Listed {
+            name: page.name,
+            title: page.title,
+            summary: page.summary,
+            icon: page.icon,
+        })
 }
 
 // a setting and the page showing it
@@ -291,8 +302,11 @@ pub fn open(page: Option<&'static str>) {
     {
         let mut settings = Settings::write();
         settings.refused = None;
-        if let Some(page) = page {
-            settings.page = page;
+        settings.page = layout::route_page(
+            page.unwrap_or(settings.page),
+            crate::sources::compositor::active(),
+        );
+        if page.is_some() {
             settings.query.clear();
         }
     }
@@ -324,7 +338,7 @@ pub fn open(page: Option<&'static str>) {
     // read again for the rows a search finds as well as the page
     niri::load();
     umbriel::load();
-    if Settings::read().page == niri::PAGE {
+    if matches!(Settings::read().page, niri::PAGE | umbriel::PAGE) {
         outputs::refresh();
     }
     kanade_runtime::open_window(WINDOW, view::window);
@@ -437,6 +451,7 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<(), String> {
 
 // turns to a page, leaving any search
 fn turn_to(page: &'static str) {
+    let page = layout::route_page(page, crate::sources::compositor::active());
     {
         let mut settings = Settings::write();
         settings.page = page;
@@ -458,6 +473,7 @@ fn turn_to(page: &'static str) {
         outputs::refresh();
     }
     if page == umbriel::PAGE {
+        outputs::refresh();
         umbriel::load();
     }
 }

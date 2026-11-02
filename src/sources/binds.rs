@@ -141,7 +141,7 @@ pub fn binds() -> Arc<Result<Vec<Bind>, Unread>> {
         fs::read_to_string(file)
     };
 
-    let umbriel_active = crate::sources::umbriel::is_active();
+    let umbriel_active = super::compositor::active() == super::compositor::Compositor::Umbriel;
 
     if umbriel_active {
         if let Some(path) = &umbriel_path {

@@ -20,15 +20,14 @@ mod dictate;
 mod keys;
 
 use crate::gesture;
-use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::notifications::timed;
 use crate::sources::system::Switch;
 use crate::sources::{
     brightness, caffeine, capture, charge_limit, dictation, focus, google, live, media,
-    night_light, niri, osd, power, recording, reminders, subscriptions, timer, usage, wallpaper,
-    weather,
+    night_light, niri, osd, power, pulse, recording, reminders, session, subscriptions, timer,
+    usage, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor, sddm, ui};
@@ -88,12 +87,13 @@ pub enum Call {
     Reminders(reminders::Request),
     Weather(weather::Request),
     Subscriptions(subscriptions::Request),
+    Volume(pulse::Request),
     Osd(osd::Asked),
     Ui(ui::Request),
     Lock,
     LockStatus,
     IdleStatus,
-    Session(Leave),
+    Session(session::Request),
     Settings(Option<&'static str>),
     CloseSettings,
     Reload,
@@ -239,11 +239,11 @@ umbriel-config rules apply|remove <id>
     ),
     (
         "update",
-        "Replace the installed binary with the published one, without a shell",
+        "Build and install main with Cargo, without a running shell",
         "update
-  downloads the Arch x86_64 binary from the install-0.1 release, checks its sha256, and replaces ~/.cargo/bin/kanade
-  a failed download leaves the installed binary as it was
-  refreshes the user unit from that release, keeping the old one when it differs
+  builds main with cargo install --locked and replaces ~/.cargo/bin/kanade
+  a failed build leaves the installed binary as it was
+  refreshes the user unit, keeping the old one when it differs
   restarts kanade.service when it is running",
     ),
     (
@@ -1238,6 +1238,111 @@ mod tests {
 
         assert_eq!(Reply::decode("no handler named kanade"), None);
         assert_eq!(Reply::decode(""), None);
+    }
+
+    #[test]
+    fn volume_cli_parses_to_audio_module() {
+        use crate::sources::pulse::{Request, SwitchAction};
+
+        let cases: &[(&[&str], Request)] = &[
+            (&["volume", "up"], Request::Up(None)),
+            (&["volume", "up", "10"], Request::Up(Some(10))),
+            (&["volume", "down"], Request::Down(None)),
+            (&["volume", "down", "15"], Request::Down(Some(15))),
+            (&["volume", "set", "60"], Request::Set(60)),
+            (&["volume", "set", "0"], Request::Set(0)),
+            (&["volume", "mute"], Request::Mute(None)),
+            (
+                &["volume", "mute", "toggle"],
+                Request::Mute(Some(SwitchAction::Toggle)),
+            ),
+            (
+                &["volume", "mute", "on"],
+                Request::Mute(Some(SwitchAction::On)),
+            ),
+            (
+                &["volume", "mute", "off"],
+                Request::Mute(Some(SwitchAction::Off)),
+            ),
+            (&["volume", "mic-mute"], Request::MicMute(None)),
+            (
+                &["volume", "mic-mute", "toggle"],
+                Request::MicMute(Some(SwitchAction::Toggle)),
+            ),
+            (
+                &["volume", "mic-mute", "on"],
+                Request::MicMute(Some(SwitchAction::On)),
+            ),
+            (
+                &["volume", "mic-mute", "off"],
+                Request::MicMute(Some(SwitchAction::Off)),
+            ),
+            (&["volume", "status"], Request::Status),
+        ];
+
+        for (words, expected) in cases {
+            let (module, call) =
+                parse(words).unwrap_or_else(|_| panic!("failed to parse {words:?}"));
+            assert_eq!(module.name, "audio", "{words:?}");
+            assert_eq!(call, Call::Volume(*expected), "{words:?}");
+        }
+
+        assert!(parse(&["volume", "set", "101"]).is_err());
+        assert!(parse(&["volume", "invalid"]).is_err());
+    }
+
+    #[test]
+    fn session_and_settings_verbs_parse() {
+        assert_eq!(
+            parse(&["session", "cancel"]).unwrap().1,
+            Call::Session(session::Request::Cancel)
+        );
+        assert_eq!(
+            parse(&["session", "reboot", "now"]).unwrap().1,
+            Call::Session(session::Request::Reboot { now: true })
+        );
+        assert_eq!(
+            parse(&["session", "reboot", "--now"]).unwrap().1,
+            Call::Session(session::Request::Reboot { now: true })
+        );
+        assert_eq!(
+            parse(&["session", "reboot"]).unwrap().1,
+            Call::Session(session::Request::Reboot { now: false })
+        );
+        assert_eq!(
+            parse(&["session", "poweroff", "now"]).unwrap().1,
+            Call::Session(session::Request::PowerOff { now: true })
+        );
+        assert_eq!(
+            parse(&["session", "poweroff", "--now"]).unwrap().1,
+            Call::Session(session::Request::PowerOff { now: true })
+        );
+        assert_eq!(
+            parse(&["session", "logout", "now"]).unwrap().1,
+            Call::Session(session::Request::LogOut { now: true })
+        );
+        assert_eq!(
+            parse(&["session", "logout", "--now"]).unwrap().1,
+            Call::Session(session::Request::LogOut { now: true })
+        );
+
+        assert_eq!(parse(&["settings"]).unwrap().1, Call::Settings(None));
+        assert_eq!(
+            parse(&["settings", "open"]).unwrap().1,
+            Call::Settings(None)
+        );
+        assert_eq!(
+            parse(&["settings", "health"]).unwrap().1,
+            Call::Settings(Some("health"))
+        );
+        assert_eq!(
+            parse(&["settings", "open", "health"]).unwrap().1,
+            Call::Settings(Some("health"))
+        );
+        assert_eq!(
+            parse(&["settings", "close"]).unwrap().1,
+            Call::CloseSettings
+        );
     }
 
     // the shell at the other end of a socket, answering `reply` after `delay`, or closing unanswered

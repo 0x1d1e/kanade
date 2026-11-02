@@ -8,7 +8,6 @@ use std::time::Duration;
 use crate::cli::{self, Call, Reply};
 use crate::clock;
 use crate::icon::Icon;
-use crate::island::activity::Leave;
 use crate::lock;
 use crate::sources::{live, recents, recording};
 
@@ -45,6 +44,11 @@ pub struct Commands {
     pub lock: bool,
     pub wallpaper: bool,
     pub dictation: bool,
+    pub media: bool,
+    pub timer: bool,
+    pub clipboard: bool,
+    pub weather: bool,
+    pub audio: bool,
 
     // how a recording stands, which the four recording rows follow
     pub recording: Rec,
@@ -77,6 +81,11 @@ enum Gate {
     Lock,
     Wallpaper,
     Dictation,
+    Media,
+    Timer,
+    Clipboard,
+    Weather,
+    Audio,
 }
 
 struct Command {
@@ -254,6 +263,112 @@ const TABLE: &[Command] = &[
         aliases: &["dictate", "dictation", "voice typing", "speech to text"],
         verb: &["dictate", "toggle"],
     },
+    Command {
+        gate: Gate::Media,
+        icon: Icon::Play,
+        title: "Toggle Playback",
+        detail: "Play or pause current media",
+        aliases: &["play", "play-pause", "media play", "playback"],
+        verb: &["media", "play-pause"],
+    },
+    Command {
+        gate: Gate::Media,
+        icon: Icon::Next,
+        title: "Next Track",
+        detail: "Skip to next track",
+        aliases: &["next track", "skip track", "next"],
+        verb: &["media", "next"],
+    },
+    Command {
+        gate: Gate::Media,
+        icon: Icon::Previous,
+        title: "Previous Track",
+        detail: "Back to previous track",
+        aliases: &["previous track", "prev track", "previous", "prev"],
+        verb: &["media", "previous"],
+    },
+    Command {
+        gate: Gate::Timer,
+        icon: Icon::Stopwatch,
+        title: "Start Pomodoro",
+        detail: "Start a 25-minute pomodoro timer",
+        aliases: &["pomodoro", "timer pomodoro", "focus timer"],
+        verb: &["timer", "pomodoro"],
+    },
+    Command {
+        gate: Gate::Timer,
+        icon: Icon::Pause,
+        title: "Pause Timer",
+        detail: "Pause the running timer",
+        aliases: &["pause timer", "timer pause"],
+        verb: &["timer", "pause"],
+    },
+    Command {
+        gate: Gate::Timer,
+        icon: Icon::Play,
+        title: "Resume Timer",
+        detail: "Resume the paused timer",
+        aliases: &["resume timer", "timer resume"],
+        verb: &["timer", "resume"],
+    },
+    Command {
+        gate: Gate::Timer,
+        icon: Icon::Dismiss,
+        title: "Cancel Timer",
+        detail: "Cancel the running or paused timer",
+        aliases: &["cancel timer", "stop timer", "timer cancel"],
+        verb: &["timer", "cancel"],
+    },
+    Command {
+        gate: Gate::Notifications,
+        icon: Icon::Dismiss,
+        title: "Clear Notifications",
+        detail: "Dismiss all notifications",
+        aliases: &[
+            "clear notifications",
+            "dismiss notifications",
+            "dismiss all",
+        ],
+        verb: &["notifications", "clear"],
+    },
+    Command {
+        gate: Gate::Clipboard,
+        icon: Icon::Clipboard,
+        title: "Clear Clipboard History",
+        detail: "Clear unpinned clipboard items",
+        aliases: &["clear clipboard", "empty clipboard", "clipboard clear"],
+        verb: &["clipboard", "clear"],
+    },
+    Command {
+        gate: Gate::Weather,
+        icon: Icon::Sun,
+        title: "Refresh Weather",
+        detail: "Fetch latest weather forecast",
+        aliases: &["refresh weather", "weather refresh", "update weather"],
+        verb: &["weather", "refresh"],
+    },
+    Command {
+        gate: Gate::Audio,
+        icon: Icon::SpeakerMuted,
+        title: "Mute Audio",
+        detail: "Toggle speaker mute",
+        aliases: &[
+            "mute",
+            "unmute",
+            "toggle mute",
+            "mute audio",
+            "mute speaker",
+        ],
+        verb: &["volume", "mute", "toggle"],
+    },
+    Command {
+        gate: Gate::Audio,
+        icon: Icon::MicrophoneMuted,
+        title: "Toggle Microphone Mute",
+        detail: "Mute or unmute microphone",
+        aliases: &["mute mic", "unmute mic", "mic mute", "microphone mute"],
+        verb: &["volume", "mic-mute", "toggle"],
+    },
 ];
 
 impl Commands {
@@ -270,6 +385,11 @@ impl Commands {
             Gate::Lock => self.lock,
             Gate::Wallpaper => self.wallpaper,
             Gate::Dictation => self.dictation,
+            Gate::Media => self.media,
+            Gate::Timer => self.timer,
+            Gate::Clipboard => self.clipboard,
+            Gate::Weather => self.weather,
+            Gate::Audio => self.audio,
         }
     }
 
@@ -437,12 +557,14 @@ pub fn denied(words: &[&str]) -> bool {
         return true;
     };
 
+    if let Call::Session(req) = call {
+        return req.is_ending();
+    }
     match call {
         Call::Ui(_)
         | Call::Live(
             live::Request::Run { .. } | live::Request::Hook(_) | live::Request::Decide(_),
         )
-        | Call::Session(Leave::Ending(_))
         | Call::Dmenu(_)
         | Call::Gesture(_)
         | Call::PickColor => true,
@@ -471,6 +593,11 @@ mod tests {
             lock: true,
             wallpaper: true,
             dictation: true,
+            media: true,
+            timer: true,
+            clipboard: true,
+            weather: true,
+            audio: true,
             recording: Rec::Idle,
         }
     }

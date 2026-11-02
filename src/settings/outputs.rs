@@ -15,6 +15,7 @@
 //! what the output showed before.
 
 pub mod canvas;
+pub(crate) mod umbriel;
 mod work;
 
 use std::collections::BTreeMap;
@@ -160,7 +161,7 @@ impl Transform {
             .find(|transform| transform.name().replace('-', "").eq_ignore_ascii_case(name))
     }
 
-    fn from_name(name: &str) -> Option<Transform> {
+    pub(crate) fn from_name(name: &str) -> Option<Transform> {
         Transform::ALL
             .into_iter()
             .find(|transform| transform.name() == name)
@@ -1023,8 +1024,15 @@ impl Controller {
     pub fn file() -> Option<PathBuf> {
         let home = std::env::var("HOME").ok();
 
-        crate::config::base("XDG_STATE_HOME", ".local/state", home.as_deref())
-            .map(|dir| dir.join("kanade/outputs-pending.json"))
+        crate::config::base("XDG_STATE_HOME", ".local/state", home.as_deref()).map(|dir| {
+            dir.join(
+                if work::backend() == crate::sources::compositor::Compositor::Umbriel {
+                    "kanade/umbriel-outputs-pending.json"
+                } else {
+                    "kanade/outputs-pending.json"
+                },
+            )
+        })
     }
 
     /// Milliseconds left to Keep, none outside a trial.

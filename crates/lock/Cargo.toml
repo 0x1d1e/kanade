@@ -2,7 +2,7 @@
 name = "kanade-lock"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 # The lock screen from outside the runtime (ADR 0025): its own Wayland connection holding

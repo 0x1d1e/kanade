@@ -28,7 +28,7 @@ use crate::theme::{self, ThemeRoles, radius};
 use crate::tiles::{self, Placed};
 
 use super::health;
-use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
+use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line, visible_pages};
 use super::login;
 use super::niri;
 use super::outputs;
@@ -213,24 +213,27 @@ fn sidebar(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     let search = search_field(roles);
 
     // the pages are one stop: Up and Down turn to the one before or after
-    let at = PAGES
+    let visible = visible_pages(crate::sources::compositor::active());
+    let current = visible.clone();
+    let adjacent = visible.clone();
+    let at = visible
         .iter()
         .position(|page| page.name == settings.page)
         .unwrap_or(0);
     let pages = ring::register(
         Stop::new("pages")
-            .press(move || turn_to(PAGES[at].name))
+            .press(move || turn_to(current[at].name))
             .step(move |direction| {
-                let next = (at as i32 + direction).clamp(0, PAGES.len() as i32 - 1);
+                let next = (at as i32 + direction).clamp(0, adjacent.len() as i32 - 1);
 
-                turn_to(PAGES[next as usize].name);
+                turn_to(adjacent[next as usize].name);
             }),
     );
 
     let mut items: Vec<Box<dyn Widget>> = Vec::new();
 
     let mut group = "";
-    for page in PAGES {
+    for page in visible_pages(crate::sources::compositor::active()) {
         if page.group != group {
             group = page.group;
             items.push(Box::new(
@@ -621,8 +624,10 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     } else {
         undo
     };
-    if niri_page {
+    if niri_page || umbriel_page {
         actions.extend(outputs_page::actions(settings, roles));
+    }
+    if niri_page {
         if staged {
             let enabled = !settings.niri.is_saving();
 
@@ -797,7 +802,7 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
         .weight(theme::text::MEDIUM),
     ];
     items.extend(notices(settings));
-    if PAGES
+    if visible_pages(crate::sources::compositor::active())
         .iter()
         .flat_map(|page| page.sections)
         .flat_map(|section| section.rows)
@@ -805,7 +810,7 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
     {
         items.extend(niri_page::notices(settings));
     }
-    if PAGES
+    if visible_pages(crate::sources::compositor::active())
         .iter()
         .flat_map(|page| page.sections)
         .flat_map(|section| section.rows)
@@ -815,7 +820,7 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
     }
 
     let mut found = false;
-    for page in PAGES {
+    for page in visible_pages(crate::sources::compositor::active()) {
         for section in page.sections {
             let rows: Vec<&Line> = section
                 .rows
@@ -853,6 +858,16 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
 
 // whether a row's settings mention the query; the Modules row, whether a Module does, as it shows those
 fn matches(row: &Line, query: &str) -> bool {
+    matches_for(row, query, crate::sources::compositor::active())
+}
+
+fn matches_for(row: &Line, query: &str, comp: crate::sources::compositor::Compositor) -> bool {
+    use crate::sources::compositor::Compositor;
+    if (matches!(row, Line::Niri(_) | Line::NiriRule(_)) && comp != Compositor::Niri)
+        || (matches!(row, Line::Umbriel(_) | Line::UmbrielRule(_)) && comp != Compositor::Umbriel)
+    {
+        return false;
+    }
     let mentions = |text: &str| text.to_lowercase().contains(query);
 
     if let Line::Niri(path) = row {
@@ -883,6 +898,35 @@ fn matches(row: &Line, query: &str) -> bool {
         ]
         .iter()
         .any(|word| word.contains(query) || query.contains(word));
+    }
+
+    if let Line::Outputs = row {
+        return [
+            "display",
+            "displays",
+            "monitor",
+            "monitors",
+            "resolution",
+            "scale",
+            "scaling",
+            "refresh rate",
+            "vrr",
+            "outputs",
+        ]
+        .iter()
+        .any(|word| word.contains(query) || query.contains(word));
+    }
+
+    if let Line::Health = row {
+        return ["health", "doctor", "diagnostics", "status"]
+            .iter()
+            .any(|word| word.contains(query) || query.contains(word));
+    }
+
+    if let Line::Login = row {
+        return ["login", "sddm", "greeter", "theme"]
+            .iter()
+            .any(|word| word.contains(query) || query.contains(word));
     }
 
     row.keys().into_iter().any(|key| {
@@ -3505,4 +3549,71 @@ fn scroll_id(page: &'static str) -> &'static str {
             .entry(page)
             .or_insert_with(|| Box::leak(format!("settings {page}").into_boxed_str()))
     })
+}
+
+#[cfg(test)]
+mod compositor_tests {
+    use super::*;
+    use crate::sources::compositor::Compositor;
+
+    #[test]
+    fn search_excludes_inactive_compositor_rows_and_rules() {
+        for (row, owner) in [
+            (Line::Niri("layout.gaps"), Compositor::Niri),
+            (Line::NiriRule("blur-xray"), Compositor::Niri),
+            (Line::Umbriel("layout.gap"), Compositor::Umbriel),
+            (Line::UmbrielRule("blur"), Compositor::Umbriel),
+        ] {
+            for comp in [Compositor::Niri, Compositor::Umbriel, Compositor::None] {
+                if comp != owner {
+                    assert!(!matches_for(&row, "", comp));
+                }
+            }
+        }
+        assert!(matches_for(
+            &Line::Niri("layout.gaps"),
+            "gap",
+            Compositor::Niri
+        ));
+        assert!(matches_for(
+            &Line::Umbriel("layout.gap"),
+            "gap",
+            Compositor::Umbriel
+        ));
+    }
+
+    #[test]
+    fn search_matches_non_schema_sections() {
+        for query in [
+            "display",
+            "displays",
+            "monitor",
+            "monitors",
+            "resolution",
+            "scale",
+            "scaling",
+            "refresh rate",
+            "vrr",
+            "outputs",
+        ] {
+            assert!(
+                matches_for(&Line::Outputs, query, Compositor::Niri),
+                "{query}"
+            );
+        }
+
+        for query in ["health", "doctor", "diagnostics", "status"] {
+            assert!(
+                matches_for(&Line::Health, query, Compositor::Niri),
+                "{query}"
+            );
+        }
+
+        for query in ["login", "sddm", "greeter", "theme"] {
+            assert!(
+                matches_for(&Line::Login, query, Compositor::Niri),
+                "{query}"
+            );
+        }
+    }
 }

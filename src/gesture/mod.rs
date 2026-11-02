@@ -21,7 +21,6 @@ use kanade_runtime::{
 
 use crate::cli::{self, Call, Reply};
 use crate::config;
-use crate::island::activity::Leave;
 use crate::island::command::Command;
 use crate::island::motion::Mode as Motion;
 use crate::lock;
@@ -102,7 +101,7 @@ pub fn check(verb: &str) -> Result<Vec<String>, String> {
         Call::Dmenu(_) | Call::PickColor | Call::Gesture(_) => {
             Err(String::from("waits on you, which a gesture cannot"))
         }
-        Call::Session(Leave::Ending(_)) => {
+        Call::Session(req) if req.is_ending() => {
             Err(String::from("ends the session, which a gesture does not"))
         }
         Call::Island(Command::PeekDown | Command::PeekUp) => {
@@ -124,6 +123,7 @@ pub fn check(verb: &str) -> Result<Vec<String>, String> {
         | Call::Bluetooth(_)
         | Call::PowerProfile(_)
         | Call::Brightness(_)
+        | Call::Volume(_)
         | Call::Wallpaper(_)
         | Call::Weather(_)
         | Call::Osd(_)

@@ -270,7 +270,7 @@ impl Launch {
                 argv.insert(0, String::from(TERMINAL));
             }
 
-            if super::umbriel::is_active() {
+            if super::compositor::active() == super::compositor::Compositor::Umbriel {
                 let shell = format!(
                     "exec {}",
                     argv.iter()
@@ -409,7 +409,7 @@ impl Command {
 
         let shell = self.shell();
 
-        if super::umbriel::is_active() {
+        if super::compositor::active() == super::compositor::Compositor::Umbriel {
             return super::umbriel::spawn(&shell);
         }
 

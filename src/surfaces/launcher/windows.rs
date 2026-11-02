@@ -58,7 +58,9 @@ pub fn refresh() {
     let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
 
     thread::spawn(move || {
-        let entries = if umbriel::is_active() {
+        let entries = if crate::sources::compositor::active()
+            == crate::sources::compositor::Compositor::Umbriel
+        {
             umbriel::windows().map(|reply| entries(&reply, &[], true))
         } else {
             niri::ask("\"Windows\"")

@@ -230,14 +230,35 @@ impl State {
 
 struct Real;
 
+// A trial and its recovery record belong to one compositor even if its socket disappears.
+// Never send a restoration or config write to another backend after a disconnect.
+pub(super) fn backend() -> crate::sources::compositor::Compositor {
+    static BACKEND: OnceLock<crate::sources::compositor::Compositor> = OnceLock::new();
+    *BACKEND.get_or_init(crate::sources::compositor::active)
+}
+
+fn is_umbriel() -> bool {
+    backend() == crate::sources::compositor::Compositor::Umbriel
+}
+
 impl Port for Real {
     fn outputs(&self) -> Result<Vec<Output>, String> {
+        if backend() == crate::sources::compositor::Compositor::None {
+            return Err(String::from("No supported compositor is connected"));
+        }
+        if is_umbriel() {
+            return crate::sources::umbriel::outputs()
+                .map(|reply| crate::sources::umbriel::parse_outputs(&reply));
+        }
         ipc::ask("\"Outputs\"")
             .map(|reply| parse_outputs(&reply))
             .map_err(|error| format!("niri could not be asked for its outputs: {error}"))
     }
 
     fn run(&self, output: &str, args: &[String]) -> Result<(), RunError> {
+        if is_umbriel() {
+            return super::umbriel::run(output, args);
+        }
         let mut command = Command::new("niri");
         command
             .args(["msg", "output", output])
@@ -267,6 +288,11 @@ impl Port for Real {
     }
 
     fn write(&self, output: &Output, edits: &[&Edit]) -> Result<(String, Option<String>), String> {
+        if is_umbriel() {
+            let editor = super::umbriel::editor()?;
+            let said = super::umbriel::write(&editor, &output.name, edits)?;
+            return Ok((said, editor.last_change_hash().ok()));
+        }
         let editor = editor()?;
         let ops: Vec<_> = edits.iter().flat_map(|edit| edit.ops()).collect();
         let said = editor.edit_output(&output.id(), &ops)?;
@@ -275,6 +301,11 @@ impl Port for Real {
     }
 
     fn undo_write(&self) -> Result<String, String> {
+        if is_umbriel() {
+            let said = super::umbriel::editor()?.undo()?;
+            super::umbriel::reload()?;
+            return Ok(said);
+        }
         editor()?.undo()
     }
 
@@ -654,7 +685,7 @@ fn run(receiver: &Receiver<Job>) {
         let gone = {
             let settings = Settings::read();
 
-            settings.page != PAGE
+            (settings.page != PAGE && settings.page != crate::settings::umbriel::PAGE)
                 || settings.searching()
                 || (!open && (opened || last_job.elapsed() >= GRACE))
         };
@@ -736,7 +767,13 @@ fn handle(job: Job) {
             let result = edit_if_editable(
                 &output,
                 monitor.as_ref(),
-                niri_config::output_editable,
+                |id| {
+                    if is_umbriel() {
+                        super::umbriel::editor()?.editable()
+                    } else {
+                        niri_config::output_editable(id)
+                    }
+                },
                 || controller(|control| control.try_edit(&Real, &output, edit, hint)),
             );
 
@@ -784,15 +821,38 @@ fn handle(job: Job) {
 
                     // the page's Undo is this change and no other: the hash it left, and the file
                     // as it left it, so the read the Keep posts does not take it away
-                    page::State::set_undoable(after);
-                    page::load();
+                    if is_umbriel() {
+                        crate::settings::umbriel::State::set_undoable(after);
+                        crate::settings::umbriel::load();
+                    } else {
+                        page::State::set_undoable(after);
+                        page::load();
+                    }
 
                     // wait for niri to reload the config (ConfigLoaded on the event stream),
                     // up to about 2 s in TICK steps so a superseding job is still noticed
                     let deadline = Instant::now() + CONFIRM_TIMEOUT;
                     let mut loaded = None;
 
-                    while Instant::now() < deadline {
+                    if is_umbriel() {
+                        match super::umbriel::reload() {
+                            Ok(()) => {
+                                loaded = Some(ipc::ConfigLoadState {
+                                    count: 1,
+                                    last_failed: false,
+                                })
+                            }
+                            Err(why) => {
+                                Settings::write().outputs.notice =
+                                    Some((format!("Umbriel reload failed: {why}"), true));
+                                loaded = Some(ipc::ConfigLoadState {
+                                    count: 1,
+                                    last_failed: true,
+                                });
+                            }
+                        }
+                    }
+                    while !is_umbriel() && Instant::now() < deadline {
                         thread::sleep(TICK);
                         let now = ipc::config_load_state();
                         if now.count != before.count {
@@ -813,14 +873,14 @@ fn handle(job: Job) {
                             Settings::write().outputs.notice = Some(match reverted {
                                 Ok(_) => (
                                     format!(
-                                        "niri rejected the saved config; \
+                                        "The compositor rejected the saved config; \
                                          pre-trial config restored and {name} put back"
                                     ),
                                     true,
                                 ),
                                 Err(why) => (
                                     format!(
-                                        "niri rejected the saved config; \
+                                        "The compositor rejected the saved config; \
                                          pre-trial config restored, but {name} is still as it was: {why}"
                                     ),
                                     true,
@@ -831,14 +891,14 @@ fn handle(job: Job) {
                             Settings::write().outputs.notice = Some(match reverted {
                                 Ok(()) => (
                                     format!(
-                                        "niri rejected the saved config and restoring pre-trial config failed ({why_undo}); \
+                                        "The compositor rejected the saved config and restoring pre-trial config failed ({why_undo}); \
                                          {name} put back"
                                     ),
                                     true,
                                 ),
                                 Err(why_rev) => (
                                     format!(
-                                        "niri rejected the saved config, restoring pre-trial config failed ({why_undo}), \
+                                        "The compositor rejected the saved config, restoring pre-trial config failed ({why_undo}), \
                                          and {name} is still as it was: {why_rev}"
                                     ),
                                     true,
@@ -962,7 +1022,7 @@ fn check_disagreements(name: &str, edits: &[Edit]) -> bool {
 
     if !said.is_empty() {
         Settings::write().outputs.notice = Some((
-            format!("Saved, but niri differs: {}", said.join("; ")),
+            format!("Saved, but the compositor differs: {}", said.join("; ")),
             true,
         ));
         true
@@ -986,28 +1046,62 @@ fn reset_block(name: &str) {
         .monitor(name)
         .map(|monitor| monitor.output.id())
         .unwrap_or_else(|| niri_config::OutputId::named(name));
-    let result = niri_config::target(None).and_then(|file| {
-        let editor = Editor {
-            file,
-            state: niri_config::state()?,
-            validate: &niri_config::niri_validate,
-            now_ms: niri_config::now_ms,
-        };
+    let result = if is_umbriel() {
+        (|| {
+            let editor = super::umbriel::editor()?;
+            let changes: Vec<_> = super::umbriel::KEYS
+                .iter()
+                .map(|key| (super::umbriel::path(name, key), None))
+                .collect();
+            let said = editor.apply(
+                &changes
+                    .iter()
+                    .map(|(path, value)| (path.as_str(), *value))
+                    .collect::<Vec<_>>(),
+            )?;
+            match super::umbriel::reload() {
+                Ok(()) => Ok((said, false)),
+                Err(why) => Ok((
+                    format!("Config written, but Umbriel reload failed: {why}"),
+                    true,
+                )),
+            }
+        })()
+    } else {
+        niri_config::target(None).and_then(|file| {
+            let editor = Editor {
+                file,
+                state: niri_config::state()?,
+                validate: &niri_config::niri_validate,
+                now_ms: niri_config::now_ms,
+            };
 
-        editor.reset_output(&id, OUTPUT_KEYS)
-    });
+            editor
+                .reset_output(&id, OUTPUT_KEYS)
+                .map(|said| (said, false))
+        })
+    };
 
     match result {
-        Ok(said) => {
-            Settings::write().outputs.notice = Some((said, false));
+        Ok((said, warning)) => {
+            Settings::write().outputs.notice = Some((said, warning));
 
             // the page's Undo is this reset and no other, as for a Keep
-            page::State::set_undoable(
-                editor()
-                    .ok()
-                    .and_then(|editor| editor.last_change_hash().ok()),
-            );
-            page::load();
+            if is_umbriel() {
+                crate::settings::umbriel::State::set_undoable(
+                    super::umbriel::editor()
+                        .ok()
+                        .and_then(|editor| editor.last_change_hash().ok()),
+                );
+                crate::settings::umbriel::load();
+            } else {
+                page::State::set_undoable(
+                    editor()
+                        .ok()
+                        .and_then(|editor| editor.last_change_hash().ok()),
+                );
+                page::load();
+            }
             thread::sleep(RELOAD);
             publish();
         }
@@ -1054,6 +1148,9 @@ fn publish() {
 pub(super) fn read_config(
     outputs: Vec<Output>,
 ) -> (Vec<Monitor>, Vec<Disconnected>, Option<String>) {
+    if is_umbriel() {
+        return read_umbriel_config(outputs);
+    }
     let setup = niri_config::target(None).and_then(|file| Ok((file, niri_config::state()?)));
     let (file, state) = match setup {
         Ok(setup) => setup,
@@ -1101,6 +1198,76 @@ pub(super) fn read_config(
         }
     }
 
+    (monitors, disconnected, blocked)
+}
+
+fn read_umbriel_config(outputs: Vec<Output>) -> (Vec<Monitor>, Vec<Disconnected>, Option<String>) {
+    let read = || {
+        let editor = super::umbriel::editor()?;
+        let text = std::fs::read_to_string(&editor.file).map_err(|error| error.to_string())?;
+        let doc = text
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((doc, editor.editable().err()))
+    };
+    let (doc, blocked) = match read() {
+        Ok(read) => read,
+        Err(why) => {
+            let (monitors, disconnected) = without_config(outputs);
+            return (monitors, disconnected, Some(why));
+        }
+    };
+    let config = |name: &str| {
+        let mut config = Config {
+            block: name.to_owned(),
+            ..Config::default()
+        };
+        if let Some(table) = doc
+            .get("output")
+            .and_then(|outputs| outputs.get(name))
+            .and_then(toml_edit::Item::as_table_like)
+        {
+            for &key in super::umbriel::KEYS {
+                if let Some(value) = table.get(key) {
+                    config.set = true;
+                    config
+                        .readings
+                        .insert(key, Reading::Own(value.to_string().trim().to_owned()));
+                }
+            }
+            config.vrr = table
+                .get("vrr")
+                .and_then(toml_edit::Item::as_str)
+                .and_then(|value| match value {
+                    "disabled" => Some(Vrr::Off),
+                    "always" => Some(Vrr::On),
+                    "fullscreen" => Some(Vrr::OnDemand),
+                    _ => None,
+                });
+        }
+        config
+    };
+    let monitors: Vec<_> = outputs
+        .into_iter()
+        .map(|output| Monitor {
+            config: config(&output.name),
+            output,
+        })
+        .collect();
+    let disconnected = doc
+        .get("output")
+        .and_then(toml_edit::Item::as_table_like)
+        .map(|outputs| {
+            outputs
+                .iter()
+                .filter(|(name, _)| !monitors.iter().any(|monitor| monitor.output.name == *name))
+                .map(|(name, _)| Disconnected {
+                    name: name.to_owned(),
+                    config: config(name),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     (monitors, disconnected, blocked)
 }
 

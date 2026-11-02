@@ -234,6 +234,111 @@ pub fn windows() -> Result<Json, String> {
     request(r#"{"cmd":"windows"}"#)
 }
 
+/// Reads the connected monitors from Umbriel.
+pub fn outputs() -> Result<Json, String> {
+    let reply = request(r#"{"cmd":"outputs"}"#)?;
+    decode_response(&reply.to_string())?;
+    Ok(reply)
+}
+
+/// Encodes output properties for a live trial, without changing the config.
+pub fn set_output_action(output: &str, properties: &serde_json::Map<String, Json>) -> String {
+    let mut action = properties.clone();
+    action.insert("cmd".into(), Json::from("action"));
+    action.insert("action".into(), Json::from("output-set"));
+    action.insert("output".into(), Json::from(output));
+    Json::Object(action).to_string()
+}
+
+pub fn set_output(output: &str, properties: &serde_json::Map<String, Json>) -> Result<(), String> {
+    let reply = request(&set_output_action(output, properties))?;
+    decode_response(&reply.to_string())
+}
+
+/// Converts Umbriel's outputs reply to the monitor model shared by both Settings pages.
+pub fn parse_outputs(reply: &Json) -> Vec<crate::settings::outputs::Output> {
+    use crate::settings::outputs::{Logical, Mode, Output, Transform};
+    let Some(listed) = reply.get("ok").and_then(Json::as_array) else {
+        return Vec::new();
+    };
+    let mut outputs: Vec<_> = listed
+        .iter()
+        .filter_map(|output| {
+            let name = output.get("name")?.as_str()?.to_owned();
+            let mut current = None;
+            let modes = output
+                .get("modes")?
+                .as_array()?
+                .iter()
+                .filter_map(|mode| {
+                    let parsed = Mode {
+                        width: mode.get("width")?.as_u64()?.try_into().ok()?,
+                        height: mode.get("height")?.as_u64()?.try_into().ok()?,
+                        refresh: mode.get("refresh_mhz")?.as_u64()?.try_into().ok()?,
+                        preferred: mode.get("preferred").and_then(Json::as_bool) == Some(true),
+                    };
+                    Some((
+                        parsed,
+                        mode.get("current").and_then(Json::as_bool) == Some(true),
+                    ))
+                })
+                .enumerate()
+                .map(|(at, (mode, active))| {
+                    if active {
+                        current = Some(at);
+                    }
+                    mode
+                })
+                .collect();
+            let logical = (output.get("enabled").and_then(Json::as_bool) == Some(true))
+                .then(|| {
+                    let size = output.get("logical_size")?;
+                    let position = output.get("position")?;
+                    let scale = output
+                        .get("scale")?
+                        .as_f64()
+                        .filter(|scale| scale.is_finite() && *scale > 0.0)?;
+                    Some(Logical {
+                        x: position.get("x")?.as_i64()?.try_into().ok()?,
+                        y: position.get("y")?.as_i64()?.try_into().ok()?,
+                        width: size.get("width")?.as_u64()?.try_into().ok()?,
+                        height: size.get("height")?.as_u64()?.try_into().ok()?,
+                        scale,
+                        transform: Transform::from_name(output.get("transform")?.as_str()?)?,
+                    })
+                })
+                .flatten();
+            let text = |key| {
+                output
+                    .get(key)
+                    .and_then(Json::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            };
+            let vrr_enabled = output
+                .get("vrr_enabled")
+                .or_else(|| output.get("adaptive_sync"))
+                .and_then(Json::as_bool)
+                == Some(true);
+            Some(Output {
+                name,
+                make: text("make"),
+                model: text("model"),
+                serial: text("serial"),
+                modes,
+                current: logical.and(current),
+                logical,
+                // An active adaptive-sync state proves support; a false state alone does not.
+                vrr_supported: output.get("vrr_supported").and_then(Json::as_bool) == Some(true)
+                    || vrr_enabled,
+                vrr_enabled,
+            })
+        })
+        .collect();
+    outputs.sort_by(|a, b| a.name.cmp(&b.name));
+    outputs
+}
+
 /// Encodes a window-focus action using Umbriel's hexadecimal window id.
 pub fn focus_window_action(id: &str) -> String {
     format!(
@@ -400,6 +505,9 @@ pub fn follow() {
         let mut backoff = Backoff::new(FIRST_RETRY, LAST_RETRY);
 
         loop {
+            if socket_path().is_none() {
+                return;
+            }
             let started = std::time::Instant::now();
             let reached = run_stream();
 
@@ -873,6 +981,49 @@ fn apply_event(state: &mut Umbriel, event: &Json) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outputs_parse_live_schema_and_skip_bad_modes_without_shifting_current() {
+        let reply = serde_json::json!({"ok": [{
+            "name": "DP-1", "make": "Vendor", "model": "Panel", "serial": "123",
+            "enabled": true, "adaptive_sync": true,
+            "logical_size": {"width": 1080, "height": 1920},
+            "position": {"x": -1080, "y": 20}, "scale": 1.0, "transform": "90",
+            "modes": [{"width": 999999}, {"width": 1920, "height": 1080, "refresh_mhz": 59940, "current": true, "preferred": true}]
+        }, {
+            "name": "HDMI-A-1", "enabled": false, "modes": []
+        }, {"modes": []}]});
+        let outputs = parse_outputs(&reply);
+        assert_eq!(outputs.len(), 2);
+        let first = &outputs[0];
+        assert_eq!(first.current, Some(0));
+        assert_eq!(first.current_mode().unwrap().refresh, 59940);
+        assert_eq!(first.logical.unwrap().x, -1080);
+        assert_eq!(
+            first.logical.unwrap().transform,
+            crate::settings::outputs::Transform::R90
+        );
+        assert!(first.vrr_enabled);
+        assert!(first.vrr_supported);
+        assert!(!outputs[1].enabled());
+        assert!(!outputs[1].vrr_enabled);
+        assert!(!outputs[1].vrr_supported);
+        assert!(parse_outputs(&serde_json::json!({"err":"no outputs"})).is_empty());
+    }
+
+    #[test]
+    fn output_action_quotes_names_and_preserves_property_types() {
+        let properties =
+            serde_json::json!({"position": [-1920, 10], "scale": 1.25, "enabled": true});
+        let encoded = set_output_action("DP.1\"", properties.as_object().unwrap());
+        let action: Json = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(action["cmd"], "action");
+        assert_eq!(action["action"], "output-set");
+        assert_eq!(action["output"], "DP.1\"");
+        assert_eq!(action["position"], properties["position"]);
+        assert_eq!(action["scale"], properties["scale"]);
+        assert_eq!(action["enabled"], true);
+    }
 
     #[test]
     fn event_handling_updates_service_state() {

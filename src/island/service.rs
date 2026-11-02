@@ -502,13 +502,6 @@ impl IslandService {
         self.arbiter.activities()
     }
 
-    // the primary this island last settled on, since when, and until when (`Arbiter::shown`)
-    pub fn shown(&self, monitor: &str) -> Option<(&Id, Instant, Option<Instant>)> {
-        self.arbiter.shown(arbiter::Island {
-            focused: self.focused(monitor),
-        })
-    }
-
     pub fn dnd(&self) -> bool {
         self.arbiter.dnd()
     }
@@ -533,22 +526,23 @@ impl IslandService {
     }
 
     /*
-     * whether the OSD floats over a Peek or an open Surface rather than ends it; not over a Peek of
-     * the OSD itself. Only a Transient Feedback floats, as the view's own fullscreen guard asks:
-     * a Persistent one would float over the Peek for good
+     * whether the OSD floats over a Peek, an open Surface, or an active banner rather than ends or
+     * displaces it; not over a Peek of the OSD itself. Only a Transient Feedback floats, as the
+     * view's own fullscreen guard asks: a Persistent one would float over the Peek for good
      */
     pub fn floats(&self, monitor: &str, frame: &Frame) -> bool {
         let raised = matches!(
             self.presentation(monitor),
             Presentation::Peek | Presentation::Expanded(_)
         );
+        let banner_active = crate::banners::active(monitor);
 
         frame.feedback()
             && matches!(
                 frame.primary.as_ref().map(Activity::lifetime),
                 Some(Lifetime::Transient(_))
             )
-            && raised
+            && (raised || banner_active)
             && self.presentations.peeked(monitor) != frame.primary.as_ref().map(Activity::id)
     }
 
@@ -4394,5 +4388,37 @@ mod tests {
         island.expire(now + AUTO);
 
         assert!(!island.expanded(MONITOR));
+    }
+
+    #[test]
+    fn floats_is_true_when_raised_with_transient_feedback() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+        let feedback = fixture::shown(
+            Id::new(Kind::Volume, "default"),
+            Priority::Feedback,
+            Duration::from_secs(2),
+        );
+        let frame = Frame {
+            primary: Some(feedback),
+            satellites: Vec::new(),
+            overflow: 0,
+        };
+
+        // At rest with no banner, floats is false
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert!(!island.floats(MONITOR, &frame));
+
+        // When expanded (e.g. Controls), floats is true so underlying content is preserved
+        island.open(MONITOR, Surface::Controls, now);
+        assert!(matches!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        ));
+        assert!(island.floats(MONITOR, &frame));
+
+        // When collapsed, floats is false again
+        island.input(MONITOR, Input::Collapse, now);
+        assert!(!island.floats(MONITOR, &frame));
     }
 }
