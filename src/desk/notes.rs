@@ -430,6 +430,24 @@ impl Cards {
 
 static CARDS: Mutex<Cards> = Mutex::new(Cards::new());
 
+// the session's cards, taken so a test of the key guard can use them and put them back unsaved
+#[cfg(test)]
+pub fn take() -> Cards {
+    std::mem::take(&mut *CARDS.locked())
+}
+
+// the session's cards, replaced with what `take` held, and not saved
+#[cfg(test)]
+pub fn restore(cards: Cards) {
+    *CARDS.locked() = cards;
+}
+
+// the session's cards, to start one in a test without writing the file
+#[cfg(test)]
+pub fn put() -> std::sync::MutexGuard<'static, Cards> {
+    CARDS.locked()
+}
+
 // the pointer came onto this output's card, or left it
 pub fn hover(monitor: &str, inside: bool) {
     CARDS.locked().hover(monitor, inside);

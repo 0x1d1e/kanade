@@ -7,10 +7,14 @@
 //! track's title and artist need their own switches. The notes card is the one face typed into in
 //! place (ADR 0140): it asks for the keyboard only while the pointer is on it or it is being typed
 //! into, never Exclusive. A face stands where `desk.place` puts it, else in the corner stack, and a
-//! handle moves it (ADR 0143).
+//! handle moves it (ADR 0143). The pointer on a media button that can act asks for that same
+//! keyboard, and Left and Right then draw a ring over those buttons; Enter or Space runs the one it
+//! shows (ADR 0148). A note being typed and a face held by its handle take their keys first, and
+//! the ring takes none of them.
 
 pub mod notes;
 pub mod place;
+mod ring;
 
 use std::time::Instant;
 
@@ -155,6 +159,13 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         return hidden(corner, &monitor.name);
     }
 
+    /*
+     * a player change redraws this window, and a button it can no longer do is not a place for the
+     * ring: the visit is dropped here, before the row is drawn, rather than left on a dead control.
+     * The key that showed the ring already woke the window, so this adds no timer of its own
+     */
+    let marked = ring::shown(&monitor.name, keys.filter(|_| media));
+
     // every face that shows, its box's height, and what draws it: the stack lays them out for the
     // faces the config gives no place, and each is drawn in its own box of the output
     let mut faces: Vec<(&'static str, f32, Box<dyn Widget>)> = Vec::new();
@@ -186,7 +197,14 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         faces.push((
             "media",
             height,
-            Box::new(media_face(corner, titles, keys, media)),
+            Box::new(media_face(
+                corner,
+                &monitor.name,
+                titles,
+                keys,
+                media,
+                marked,
+            )),
         ));
     }
 
@@ -252,31 +270,56 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
      * the card asks for the keyboard before the press that focuses it, since niri focuses an
      * OnDemand surface only on one, and keeps it while it is typed into; an island opened without
      * a press holds Exclusive for that, which a Bottom layer does not need. A face being moved asks
-     * for it too, for Escape alone
+     * for it too, for Escape alone. A media button that can act asks the same way the card does:
+     * only while the pointer is on it, never for the whole time media is on. The window is the
+     * output, so holding the keyboard whenever the row merely exists would take every key on it.
+     * The ring itself does not keep the ask once the pointer has left
      */
-    if notes::keyboard(&monitor.name) || moving {
+    if notes::keyboard(&monitor.name) || moving || ring::keyboard(&monitor.name) {
         window = window.keyboard(Keyboard::OnDemand);
     }
 
-    // registered with the keyboard, as a surface's is, since the press that starts a note and the
-    // keys after it arrive as the same window is rebuilt; a card that is not being typed into
-    // leaves them alone
-    if card || moving {
+    /*
+     * registered with the keyboard, as a surface's is, since the press that starts a note and the
+     * keys after it arrive as the same window is rebuilt. A card that is not being typed into
+     * leaves them alone. The media ring takes a key only after a held drag and a note being typed
+     * have had it: Escape during a drag restores the place, and a note keeps its own keys
+     */
+    if card || moving || media {
         let name = monitor.name.clone();
+        let ring = media;
 
         window = window.on_key(move |key| {
             // Escape puts a face being moved back where it stood, and keeps a note being typed
             if key == Key::Escape && place::dragging(&name) {
                 place::back(&name);
+
+                return;
             }
 
-            notes::press(&name, key);
+            // a note being typed takes every key, arrows included. A card that is not being typed
+            // into leaves a key it has no use for, which is how the ring still sees Left and Right
+            if note_keeps(&name, key) {
+                return;
+            }
+
+            // the ring is the pointer's focus, not a keybind: no player, no button to visit
+            if !ring {
+                return;
+            }
+
+            let keys = Remote::read().keys;
+
+            if let Some(transport) = ring::key(&name, key, keys) {
+                media::request(transport, Later::detached());
+            }
         });
     }
 
-    // the keyboard went elsewhere, as a click outside the card does: what was typed is kept, and a
-    // face whose Escape can no longer arrive is let go where it stood
-    if card || moving {
+    // the keyboard went elsewhere, as a click outside the card does: what was typed is kept, a
+    // face whose Escape can no longer arrive is let go where it stood, and the ring clears so the
+    // window below has its keys
+    if card || moving || media {
         let name = monitor.name.clone();
 
         window = window.on_lost(move || {
@@ -285,6 +328,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             }
 
             notes::blur(&name);
+            ring::clear(&name);
         });
     }
 
@@ -360,12 +404,29 @@ fn grip(
         .child(bar)
 }
 
+/*
+ * whether a note being typed on this output keeps the key from the ring. It does, arrows included:
+ * they insert nothing, and the ring is not called. A card that is not being typed into keeps only a
+ * key it actually uses
+ */
+fn note_keeps(monitor: &str, key: Key) -> bool {
+    if notes::editing(monitor) {
+        notes::press(monitor, key);
+
+        return true;
+    }
+
+    notes::press(monitor, key)
+}
+
 // the media face: the track's line over the buttons' row, in the one box that moves them together
 fn media_face(
     corner: Corner,
+    monitor: &str,
     titles: Option<String>,
     keys: Option<Keys>,
     reserve: bool,
+    ring: Option<Transport>,
 ) -> impl Widget + use<> {
     let mut parts: Vec<Box<dyn Widget>> = Vec::new();
 
@@ -374,7 +435,7 @@ fn media_face(
     }
 
     if let Some(keys) = keys {
-        parts.push(Box::new(media_row(keys)));
+        parts.push(Box::new(media_row(monitor, keys, ring)));
     } else if reserve {
         // the row's room, so the lines above do not move when a player opens
         parts.push(Box::new(Rectangle::new().width(1.0).height(ROW)));
@@ -401,6 +462,7 @@ fn faces_on(config: &config::Config) -> bool {
 // no Desk on this output for now: a face being moved goes with it, and its place stays as it was
 fn hidden(corner: Corner, monitor: &str) -> LayerWindow {
     notes::close();
+    ring::clear(monitor);
 
     // a face being moved goes with the window, and a hovered handle is let go: written on a worker,
     // since a view writes no Service, and only when there is something to clear
@@ -612,28 +674,43 @@ fn clipped(note: &str) -> String {
 }
 
 // previous, play or pause, next; each faded and dead when the player cannot. A press here is a
-// click elsewhere than the notes card, so it ends the typing the card took
-fn media_row(keys: Keys) -> Row {
+// click elsewhere than the notes card, so it ends the typing the card took. `ring` is the button
+// the keyboard shows, drawn as a border and nothing else
+fn media_row(monitor: &str, keys: Keys, ring: Option<Transport>) -> Row {
     let glyph = if keys.playing {
         Icon::Pause
     } else {
         Icon::Play
     };
+    let monitor = monitor.to_owned();
+    let play = monitor.clone();
+    let next = monitor.clone();
 
     Row::new(children![
         button(
             Icon::Previous,
             "media/previous",
+            &monitor,
             Transport::Previous,
-            keys.can_previous
+            keys.can_previous,
+            ring == Some(Transport::Previous)
         ),
         button(
             glyph,
             "media/play-pause",
+            &play,
             Transport::PlayPause,
-            keys.can_play_pause
+            keys.can_play_pause,
+            ring == Some(Transport::PlayPause)
         ),
-        button(Icon::Next, "media/next", Transport::Next, keys.can_next),
+        button(
+            Icon::Next,
+            "media/next",
+            &next,
+            Transport::Next,
+            keys.can_next,
+            ring == Some(Transport::Next)
+        ),
     ])
     .width(BUTTONS)
     .height(ROW)
@@ -641,7 +718,17 @@ fn media_row(keys: Keys) -> Row {
     .align(Center)
 }
 
-fn button(icon: Icon, name: &'static str, transport: Transport, able: bool) -> Rectangle {
+// the ring, thick enough to read on the button, in the Desk's own ink rather than a Surface's
+const RING: f32 = 2.0;
+
+fn button(
+    icon: Icon,
+    name: &'static str,
+    monitor: &str,
+    transport: Transport,
+    able: bool,
+    ring: bool,
+) -> Rectangle {
     let ink = if able {
         theme::ON_SCENE
     } else {
@@ -661,20 +748,34 @@ fn button(icon: Icon, name: &'static str, transport: Transport, able: bool) -> R
         .semantics(move || Semantics::new(Role::Button, name).disabled(!able))
         .child(icon.on(GLYPH, ink));
 
+    // a ring only on a button that can act: one the player can no longer do is not drawn
+    let button = if ring && able {
+        button.border(RING, theme::ON_SCENE)
+    } else {
+        button
+    };
+
     if !able {
         return button;
     }
 
+    // the pointer on a button that can act is what asks for the keyboard, the same way a notes card
+    // does; leaving it drops the ask. A button that cannot act never gets here, so it never asks
+    let over = monitor.to_owned();
+
     // the press is a Kanade verb on the media follower, never a bus call or a write here, and
     // nobody waits on its answer
-    button.cursor(Cursor::Pointer).on_click(move |pressed| {
-        if pressed == Button::Left {
-            // a press elsewhere than the card ends the typing it took
-            notes::close();
+    button
+        .cursor(Cursor::Pointer)
+        .on_hover(move |inside| ring::hover(&over, inside))
+        .on_click(move |pressed| {
+            if pressed == Button::Left {
+                // a press elsewhere than the card ends the typing it took
+                notes::close();
 
-            media::request(transport, Later::detached());
-        }
-    })
+                media::request(transport, Later::detached());
+            }
+        })
 }
 
 // where the buttons that can act take the pointer, in the window's own space: those that cannot are
@@ -735,7 +836,47 @@ mod tests {
     // rather than a debug build dying on a row it never reserved
     #[test]
     fn a_title_with_no_buttons_draws_no_row() {
-        let _ = media_face(Corner::TopLeft, Some(String::from("a track")), None, false);
-        let _ = media_face(Corner::TopLeft, None, None, true);
+        let _ = media_face(
+            Corner::TopLeft,
+            "eDP-1",
+            Some(String::from("a track")),
+            None,
+            false,
+            None,
+        );
+        let _ = media_face(Corner::TopLeft, "eDP-1", None, None, true, None);
+    }
+
+    // while a note is being typed the ring is not offered the key, arrows included; what the note
+    // inserts is unchanged, and a card that is not being typed into still leaves an arrow. The
+    // session's cards are put back as they were, and nothing is saved, so the notes file is untouched
+    #[test]
+    fn a_note_being_typed_keeps_the_ring_from_the_key() {
+        let monitor = format!("desk-note-keeps-{}", std::process::id());
+        let held = notes::take();
+
+        assert!(!note_keeps(&monitor, Key::Right));
+        assert!(!note_keeps(&monitor, Key::Left));
+
+        notes::put().start(&monitor, &[String::from("one")]);
+
+        assert!(notes::editing(&monitor));
+        assert!(note_keeps(&monitor, Key::Left));
+        assert!(note_keeps(&monitor, Key::Right));
+        assert!(note_keeps(&monitor, Key::Enter));
+        assert!(note_keeps(&monitor, Key::Character('x')));
+
+        // an arrow inserted nothing; Enter started a note and the character went into it. Escape
+        // is not pressed here: it would save, and restoring the session's cards drops this unsaved
+        assert_eq!(
+            notes::shown(&monitor, &[]),
+            vec![String::from("one"), String::from(""), String::from("x")]
+        );
+        assert!(notes::editing(&monitor));
+
+        notes::restore(held);
+
+        assert!(!notes::editing(&monitor));
+        assert!(!note_keeps(&monitor, Key::Right));
     }
 }
