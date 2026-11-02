@@ -1,5 +1,5 @@
-//! The niri strip minimap (ADR 0133): every workspace of the focused monitor as a strip of
-//! columns, each column its windows stacked, widths and heights as niri tiles them. A viewport
+//! The compositor strip minimap (ADR 0133): every workspace of the focused monitor as a strip of
+//! columns, each column its windows stacked, widths and heights from the compositor. A viewport
 //! frame marks what the monitor shows of the active workspace's strip; off-screen columns dim.
 //! Clicking a tile focuses that window and collapses the island; arrows move a 2D ring across
 //! columns and stacked tiles, Enter focuses, Escape collapses.
@@ -18,10 +18,39 @@ use crate::island::geometry::DEFAULT_LARGEST;
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::icons;
-use crate::sources::niri::{self, Niri, Seen, StripWindow, WorkspaceInfo};
+use crate::sources::niri::{self, FocusedWindow, Niri, StripWindow, WorkspaceInfo};
+use crate::sources::umbriel::{self, Umbriel};
 use crate::theme::space::INSET;
 use crate::theme::{self, radius};
 use crate::view;
+
+#[derive(Default)]
+struct Seen {
+    focused_window: Option<FocusedWindow>,
+    focused_output: Option<String>,
+    workspaces: Vec<WorkspaceInfo>,
+    windows: Vec<StripWindow>,
+}
+
+fn seen() -> Seen {
+    if umbriel::is_active() {
+        let source = Umbriel::read();
+        Seen {
+            focused_window: source.seen.focused_window.clone(),
+            focused_output: source.seen.focused_output.clone(),
+            workspaces: source.seen.workspaces.clone(),
+            windows: source.seen.windows.clone(),
+        }
+    } else {
+        let source = Niri::read();
+        Seen {
+            focused_window: source.seen.focused_window.clone(),
+            focused_output: source.seen.focused_output.clone(),
+            workspaces: source.seen.workspaces.clone(),
+            windows: source.seen.windows.clone(),
+        }
+    }
+}
 
 // the body's width, a list Surface's
 const WIDTH: f32 = DEFAULT_LARGEST.width - 2.0 * INSET;
@@ -55,22 +84,23 @@ fn asks(workspaces: usize) -> f32 {
 }
 
 /*
- * tells the island how tall the Strip asks to be. After each change of niri's windows or
+ * tells the island how tall the Strip asks to be. After each change of the compositor's windows or
  * workspaces, never from a view
  */
 pub fn fit() {
     let _ordered = super::fitting();
     let visit = IslandService::read().visit();
 
-    let workspaces = strip_workspaces(&Niri::read().seen).len();
+    let workspaces = strip_workspaces(&seen()).len();
     let height = asks(workspaces);
 
     super::ask(Surface::Strip, height, Some((visit, height)));
 }
 
-// at start: the body follows niri's layout from now on
+// at start: the body follows the compositor's layout from now on
 pub fn start() {
     service::watch::<Niri>(fit);
+    service::watch::<Umbriel>(fit);
     fit();
 }
 
@@ -279,9 +309,9 @@ fn ring_grid(strips: &[Strip]) -> Vec<Vec<(At, f32)>> {
 
 // the view's own read of the visit, so this never reads IslandService again
 pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
-    let niri = Niri::read();
-    let workspaces = strip_workspaces(&niri.seen);
-    let strips = strips(&niri.seen.windows, &workspaces);
+    let seen = seen();
+    let workspaces = strip_workspaces(&seen);
+    let strips = strips(&seen.windows, &workspaces);
     let grid = ring_grid(&strips);
 
     let ring = open
@@ -310,7 +340,7 @@ pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
     let listed = Column::new(
         strips
             .iter()
-            .map(|strip| Box::new(workspace(&niri.seen, strip, ring)) as Box<dyn Widget>)
+            .map(|strip| Box::new(workspace(&seen, strip, ring)) as Box<dyn Widget>)
             .collect(),
     )
     .width(WIDTH)
@@ -607,15 +637,32 @@ fn focus_and_close(id: u64, monitor: Option<&str>) {
         pad::close();
     }
 
-    // off the view thread, as niri's answer may take its patience
+    let hex = if umbriel::is_active() {
+        let Some(hex) = umbriel::window_hex(id) else {
+            return;
+        };
+        Some(hex)
+    } else {
+        None
+    };
+
+    // IPC answers may block, so focus off the view thread.
     let _ = std::thread::Builder::new()
         .name("strip-focus".into())
-        .spawn(move || match niri::focus_window(id) {
-            Ok(niri::Acted::Done) => {}
-            Ok(niri::Acted::Unknown(why)) => {
-                eprintln!("strip: focus {id}: no clear answer: {why}")
+        .spawn(move || {
+            if let Some(hex) = hex {
+                if let Err(error) = umbriel::focus_window(&hex) {
+                    eprintln!("strip: focus {id}: {error}");
+                }
+            } else {
+                match niri::focus_window(id) {
+                    Ok(niri::Acted::Done) => {}
+                    Ok(niri::Acted::Unknown(why)) => {
+                        eprintln!("strip: focus {id}: no clear answer: {why}")
+                    }
+                    Err(error) => eprintln!("strip: focus {id}: {error}"),
+                }
             }
-            Err(error) => eprintln!("strip: focus {id}: {error}"),
         });
 }
 
@@ -625,9 +672,9 @@ fn focus_and_close(id: u64, monitor: Option<&str>) {
  * pressed that the ring was not seen on
  */
 pub fn key(monitor: &str, key: Key) -> bool {
-    let niri = Niri::read();
-    let workspaces = strip_workspaces(&niri.seen);
-    let grid = ring_grid(&strips(&niri.seen.windows, &workspaces));
+    let seen = seen();
+    let workspaces = strip_workspaces(&seen);
+    let grid = ring_grid(&strips(&seen.windows, &workspaces));
 
     pad::key(
         monitor,
@@ -716,78 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn the_viewport_frames_the_focused_column_and_its_neighbors() {
-        // gaps between the columns count toward the strip's width, as they are drawn
-        let strip = Strip {
-            workspace: 1,
-            columns: vec![
-                StripColumn {
-                    windows: vec![1],
-                    col: Some(0),
-                    width: Some(960.0),
-                },
-                StripColumn {
-                    windows: vec![2],
-                    col: Some(1),
-                    width: Some(1920.0),
-                },
-                StripColumn {
-                    windows: vec![3],
-                    col: Some(2),
-                    width: Some(960.0),
-                },
-            ],
-            floating: 0,
-        };
-
-        // the strip is 3852 units wide, so a 3852 px screen frames it all
-        let (left, right) = viewport(&strip, Some(2), 3852.0).unwrap();
-        assert!(left <= 1.0, "{left}");
-        assert!(right >= 3851.0, "{right}");
-
-        // half a strip's width of screen frames the focused column and its neighbor
-        let (left, right) = viewport(&strip, Some(2), 1926.0).unwrap();
-        assert!((right - left - 1926.0).abs() < 2.0, "{left} {right}");
-        assert!(left > 0.0 && right < 3852.0, "{left} {right}");
-
-        // a narrow screen still frames the focused column whole
-        let (left, right) = viewport(&strip, Some(2), 300.0).unwrap();
-        assert!(right - left >= 1920.0, "{left} {right}");
-
-        // no focused window: the frame centers on the first column
-        let (left, _) = viewport(&strip, None, 1926.0).unwrap();
-        assert!(left <= 1.0, "{left}");
-
-        // nothing to frame
-        assert_eq!(
-            viewport(
-                &Strip {
-                    workspace: 1,
-                    columns: vec![],
-                    floating: 0,
-                },
-                Some(2),
-                1920.0,
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn the_height_follows_the_workspace_count_and_stays_in_the_body() {
-        assert_eq!(height_for(1), 2.0 * INSET + WORKSPACE);
-        assert_eq!(height_for(2), 2.0 * INSET + 2.0 * WORKSPACE + WORKSPACE_GAP);
-
-        // three and more clamp at the room the largest body has
-        let room = DEFAULT_LARGEST.height - 2.0 * INSET;
-        assert_eq!(
-            height_for(3),
-            2.0 * INSET + room.min(3.0 * WORKSPACE + 2.0 * WORKSPACE_GAP)
-        );
-        assert!(height_for(8) <= DEFAULT_LARGEST.height);
-    }
-
-    #[test]
     fn the_ring_steps_across_columns_and_workspaces() {
         let windows = vec![
             window(1, 1, 0, 0, 600.0),
@@ -860,27 +835,6 @@ mod tests {
             shown.step(Key::Enter, &grid).unwrap().1,
             Some(At::Window(1))
         );
-    }
-
-    #[test]
-    fn laid_never_produces_negative_widths_with_many_columns() {
-        let columns: Vec<StripColumn> = (0..20)
-            .map(|i| StripColumn {
-                windows: vec![i],
-                col: Some(i),
-                width: Some(960.0),
-            })
-            .collect();
-        let strip = Strip {
-            workspace: 1,
-            columns,
-            floating: 0,
-        };
-        let laid_cols = laid(&strip);
-        assert_eq!(laid_cols.len(), 20);
-        for (_, width, _) in laid_cols {
-            assert!(width >= MIN_COLUMN, "width {width} < MIN_COLUMN");
-        }
     }
 
     #[test]

@@ -153,6 +153,7 @@ fn screenshot_external(mode: Mode, dir: &Path) -> Result<Asked, String> {
                 return Err(String::from("grim failed to capture screenshot"));
             }
 
+            copy_image_to_clipboard(path_str);
             annotate::heard(Some(path_str.to_owned()));
             Ok(Asked::Taken(path_str.to_owned()))
         }
@@ -186,9 +187,25 @@ fn screenshot_external(mode: Mode, dir: &Path) -> Result<Asked, String> {
                 return Err(String::from("grim failed to capture screenshot"));
             }
 
+            copy_image_to_clipboard(path_str);
             annotate::heard(Some(path_str.to_owned()));
             Ok(Asked::Taken(path_str.to_owned()))
         }
+    }
+}
+
+fn copy_image_to_clipboard(path: &str) {
+    if let Ok(file) = std::fs::File::open(path)
+        && let Ok(mut child) = Command::new("wl-copy")
+            .args(["--type", "image/png"])
+            .stdin(file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    {
+        let _ = thread::Builder::new()
+            .name(String::from("capture-copy"))
+            .spawn(move || child.wait());
     }
 }
 
@@ -501,5 +518,89 @@ mod tests {
 
         let temp = std::env::temp_dir();
         assert!(screenshot_external(Mode::Window, &temp).is_err());
+    }
+
+    // Run the capture seam in a child so fake helpers never change the test runner's PATH.
+    #[test]
+    fn external_capture_saves_and_copies_png_best_effort() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("kanade-capture-copy-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let tools = root.join("tools");
+        std::fs::create_dir(&tools).unwrap();
+        let helper = |name: &str, script: &str| {
+            let path = tools.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        helper("slurp", "#!/bin/sh\nprintf '0,0 10x10'\n");
+        helper(
+            "grim",
+            "#!/bin/sh\nfor arg do path=$arg; done\nprintf 'fake png bytes' > \"$path\"\n",
+        );
+        for copy in ["success", "failure", "missing"] {
+            if copy == "missing" {
+                std::fs::remove_file(tools.join("wl-copy")).unwrap();
+            } else {
+                helper(
+                    "wl-copy",
+                    if copy == "success" {
+                        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE_TEST_DIR/args\"\n/bin/cat > \"$CAPTURE_TEST_DIR/copied\"\n"
+                    } else {
+                        "#!/bin/sh\nexit 1\n"
+                    },
+                );
+            }
+            for mode in ["area", "output"] {
+                let dir = root.join(format!("{copy}-{mode}"));
+                std::fs::create_dir(&dir).unwrap();
+                let status = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "sources::capture::tests::external_capture_child",
+                        "--nocapture",
+                    ])
+                    .env("PATH", &tools)
+                    .env("CAPTURE_TEST_DIR", &dir)
+                    .env("CAPTURE_TEST_MODE", mode)
+                    .env("CAPTURE_TEST_COPY", copy)
+                    .env("XDG_CONFIG_HOME", &dir)
+                    .env("XDG_STATE_HOME", &dir)
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "{copy} {mode}");
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_capture_child() {
+        let Some(dir) = std::env::var_os("CAPTURE_TEST_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let mode = Mode::parse(&std::env::var("CAPTURE_TEST_MODE").unwrap()).unwrap();
+        let Asked::Taken(path) = screenshot_external(mode, &dir).unwrap() else {
+            panic!("not saved");
+        };
+        assert_eq!(std::fs::read(&path).unwrap(), b"fake png bytes");
+        if std::env::var("CAPTURE_TEST_COPY").unwrap() == "success" {
+            let until = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if std::fs::read(dir.join("copied")).is_ok_and(|data| data == b"fake png bytes") {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < until,
+                    "clipboard helper did not receive PNG"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(
+                std::fs::read_to_string(dir.join("args")).unwrap(),
+                "--type\nimage/png\n"
+            );
+        }
     }
 }

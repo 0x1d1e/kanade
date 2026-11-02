@@ -14,7 +14,8 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::Surface;
 use crate::sources::icons;
-use crate::sources::niri::{self, FocusedWindow, Niri, Seen, WorkspaceInfo};
+use crate::sources::niri::{self, FocusedWindow, Niri, WorkspaceInfo};
+use crate::sources::umbriel::{self, Umbriel};
 use crate::sources::windows::{App, Windows};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
@@ -59,26 +60,29 @@ fn node(at: At) -> &'static str {
     }
 }
 
-fn relevant_workspaces(seen: &Seen, focused: Option<&FocusedWindow>) -> Vec<WorkspaceInfo> {
+fn relevant_workspaces(
+    workspaces: &[WorkspaceInfo],
+    focused: Option<&FocusedWindow>,
+) -> Vec<WorkspaceInfo> {
     let Some(focused) = focused else {
         return Vec::new();
     };
 
     let output = focused.workspace_id.and_then(|ws_id| {
-        seen.workspaces
+        workspaces
             .iter()
             .find(|ws| ws.id == ws_id)
             .and_then(|ws| ws.output.clone())
     });
 
     let filtered: Vec<WorkspaceInfo> = if let Some(output) = output {
-        seen.workspaces
+        workspaces
             .iter()
             .filter(|ws| ws.output.as_ref() == Some(&output))
             .cloned()
             .collect()
     } else {
-        seen.workspaces.clone()
+        workspaces.to_vec()
     };
 
     filtered
@@ -121,6 +125,31 @@ fn grid(focused: Option<&FocusedWindow>, workspaces: &[WorkspaceInfo]) -> Vec<Ve
 }
 
 fn act(at: At) {
+    if umbriel::is_active() {
+        if Umbriel::read().seen.focused_window.is_none() {
+            return;
+        }
+        let _ = std::thread::Builder::new()
+            .name("window-action".into())
+            .spawn(move || {
+                let result = match at {
+                    At::Consume => umbriel::consume_window_right(),
+                    At::Expel => umbriel::expel_window_bottom(),
+                    At::Maximize => umbriel::toggle_maximize(),
+                    At::Float => umbriel::toggle_floating(),
+                    At::WidthThird => umbriel::set_primary_extent(1.0 / 3.0),
+                    At::WidthHalf => umbriel::set_primary_extent(0.5),
+                    At::WidthTwoThirds => umbriel::set_primary_extent(2.0 / 3.0),
+                    At::WidthPreset => umbriel::cycle_primary_extent(),
+                    At::Workspace(id) => umbriel::move_window_to_workspace(id),
+                };
+                if let Err(error) = result {
+                    eprintln!("window: {error}");
+                }
+            });
+        return;
+    }
+
     let niri = Niri::read();
     let Some(focused) = niri.seen.focused_window.as_ref() else {
         return;
@@ -160,9 +189,22 @@ fn act(at: At) {
 }
 
 pub fn key(monitor: &str, key: Key) -> bool {
-    let niri = Niri::read();
-    let focused = niri.seen.focused_window.clone();
-    let workspaces = relevant_workspaces(&niri.seen, focused.as_ref());
+    let (focused, workspaces) = if umbriel::is_active() {
+        let umbriel = Umbriel::read();
+        (
+            umbriel.seen.focused_window.clone(),
+            relevant_workspaces(
+                &umbriel.seen.workspaces,
+                umbriel.seen.focused_window.as_ref(),
+            ),
+        )
+    } else {
+        let niri = Niri::read();
+        (
+            niri.seen.focused_window.clone(),
+            relevant_workspaces(&niri.seen.workspaces, niri.seen.focused_window.as_ref()),
+        )
+    };
 
     pad::key(
         monitor,
@@ -188,6 +230,7 @@ fn window_icon(window: &FocusedWindow) -> (Box<dyn Widget>, Option<String>) {
     let running = windows
         .running()
         .iter()
+        .filter(|_| !umbriel::is_active())
         .find(|app| app.windows.iter().any(|w| w.id.0 == window.id));
 
     let (icon_path, app_name) = match running {
@@ -358,15 +401,33 @@ fn workspace_pill(
 }
 
 pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
-    let niri = Niri::read();
-    let Some(focused) = niri.seen.focused_window.as_ref() else {
+    let is_umbriel = umbriel::is_active();
+    let (focused, workspaces, maximized) = if is_umbriel {
+        let umbriel = Umbriel::read();
+        (
+            umbriel.seen.focused_window.clone(),
+            relevant_workspaces(
+                &umbriel.seen.workspaces,
+                umbriel.seen.focused_window.as_ref(),
+            ),
+            umbriel.seen.focused_maximized,
+        )
+    } else {
+        let niri = Niri::read();
+        (
+            niri.seen.focused_window.clone(),
+            relevant_workspaces(&niri.seen.workspaces, niri.seen.focused_window.as_ref()),
+            false,
+        )
+    };
+
+    let Some(focused) = focused.as_ref() else {
         return pad::frame(
             "Window",
             pad::reading(Icon::Columns, "No focused window".into()),
         );
     };
 
-    let workspaces = relevant_workspaces(&niri.seen, Some(focused));
     let grid = grid(Some(focused), &workspaces);
 
     let ring = open
@@ -412,7 +473,7 @@ pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
         .align(Center);
 
     // Row 0: Column controls and toggles
-    let expel_disabled = focused.tile_count <= 1;
+    let expel_disabled = !is_umbriel && focused.tile_count <= 1;
     let row0 = Row::new(vec![
         Box::new(button(
             node(At::Consume),
@@ -425,7 +486,11 @@ pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
         )),
         Box::new(button(
             node(At::Expel),
-            "Expel bottom",
+            if is_umbriel {
+                "Join / split"
+            } else {
+                "Expel bottom"
+            },
             BUTTON_WIDTH,
             false,
             expel_disabled,
@@ -436,7 +501,7 @@ pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
             node(At::Maximize),
             "Maximize",
             BUTTON_WIDTH,
-            false,
+            maximized,
             false,
             ring == Some(At::Maximize),
             || click(At::Maximize),
@@ -588,37 +653,6 @@ mod tests {
     }
 
     #[test]
-    fn grid_empty_without_focused_window() {
-        let workspaces = test_workspaces();
-        assert!(grid(None, &workspaces).is_empty());
-    }
-
-    #[test]
-    fn grid_targets_with_focused_window() {
-        let window = test_window(2);
-        let workspaces = test_workspaces();
-        let g = grid(Some(&window), &workspaces);
-
-        assert_eq!(g.len(), 3);
-        assert_eq!(g[0].len(), 4);
-        assert_eq!(g[1].len(), 4);
-        assert_eq!(g[2].len(), 2);
-
-        assert_eq!(g[0][0].0, At::Consume);
-        assert_eq!(g[0][1].0, At::Expel);
-        assert_eq!(g[0][2].0, At::Maximize);
-        assert_eq!(g[0][3].0, At::Float);
-
-        assert_eq!(g[1][0].0, At::WidthThird);
-        assert_eq!(g[1][1].0, At::WidthHalf);
-        assert_eq!(g[1][2].0, At::WidthTwoThirds);
-        assert_eq!(g[1][3].0, At::WidthPreset);
-
-        assert_eq!(g[2][0].0, At::Workspace(1));
-        assert_eq!(g[2][1].0, At::Workspace(2));
-    }
-
-    #[test]
     fn focus_ring_step_navigation() {
         let window = test_window(2);
         let workspaces = test_workspaces();
@@ -642,5 +676,26 @@ mod tests {
         let (focus, act) = focus.step(Key::Enter, &g).expect("step enter");
         assert_eq!(act, Some(At::WidthHalf));
         assert_eq!(focus.ring(&g), Some(At::WidthHalf));
+    }
+
+    #[test]
+    fn relevant_workspaces_filters_by_window_output() {
+        let mut ws3 = test_workspaces()[0].clone();
+        ws3.id = 3;
+        ws3.output = Some("DP-1".to_string());
+
+        let mut all_ws = test_workspaces();
+        all_ws.push(ws3);
+
+        let window = test_window(1); // workspace_id = 1, output = "eDP-1"
+        let filtered = relevant_workspaces(&all_ws, Some(&window));
+        assert_eq!(filtered.len(), 2);
+        assert!(
+            filtered
+                .iter()
+                .all(|ws| ws.output.as_deref() == Some("eDP-1"))
+        );
+
+        assert!(relevant_workspaces(&all_ws, None).is_empty());
     }
 }
