@@ -32,7 +32,7 @@ Users choosing Umbriel need the same seamless experience Kanade delivers under n
 
 ## Autodetection and output settings
 
-`sources::compositor::active()` chooses a reachable Umbriel socket first, then niri, or neither. Startup follows only that compositor's event stream; a missing socket ends its reconnect loop. Window, Strip, capture, launcher and keybinding selection share this decision. Settings navigation, keyboard traversal, launcher destinations and search expose only the active compositor page; opening `compositor` or the other compositor routes to the active page.
+`sources::compositor::active()` chooses a reachable Umbriel socket first, then niri, or neither. Startup follows only that compositor's event stream; a missing socket ends its reconnect loop. Window, Strip, the Dock, capture, launcher and keybinding selection share this decision. Under Umbriel the Dock takes that snapshot's windows and focuses one by its bridged id; closing one from the Dock does nothing, since the IPC client has no close that names a window. Settings navigation, keyboard traversal, launcher destinations and search expose only the active compositor page; opening `compositor` or the other compositor routes to the active page.
 
 The Desk's overview visibility and moving wallpaper's overview pause share `sources::compositor::overview()` and `watch_overview()`: each owning Module subscribes to the selected compositor's Service at start and takes its initial snapshot. No inactive compositor events or IPC polling drive these consumers, and a Module that is off registers no watcher. This extends the niri-only overview paths in ADRs 0137 and 0144 to Umbriel.
 

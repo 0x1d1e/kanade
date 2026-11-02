@@ -1,8 +1,10 @@
-//! Running windows and apps (docs/archived/design.md Modules, ADR 0014): niri's windows, grouped by
-//! the app each belongs to, for the Dock. niri.rs reads them off its stream and hands them here as
-//! `Heard`, which it defines; this keeps them, matches each `app_id` to a `.desktop` entry and
-//! publishes the result as the `Windows` Service, which holds nothing of niri's but its window ids.
-//! A window's title is asked of niri when the Dock's menu opens (`titled`) and kept nowhere here.
+//! Running windows and apps (docs/archived/design.md Modules, ADR 0014): the selected compositor's
+//! windows, grouped by the app each belongs to, for the Dock. niri.rs reads them off its stream and
+//! hands them here as `Heard`, which it defines; Umbriel's snapshot is the same `Heard::All`, with
+//! its window ids already bridged to `u64`. This keeps them, matches each `app_id` to a `.desktop`
+//! entry and publishes the result as the `Windows` Service, which holds nothing of the compositor's
+//! but its window ids. A window's title is asked when the Dock's menu opens (`titled`): of niri, or
+//! of the titles Umbriel's snapshot already carried, and kept nowhere in the Service.
 //!
 //! The `.desktop` entries are read once, when the first window comes or the Dock pins an app, and
 //! read again only when an `app_id` or pinned id comes that none of them matches, or the config is
@@ -15,11 +17,13 @@ use std::sync::Mutex;
 
 use kanade_runtime::{MutexExt, service::Service};
 
+use super::compositor::{self, Compositor};
 use super::desktop::{self, Action, Entry};
 use super::icons;
 use super::json::{self, Json};
 use super::launch::Launch;
 use super::niri::{self, Heard, Window, WindowId};
+use super::umbriel::Umbriel;
 use crate::config;
 
 // the `.desktop` entry an app matched, as the Dock shows and launches it
@@ -143,13 +147,65 @@ fn name(app: &App) -> &str {
     }
 }
 
-// what niri said, applied; the Service is written only when the running apps change
+// what the selected compositor said, applied; the Service is written only when the running apps change
 pub fn hear(heard: Heard) {
     let mut tracked = TRACKED.locked();
 
     if tracked.apply(heard) {
         tracked.publish(&desktop::dirs());
     }
+}
+
+// Umbriel's window snapshot, as the Dock's `Heard::All`: bridged id, app id, focus and urgency.
+// Titles stay beside the Service, for the Dock's menu, and are not part of what it publishes.
+pub fn hear_umbriel() {
+    let (windows, titles) = umbriel_windows();
+    let mut tracked = TRACKED.locked();
+
+    tracked.titles = titles;
+
+    if tracked.apply(Heard::All(windows)) {
+        tracked.publish(&desktop::dirs());
+    }
+}
+
+fn umbriel_windows() -> (Vec<Window>, BTreeMap<WindowId, String>) {
+    dock_windows(&Umbriel::read().seen.windows)
+}
+
+// one Umbriel strip window as the Dock keeps it: bridged id, app id, focus and urgency. Maximized
+// is the Strip's concern, not the Dock's, so it is not copied.
+pub(crate) fn dock_window(window: &niri::StripWindow) -> Window {
+    Window {
+        id: WindowId(window.id),
+        app_id: window.app_id.clone(),
+        focused: window.is_focused,
+        urgent: window.is_urgent,
+    }
+}
+
+fn dock_windows(windows: &[niri::StripWindow]) -> (Vec<Window>, BTreeMap<WindowId, String>) {
+    let mut titles = BTreeMap::new();
+    let windows = windows
+        .iter()
+        .map(|window| {
+            let docked = dock_window(window);
+
+            titles.insert(docked.id, window.title.clone());
+            docked
+        })
+        .collect();
+
+    (windows, titles)
+}
+
+// the running apps a snapshot publishes, without reading the process-wide tracker or a `.desktop`
+#[cfg(test)]
+fn running_of(windows: Vec<Window>, dirs: &[PathBuf]) -> Vec<Running> {
+    let mut tracked = Tracked::default();
+
+    tracked.apply(Heard::All(windows));
+    tracked.running(dirs)
 }
 
 // the desktop file ids the Dock pins, published with their entries whether they run or not
@@ -175,6 +231,7 @@ static TRACKED: Mutex<Tracked> = Mutex::new(Tracked {
     entries: None,
     missed: Vec::new(),
     published: (Vec::new(), Vec::new()),
+    titles: BTreeMap::new(),
 });
 
 #[derive(Debug, Default)]
@@ -191,6 +248,9 @@ struct Tracked {
     missed: Vec<String>,
 
     published: (Vec<Running>, Vec<Pinned>),
+
+    // titles from the last Umbriel snapshot, by bridged id; empty under niri, which is asked instead
+    titles: BTreeMap<WindowId, String>,
 }
 
 impl Tracked {
@@ -352,12 +412,27 @@ pub struct Titled {
 }
 
 /*
- * the titles of `ids`, asked of niri now and handed to the caller, never kept in the `Windows`
- * Service: nothing of niri's leaves `windows` but window ids. Most recently focused first where
- * niri says when (a field newer niri has); windows it does not date, and every window on one that
- * does not, keep the order of `ids`. A window niri no longer lists is left out
+ * the titles of `ids`, handed to the caller and never kept in the `Windows` Service: nothing of the
+ * compositor's leaves `windows` but window ids. Under Umbriel they are the titles its last snapshot
+ * already published beside the list, in the order of `ids`; a window it no longer lists is left out.
+ * Under niri they are asked now. Most recently focused first where niri says when (a field newer
+ * niri has); windows it does not date, and every window on one that does not, keep the order of `ids`.
  */
 pub fn titled(ids: &[WindowId]) -> io::Result<Vec<Titled>> {
+    if compositor::active() == Compositor::Umbriel {
+        let tracked = TRACKED.locked();
+
+        return Ok(ids
+            .iter()
+            .filter_map(|id| {
+                tracked.titles.get(id).map(|title| Titled {
+                    id: *id,
+                    title: title.clone(),
+                })
+            })
+            .collect());
+    }
+
     Ok(titles(&niri::ask("\"Windows\"")?, ids))
 }
 
@@ -497,5 +572,46 @@ mod tests {
         let reply = json::parse(r#"{"Version":"26.4"}"#).unwrap();
 
         assert!(titles(&reply, &ids(&[1])).is_empty());
+    }
+
+    fn strip(id: u64, app_id: &str, title: &str, focused: bool, urgent: bool) -> niri::StripWindow {
+        niri::StripWindow {
+            id,
+            title: title.to_owned(),
+            app_id: Some(app_id.to_owned()),
+            workspace_id: None,
+            is_floating: false,
+            is_focused: focused,
+            is_urgent: urgent,
+            col: None,
+            row: None,
+            tile_width: None,
+            tile_height: None,
+        }
+    }
+
+    // Umbriel's snapshot is the Dock's window list: bridged id, app, focus and urgency, one item each
+    #[test]
+    fn an_umbriel_snapshot_is_dock_items_with_focus() {
+        let (windows, titled) = dock_windows(&[
+            strip(1, "org.kde.dolphin", "Home", true, false),
+            strip(2, "foot", "shell", false, true),
+        ]);
+        let running = running_of(windows, &[]);
+
+        assert_eq!(running.len(), 2);
+        assert!(running[0].focused());
+        assert!(!running[0].urgent());
+        assert_eq!(running[0].windows[0].id, WindowId(1));
+        assert_eq!(
+            running[0].windows[0].app_id.as_deref(),
+            Some("org.kde.dolphin")
+        );
+        assert!(!running[1].focused());
+        assert!(running[1].urgent());
+        assert_eq!(running[1].windows[0].id, WindowId(2));
+        assert_eq!(titled.get(&WindowId(1)).map(String::as_str), Some("Home"));
+        assert_eq!(titled.get(&WindowId(2)).map(String::as_str), Some("shell"));
+        assert!(running_of(Vec::new(), &[]).is_empty());
     }
 }

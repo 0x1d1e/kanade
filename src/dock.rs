@@ -40,9 +40,11 @@ use crate::merge;
 use crate::modules;
 use crate::pane;
 use crate::scene;
+use crate::sources::compositor::{self, Compositor};
 use crate::sources::icons;
 use crate::sources::launch::Launch;
 use crate::sources::niri::{self, Acted, Window, WindowId};
+use crate::sources::umbriel;
 use crate::sources::windows::{self, App, DesktopEntry, Windows};
 use crate::theme::{self, ThemeRoles, radius};
 use crate::view;
@@ -273,9 +275,57 @@ fn carry_out(press: Press) {
     });
 }
 
-// niri's action on one window, by id
+// the selected compositor's action on one window, by the id the Dock was given.
+// Umbriel focuses through its hex id. Its IPC client has no close that names a window, so close
+// does nothing there rather than handing that id to niri.
 fn window_action(action: &str, id: WindowId) -> Result<(), String> {
-    match niri::act(&format!(r#"{{"Action":{{"{action}":{{"id":{}}}}}}}"#, id.0)) {
+    let umbriel = compositor::active() == Compositor::Umbriel;
+    let hex = umbriel.then(|| umbriel::window_hex(id.0)).flatten();
+
+    match window_request(umbriel, action, id, hex.as_deref()) {
+        WindowRequest::Umbriel(request) => umbriel::request_action(&request),
+        WindowRequest::Niri(request) => niri_window(&request),
+        WindowRequest::None => Ok(()),
+        WindowRequest::Missing => Err(format!("umbriel has no window {id:?}")),
+    }
+}
+
+// which request one Dock action sends. Umbriel focuses by the hex its bridge holds for the id;
+// close names no window there, so it sends nothing rather than the niri call the same id would build.
+fn window_request(umbriel: bool, action: &str, id: WindowId, hex: Option<&str>) -> WindowRequest {
+    if umbriel {
+        return umbriel_request(action, hex);
+    }
+
+    WindowRequest::Niri(niri_window_action(action, id))
+}
+
+#[derive(Debug)]
+enum WindowRequest {
+    Umbriel(String),
+    Niri(String),
+    // a known Umbriel action that names no window, so nothing is sent
+    None,
+    // a focus whose bridged id Umbriel does not list
+    Missing,
+}
+
+fn umbriel_request(action: &str, hex: Option<&str>) -> WindowRequest {
+    match action {
+        "FocusWindow" => hex.map_or(WindowRequest::Missing, |hex| {
+            WindowRequest::Umbriel(umbriel::focus_window_action(hex))
+        }),
+        "CloseWindow" => WindowRequest::None,
+        _ => WindowRequest::Missing,
+    }
+}
+
+fn niri_window_action(action: &str, id: WindowId) -> String {
+    format!(r#"{{"Action":{{"{action}":{{"id":{}}}}}}}"#, id.0)
+}
+
+fn niri_window(action: &str) -> Result<(), String> {
+    match niri::act(action) {
         Ok(Acted::Done) => Ok(()),
         Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
         Err(error) => Err(error.to_string()),
@@ -2726,5 +2776,33 @@ mod tests {
         };
 
         assert_eq!(dot(&pinned, axes, &roles), None);
+    }
+
+    // an Umbriel id is focused by its hex. That request is not the niri FocusWindow call the same
+    // id would build, so the click never hands the bridged id to niri.
+    #[test]
+    fn an_umbriel_focus_is_not_a_niri_focus_window() {
+        let id = WindowId(7);
+        let hex = "58f26771340d94c9fd41b7841be9e3e0";
+        let niri = match window_request(false, "FocusWindow", id, None) {
+            WindowRequest::Niri(request) => request,
+            other => panic!("a niri focus builds a niri request, not {other:?}"),
+        };
+        let umbriel = match window_request(true, "FocusWindow", id, Some(hex)) {
+            WindowRequest::Umbriel(request) => request,
+            WindowRequest::Niri(request) => {
+                panic!("an umbriel focus built a niri request: {request}")
+            }
+            WindowRequest::None | WindowRequest::Missing => {
+                panic!("an umbriel focus whose hex is known sent nothing")
+            }
+        };
+
+        assert_eq!(niri, r#"{"Action":{"FocusWindow":{"id":7}}}"#);
+        assert_eq!(umbriel, umbriel::focus_window_action(hex));
+        assert!(!umbriel.contains("FocusWindow"));
+        assert!(!umbriel.contains(&format!(r#""id":{}"#, id.0)));
+        assert!(umbriel.contains(hex));
+        assert_ne!(niri, umbriel);
     }
 }

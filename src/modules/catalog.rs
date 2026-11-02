@@ -15,6 +15,7 @@ use crate::sources::battery::BatteryLevel;
 use crate::sources::bluetooth::Adapter;
 use crate::sources::calendar::Calendars;
 use crate::sources::clipboard::Clipboard;
+use crate::sources::compositor::Compositor;
 use crate::sources::network::Connectivity;
 use crate::sources::notifications::{Daemon, timed};
 use crate::sources::system::Switch;
@@ -26,8 +27,8 @@ use crate::sources::{
     lyrics, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, polkit, power, privacy, pulse, radios, recording, reminders,
-    screen_time, seat, session, sleep, subscriptions, system, timer, tray, usage, wake, wallpaper,
-    wallpaper_moving, weather, windows, workspace,
+    screen_time, seat, session, sleep, subscriptions, system, timer, tray, umbriel, usage, wake,
+    wallpaper, wallpaper_moving, weather, windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, desk, dock, gesture, hooks, idle,
@@ -200,10 +201,10 @@ pub const ALL: &[Module] = &[
             app
         },
     },
-    // the running apps for the Dock (ADR 0014), from the island's niri stream
+    // the running apps for the Dock (ADR 0014), from the selected compositor
     Module {
         name: "windows",
-        about: "Matches niri's windows to their apps, for the Dock",
+        about: "Matches the compositor's windows to their apps, for the Dock",
         requires: &[CORE],
         optional: &[],
         warns: None,
@@ -218,7 +219,12 @@ pub const ALL: &[Module] = &[
         },
         verbs: &[],
         start: |app| {
-            niri::on_windows(windows::hear);
+            // Umbriel publishes its own snapshot. Subscribing here would also start niri's stream.
+            if Compositor::current() == Compositor::Umbriel {
+                umbriel::publish_dock();
+            } else {
+                niri::on_windows(windows::hear);
+            }
             app
         },
     },

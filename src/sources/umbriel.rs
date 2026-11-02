@@ -451,6 +451,12 @@ pub fn move_window_to_workspace(workspace_id: u64) -> Result<(), String> {
     decode_response(&reply.to_string())
 }
 
+/// Sends one already-encoded Umbriel action and reads whether it was accepted.
+pub fn request_action(action: &str) -> Result<(), String> {
+    let reply = request(action)?;
+    decode_response(&reply.to_string())
+}
+
 fn request(request: &str) -> Result<Json, String> {
     let socket = socket_path().ok_or_else(|| String::from("umbriel socket not found"))?;
     let mut stream =
@@ -546,10 +552,23 @@ fn run_stream() -> bool {
             break;
         };
         if let Some(event) = json::parse(&line) {
+            let dock = dock_event(&event);
+
             handle_event(&event);
+
+            if dock {
+                publish_dock();
+            }
         }
     }
 
+    end_stream();
+    true
+}
+
+// The stream that held the Dock's list just ended. `seen` is empty, and that clear has to reach
+// the Dock even though the socket is already gone, so `active()` would no longer say Umbriel.
+fn end_stream() {
     let mut state = Umbriel::write();
     state.connected = false;
     state.seen = Seen::default();
@@ -557,7 +576,8 @@ fn run_stream() -> bool {
     state.raw_workspaces.clear();
     state.output_widths.clear();
     state.workspace_bridge.targets.clear();
-    true
+    drop(state);
+    super::windows::hear_umbriel();
 }
 
 struct ParsedWindow {
@@ -921,6 +941,23 @@ fn update_workspaces(state: &mut Umbriel, workspaces: &[Json]) {
 
 pub(crate) fn handle_event(event: &Json) {
     apply_event(&mut Umbriel::write(), event);
+}
+
+// windows, and the snapshots that re-derive them: workspaces and outputs
+fn dock_event(event: &Json) -> bool {
+    matches!(
+        event.get("event").and_then(Json::as_str),
+        Some("windows" | "workspaces" | "outputs")
+    )
+}
+
+/// The Dock's window list from the snapshot just written. Only while Umbriel is the selected
+/// compositor: a niri session that never held an Umbriel list must not publish one. The stream's
+/// own loss path clears the Dock without this gate, because by then the socket is already gone.
+pub(crate) fn publish_dock() {
+    if super::compositor::active() == super::compositor::Compositor::Umbriel {
+        super::windows::hear_umbriel();
+    }
 }
 
 fn apply_event(state: &mut Umbriel, event: &Json) {
@@ -1502,5 +1539,56 @@ mod tests {
         assert_eq!(fw.column_width, Some(1280.0 / 2560.0));
 
         kanade_runtime::Monitors::publish(vec![]);
+    }
+
+    // a windows snapshot, then the stream ends with the socket already gone: the Dock's list is
+    // cleared from that loss, not left until restart. The services are the process's, so the body
+    // runs in its own process and no socket is opened.
+    #[test]
+    fn a_lost_umbriel_stream_clears_the_dock() {
+        const NAME: &str = "sources::umbriel::tests::a_lost_umbriel_stream_clears_the_dock";
+
+        if std::env::var_os("KANADE_LOST_STREAM").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--test-threads=1"])
+                .env("KANADE_LOST_STREAM", "1")
+                .status()
+                .unwrap();
+
+            assert!(status.success());
+            return;
+        }
+
+        use kanade_runtime::service::Service;
+
+        let event = json::parse(
+            r#"{"event":"windows","data":[
+                {"id":"dock-hex","title":"Editor","app_id":"zed","active":true,"focused":true}
+            ]}"#,
+        )
+        .unwrap();
+        handle_event(&event);
+        assert!(
+            !Umbriel::read().seen.windows.is_empty(),
+            "the snapshot reached the service"
+        );
+        crate::sources::windows::hear_umbriel();
+        assert!(
+            !crate::sources::windows::Windows::read()
+                .running()
+                .is_empty(),
+            "the snapshot reached the dock"
+        );
+
+        end_stream();
+
+        assert!(Umbriel::read().seen.windows.is_empty());
+        assert!(!Umbriel::read().connected);
+        assert!(
+            crate::sources::windows::Windows::read()
+                .running()
+                .is_empty(),
+            "a lost stream left the dock's apps"
+        );
     }
 }

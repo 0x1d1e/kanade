@@ -244,7 +244,7 @@ How a Surface confirms a destructive press: the target fills while the pointer b
 
 ## Running app
 One app's open windows, as `windows` groups them for the Dock: those whose `app_id` matches one desktop entry (ADR 0014). Windows that match none group by `app_id`; a window without one stands alone.
-- **Invariant:** nothing of niri leaves `windows` but window ids. A window's title is asked of niri each time the Dock's menu or its hover list opens, and lives only as long as that list.
+- **Invariant:** nothing of the compositor leaves `windows` but window ids. A window's title is asked each time the Dock's menu or its hover list opens, of niri, or of the titles Umbriel's snapshot already carried, and lives only as long as that list.
 - **Invariant:** an override in `windows.apps` is final: one naming a missing entry leaves the app unmatched, never guessed.
 - **Avoid:** client, toplevel, task, program
 
