@@ -3,7 +3,7 @@
 //! Subscribes to events from Umbriel (overview, windows, workspaces, keyboard_layout, outputs)
 //! over its unix socket and tracks status in `Umbriel` Service.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -16,6 +16,7 @@ use std::time::Duration;
 use kanade_runtime::service::Service;
 
 use super::json::{self, Json};
+use super::niri::Showing;
 use crate::backoff::Backoff;
 use crate::sources::niri::{FocusedWindow, StripWindow, WorkspaceInfo};
 use crate::supervise;
@@ -155,6 +156,9 @@ pub struct Seen {
     pub focused_window: Option<FocusedWindow>,
     pub focused_maximized: bool,
     pub focused_workspace: Option<String>,
+    // the window each output shows, its active workspace's remembered focus; empty while unknown.
+    // `fullscreen` is Umbriel's own bit, never `maximized`, and the tile is the committed content size
+    pub shown: BTreeMap<String, Showing>,
     pub layout: Option<String>,
     pub windows_count: usize,
     pub workspaces_count: usize,
@@ -562,6 +566,7 @@ struct ParsedWindow {
     app_id: Option<String>,
     floating: bool,
     maximized: bool,
+    fullscreen: bool,
     workspace: String,
     column: i64,
     row: i64,
@@ -611,6 +616,7 @@ fn update_windows_from_raw(state: &mut Umbriel) {
             app_id,
             floating,
             maximized: w.get("maximized").and_then(Json::as_bool).unwrap_or(false),
+            fullscreen: w.get("fullscreen").and_then(Json::as_bool).unwrap_or(false),
             workspace,
             column,
             row,
@@ -724,6 +730,8 @@ fn update_windows_from_raw(state: &mut Umbriel) {
         state.seen.focused_maximized = false;
     }
 
+    state.seen.shown = shown_windows(state, &parsed_windows);
+
     // Sequential fallback for non-floating windows with column < 0
     let mut max_cols: HashMap<String, u64> = HashMap::new();
     for w in &parsed_windows {
@@ -780,6 +788,49 @@ fn update_windows_from_raw(state: &mut Umbriel) {
     strip_windows.sort_by_key(|w| (w.workspace_id, w.col, w.row, w.id));
     state.seen.windows = strip_windows;
     state.seen.windows_count = parsed_windows.len();
+}
+
+// the window each output shows: its active workspace's remembered focus, the same window the
+// Surfaces keep while a layer holds the keyboard. One with no remembered window shows nothing.
+// A missing `fullscreen` bit is not fullscreen.
+fn shown_windows(state: &Umbriel, windows: &[ParsedWindow]) -> BTreeMap<String, Showing> {
+    let mut shown = BTreeMap::new();
+
+    for workspace in &state.raw_workspaces {
+        let active = workspace
+            .get("is_active")
+            .or_else(|| workspace.get("active"))
+            .and_then(Json::as_bool)
+            == Some(true);
+        if !active {
+            continue;
+        }
+
+        let Some(output) = workspace.get("output").and_then(Json::as_str) else {
+            continue;
+        };
+        let Some(id) = workspace
+            .get("focused_window")
+            .and_then(Json::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let Some(window) = windows.iter().find(|window| window.hex_id == id) else {
+            continue;
+        };
+
+        shown.insert(
+            output.to_owned(),
+            Showing {
+                app_id: window.app_id.clone(),
+                tile: (window.w, window.h),
+                fullscreen: window.fullscreen,
+            },
+        );
+    }
+
+    shown
 }
 
 fn update_workspaces(state: &mut Umbriel, workspaces: &[Json]) {
@@ -1247,6 +1298,40 @@ mod tests {
 
         // Check window_hex lookup
         assert_eq!(state.window_bridge.hex(fw.id).as_deref(), Some("win-hex-1"));
+        // maximized, and short of the output: the active workspace shows it, not as fullscreen
+        let shown = seen.shown.get("eDP-1").expect("shown window");
+        assert_eq!(shown.app_id.as_deref(), Some("zed"));
+        assert_eq!(shown.tile, (960.0, 1080.0));
+        assert!(!shown.fullscreen);
+    }
+
+    #[test]
+    fn a_fullscreen_window_on_the_active_workspace_is_the_one_its_output_shows() {
+        let mut state = Umbriel::default();
+        let workspaces = json::parse(
+            r#"{"event":"workspaces","data":[
+                {"id":"eDP-1:0","output":"eDP-1","active":true,"focused":false,"focused_window":"game"},
+                {"id":"HDMI-A-1:0","output":"HDMI-A-1","active":true,"focused":true,"focused_window":"notes"}
+            ]}"#,
+        )
+        .unwrap();
+        let windows = json::parse(
+            r#"{"event":"windows","data":[
+                {"id":"game","app_id":"steam","fullscreen":true,"maximized":false,"workspace":"eDP-1:0","w":1920.0,"h":1080.0,"output":"eDP-1"},
+                {"id":"notes","app_id":"zed","maximized":true,"workspace":"HDMI-A-1:0","w":1920.0,"h":1080.0,"output":"HDMI-A-1"},
+                {"id":"away","app_id":"foot","fullscreen":true,"workspace":"eDP-1:1","w":1920.0,"h":1080.0,"output":"eDP-1"}
+            ]}"#,
+        )
+        .unwrap();
+        apply_event(&mut state, &workspaces);
+        apply_event(&mut state, &windows);
+
+        let game = state.seen.shown.get("eDP-1").expect("eDP-1");
+        assert!(game.fullscreen);
+        assert_eq!(game.tile, (1920.0, 1080.0));
+        let notes = state.seen.shown.get("HDMI-A-1").expect("HDMI-A-1");
+        assert!(!notes.fullscreen);
+        assert!(state.seen.shown.len() == 2);
     }
 
     #[test]

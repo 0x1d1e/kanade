@@ -165,6 +165,7 @@ pub const ALL: &[Module] = &[
                     if !island.set_niri(seen.focused_output, seen.overview, Instant::now()) {
                         island.quiet();
                     }
+                    fullscreen::follow_shown();
                 }
             });
 

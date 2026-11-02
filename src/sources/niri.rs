@@ -166,6 +166,10 @@ pub struct Showing {
 
     // logical, as an output's size is
     pub tile: (f64, f64),
+
+    // niri's IPC has no fullscreen bit, so this stays false and the toplevel list decides.
+    // Umbriel's snapshot sets it from its own `fullscreen`, which is not maximized
+    pub fullscreen: bool,
 }
 
 // niri's window id, which stays with the window for as long as it is open
@@ -623,7 +627,14 @@ fn shown(window: &Json) -> Option<(u64, Showing)> {
         .map(String::from);
     let tile = tile(window.get("layout")?)?;
 
-    Some((id, Showing { app_id, tile }))
+    Some((
+        id,
+        Showing {
+            app_id,
+            tile,
+            fullscreen: false,
+        },
+    ))
 }
 
 fn tracked_window(window: &Json) -> Option<TrackedWindow> {

@@ -4,10 +4,12 @@
 //! hidden window draws at once.
 //!
 //! Two sources meet here: the runtime's `Toplevels` hears from the compositor which windows are
-//! fullscreen (ADR 0034), and niri's IPC which window each output shows and how big its tile is. A window covers its output
-//! only while both hold: one fullscreen in a tile as big as the output. One fullscreen in a column,
-//! as niri's windowed fullscreen keeps it, covers nothing; nor does any, whoever has the keyboard,
-//! on a workspace not shown.
+//! fullscreen (ADR 0034), and the selected compositor's IPC which window each output shows and how
+//! big its tile is. A window covers its output only while both hold: one fullscreen in a tile as big
+//! as the output. One fullscreen in a column, as niri's windowed fullscreen keeps it, covers nothing;
+//! nor does a window maximized to the edges, nor any, whoever has the keyboard, on a workspace not
+//! shown. Umbriel's snapshot says fullscreen itself; its content size is the tile, and a maximized
+//! window is not one.
 
 use std::collections::BTreeMap;
 
@@ -15,6 +17,7 @@ use kanade_runtime::service::Service;
 use kanade_runtime::{FullscreenWindow, Monitor, Toplevels};
 
 use super::niri::{Niri, Showing};
+use super::umbriel::Umbriel;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Fullscreen {
@@ -22,15 +25,22 @@ pub struct Fullscreen {
     pub shown: BTreeMap<String, Showing>,
 }
 
-// a watcher of `Niri`: the window each output shows; the same again changes nothing
+// a watcher of the selected compositor: the window each output shows; the same again changes nothing.
+// niri's stream is the one while it is connected; otherwise Umbriel's snapshot, which is empty until
+// that stream says a window
 pub fn follow_shown() {
     let niri = Niri::read();
+    let shown = if niri.connected {
+        niri.seen.shown.clone()
+    } else {
+        Umbriel::read().seen.shown.clone()
+    };
     let mut fullscreen = Fullscreen::write();
 
-    if fullscreen.shown == niri.seen.shown {
+    if fullscreen.shown == shown {
         fullscreen.quiet();
     } else {
-        fullscreen.shown.clone_from(&niri.seen.shown);
+        fullscreen.shown = shown;
     }
 }
 
@@ -64,12 +74,15 @@ impl Fullscreen {
             && shown.tile.1 >= f64::from(monitor.height) * ui - 1.0;
 
         // The sources can be joined only by app id; output and size do not distinguish a
-        // fullscreen window from an unrelated maximized-to-edges window.
-        fills
-            && shown.app_id.is_some()
-            && windows
-                .iter()
-                .any(|window| window.output == monitor.name && window.app_id == shown.app_id)
+        // fullscreen window from an unrelated maximized-to-edges window. Umbriel's own bit is
+        // that distinction, so its snapshot does not wait on the toplevel list.
+        let fullscreen = shown.fullscreen
+            || shown.app_id.is_some()
+                && windows
+                    .iter()
+                    .any(|window| window.output == monitor.name && window.app_id == shown.app_id);
+
+        fills && fullscreen
     }
 }
 
@@ -98,6 +111,7 @@ mod tests {
                 Showing {
                     app_id: None,
                     tile: (1920.0, 1080.0),
+                    fullscreen: false,
                 },
             )]),
         };
@@ -122,6 +136,7 @@ mod tests {
                 Showing {
                     app_id: None,
                     tile: (1920.0, 1080.0),
+                    fullscreen: false,
                 },
             )]),
         };
@@ -131,5 +146,40 @@ mod tests {
         };
 
         assert!(!fullscreen.covers(&[window], &monitor));
+    }
+
+    fn output(name: &str) -> (Monitor, Fullscreen) {
+        let monitor = Monitor {
+            name: name.into(),
+            width: 1920,
+            height: 1080,
+        };
+        let fullscreen = Fullscreen {
+            shown: BTreeMap::from([(
+                monitor.name.clone(),
+                Showing {
+                    app_id: Some("game".into()),
+                    tile: (1920.0, 1080.0),
+                    fullscreen: false,
+                },
+            )]),
+        };
+
+        (monitor, fullscreen)
+    }
+
+    #[test]
+    fn an_umbriel_fullscreen_window_that_fills_its_output_covers_it() {
+        let (monitor, mut fullscreen) = output("eDP-1");
+        fullscreen.shown.get_mut("eDP-1").unwrap().fullscreen = true;
+
+        assert!(fullscreen.covers(&[], &monitor));
+    }
+
+    #[test]
+    fn a_maximized_window_that_fills_its_output_does_not_cover_it() {
+        let (monitor, fullscreen) = output("eDP-1");
+
+        assert!(!fullscreen.covers(&[], &monitor));
     }
 }
