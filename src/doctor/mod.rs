@@ -212,6 +212,9 @@ struct Unit {
  * `shell` the pid of the shell doctor talked to
  */
 fn unit(shell: Option<u32>) -> Check {
+    if compositor::active() == compositor::Compositor::Umbriel {
+        return recovery(shell);
+    }
     let bus = Bus::session();
 
     if !bus::reachable(bus) {
@@ -256,6 +259,40 @@ fn unit(shell: Option<u32>) -> Check {
             pid: pid as u32,
         },
     )
+}
+
+// Umbriel owns startup. Report the recovery parent of the shell we actually talked to, rather
+// than recommending a systemd ownership change because an unrelated niri unit is inactive.
+fn recovery(shell: Option<u32>) -> Check {
+    let Some(shell) = shell else {
+        return Check::warn(String::from("recovery: no running Umbriel shell observed"));
+    };
+    let status = crate::recovery::status().or_else(|| match cli::call(&[String::from("status")]) {
+        Ok(Reply::Done(status)) => status
+            .lines()
+            .find(|line| line.starts_with("recovery: Umbriel parent pid "))
+            .map(str::to_owned),
+        _ => None,
+    });
+    let parent = status
+        .as_deref()
+        .and_then(|line| line.strip_prefix("recovery: Umbriel parent pid "))
+        .and_then(|pid| pid.parse::<u32>().ok());
+    if let Some(parent) = parent {
+        let child = std::fs::read_to_string(format!("/proc/{shell}/status")).unwrap_or_default();
+        let ppid = child
+            .lines()
+            .find_map(|line| line.strip_prefix("PPid:")?.trim().parse::<u32>().ok());
+        let name = std::fs::read_to_string(format!("/proc/{parent}/comm")).unwrap_or_default();
+        if ppid == Some(parent) && name.trim() == "kanade-recover" {
+            return Check::ok(format!(
+                "recovery: Umbriel parent pid {parent}, runs shell pid {shell}"
+            ));
+        }
+    }
+    Check::warn(String::from(
+        "recovery: Umbriel shell has no verified recovery parent; restart bare kanade through Umbriel after updating; a crash while locked can leave the session blank",
+    ))
 }
 
 /*

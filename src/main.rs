@@ -28,6 +28,7 @@ mod modules;
 mod niri_config;
 mod pane;
 mod raster;
+mod recovery;
 mod reload;
 mod scene;
 mod sddm;
@@ -60,8 +61,15 @@ fn main() -> ExitCode {
         return appearance::pywalfox::host();
     }
 
-    if !arguments.is_empty() {
+    if arguments == [recovery::CHILD] {
+        if let Err(error) = recovery::enter_child() {
+            eprintln!("kanade: private shell entry: {error}");
+            return ExitCode::FAILURE;
+        }
+    } else if !arguments.is_empty() {
         return cli::run(&arguments);
+    } else if let Some(result) = recovery::start() {
+        return result;
     }
 
     kanade_runtime::limit_allocator();

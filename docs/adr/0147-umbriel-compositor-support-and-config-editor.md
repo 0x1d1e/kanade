@@ -1,6 +1,6 @@
 # 147. Umbriel compositor support and config editor
 
-Status: accepted. Extends compositor support to Umbriel alongside niri (ADR 0028, ADR 0119).
+Status: accepted. Extends compositor support to Umbriel alongside niri (ADR 0028, ADR 0119). [ADR 0149](0149-umbriel-starts-a-shell-recovery-parent.md) adds a recovery parent behind the existing Umbriel `kanade` autostart entry, including lock intent that survives a rendering-shell crash.
 
 ## Context
 

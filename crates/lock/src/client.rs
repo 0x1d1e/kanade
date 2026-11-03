@@ -35,6 +35,7 @@ use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use tiny_skia::{BlendMode, Pixmap, PixmapPaint, Transform as TinyTransform};
 use wayland_client::globals::registry_queue_init;
+use wayland_client::protocol::wl_callback::{self, WlCallback};
 use wayland_client::protocol::wl_keyboard::WlKeyboard;
 use wayland_client::protocol::wl_output::{Transform, WlOutput};
 use wayland_client::protocol::wl_pointer::WlPointer;
@@ -485,8 +486,14 @@ impl State {
                     lock.unlock();
                 }
                 self.forget();
+                if matches!(news, News::Unlocked(_)) {
+                    // A queued/flushed unlock is not confirmation. Only report it after the
+                    // compositor processed all preceding requests on this same connection.
+                    self.connection.display().sync(&self.queue, news);
+                } else {
+                    (self.report)(news);
+                }
                 let _ = self.connection.flush();
-                (self.report)(news);
             }
         }
     }
@@ -1428,6 +1435,21 @@ impl ProvidesRegistryState for State {
     }
 
     registry_handlers![OutputState, SeatState];
+}
+
+impl Dispatch<WlCallback, News> for State {
+    fn event(
+        state: &mut Self,
+        _: &WlCallback,
+        event: wl_callback::Event,
+        news: &News,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_callback::Event::Done { .. }) {
+            (state.report)(*news);
+        }
+    }
 }
 
 delegate_noop!(State: WpViewporter);

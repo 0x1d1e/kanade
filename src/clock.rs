@@ -613,7 +613,7 @@ extern "C" fn terminated(signal: c_int) {
 }
 
 // SIGTERM and SIGINT now write their number to the returned pipe instead of ending the process
-fn catch_termination() -> io::Result<std::os::unix::net::UnixStream> {
+pub fn catch_termination() -> io::Result<std::os::unix::net::UnixStream> {
     use std::os::fd::IntoRawFd;
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::Ordering;
@@ -698,6 +698,105 @@ fn default_termination() {
         // SAFETY: plain call, setting a disposition, no handler
         unsafe {
             libc::signal(signal, libc::SIG_DFL);
+        }
+    }
+}
+
+// The recovery child must not survive an abruptly dead parent. Installed before exec; the
+// comparison closes the race where the parent died before PR_SET_PDEATHSIG was armed.
+pub fn die_with_parent(command: &mut Command) {
+    let parent = rustix::process::getpid();
+    // SAFETY: only async-signal-safe prctl/getppid run between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            rustix::process::set_parent_process_death_signal(Some(Signal::KILL))?;
+            if rustix::process::getppid() != Some(parent) {
+                return Err(io::Error::other("recovery parent ended before child exec"));
+            }
+            Ok(())
+        });
+    }
+}
+
+// Recovery's kernel operations stay at this platform boundary; lifecycle policy is recovery.rs.
+pub fn recovery_child_channel() -> io::Result<(std::os::unix::net::UnixStream, u32)> {
+    let fd = rustix::io::fcntl_dupfd_cloexec(rustix::stdio::stdin(), 3)?;
+    rustix::stdio::dup2_stdin(File::open("/dev/null")?)?;
+    let channel = std::os::unix::net::UnixStream::from(fd);
+    let peer = rustix::net::sockopt::socket_peercred(&channel)?;
+    if Some(peer.pid) != rustix::process::getppid() || peer.uid != rustix::process::getuid() {
+        return Err(io::Error::other(
+            "private shell entry needs its recovery parent",
+        ));
+    }
+    Ok((channel, peer.pid.as_raw_pid() as u32))
+}
+
+pub fn recovery_owner(path: &std::path::Path) -> io::Result<File> {
+    use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
+    // Never unlink: doing so could split ownership between two inodes. No lock state is stored.
+    let fd = open(
+        path,
+        OFlags::CREATE | OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::RUSR | Mode::WUSR,
+    )?;
+    flock(&fd, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|error| io::Error::other(format!("recovery owner already running: {error}")))?;
+    Ok(File::from(fd))
+}
+
+pub fn process_fd(pid: u32) -> io::Result<OwnedFd> {
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| io::Error::other("invalid process id"))?;
+    Ok(rustix::process::pidfd_open(
+        pid,
+        rustix::process::PidfdFlags::empty(),
+    )?)
+}
+
+pub fn ipc_process(socket: &std::path::Path) -> io::Result<OwnedFd> {
+    use std::os::unix::net::UnixStream;
+    let stream = UnixStream::connect(socket)?;
+    let peer = rustix::net::sockopt::socket_peercred(&stream)?;
+    if peer.uid != rustix::process::getuid() {
+        return Err(io::Error::other("Umbriel IPC belongs to another user"));
+    }
+    let process = process_fd(peer.pid.as_raw_pid() as u32)?;
+    // Reconnect after pidfd_open so an exit/reused PID cannot bind an unrelated process. A lost
+    // listener or changed peer aborts startup; afterwards the pidfd pins this process's lifetime.
+    let again = UnixStream::connect(socket)?;
+    if rustix::net::sockopt::socket_peercred(&again)?.pid != peer.pid {
+        return Err(io::Error::other("Umbriel IPC owner changed during startup"));
+    }
+    Ok(process)
+}
+
+pub fn name_recovery_parent() -> io::Result<()> {
+    // Name the process leader even when called from a test harness's worker thread. PR_SET_NAME
+    // only changes the calling thread, whereas pgrep reads the leader's /proc/<pid>/comm.
+    std::fs::write("/proc/self/comm", b"kanade-recover")
+}
+
+pub fn wait_readable(
+    fds: &[std::os::fd::BorrowedFd<'_>],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<Vec<bool>> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let deadline = timeout.map(|wait| std::time::Instant::now() + wait);
+    let mut fds: Vec<_> = fds
+        .iter()
+        .map(|fd| PollFd::from_borrowed_fd(*fd, PollFlags::IN))
+        .collect();
+    loop {
+        let left = deadline.map(|end| {
+            Timespec::try_from(end.saturating_duration_since(std::time::Instant::now())).unwrap()
+        });
+        match poll(&mut fds, left.as_ref()) {
+            Ok(_) => return Ok(fds.iter().map(|fd| !fd.revents().is_empty()).collect()),
+            Err(Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
         }
     }
 }

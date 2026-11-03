@@ -1,6 +1,6 @@
 # 18. Lock stays in the shell
 
-Status: accepted (roadmap 11 Session, #153). Answers the lock ship gate of `docs/design.md` Security/privacy: no `kanade-lock` split. Amended by ADR 0025: the lock stays in the shell process, held by the `kanade-lock` crate over its own connection, not Amane's `Lock`, and the password is checked once.
+Status: accepted (roadmap 11 Session, #153). Answers the lock ship gate of `docs/design.md` Security/privacy: no `kanade-lock` split. Amended by ADR 0025: the lock stays in the shell process, held by the `kanade-lock` crate over its own connection, not Amane's `Lock`, and the password is checked once. [ADR 0149](0149-umbriel-starts-a-shell-recovery-parent.md) adds Umbriel-owned startup and recovery with acknowledged intent in a surviving parent; the systemd and `LockedHint` decisions below continue to describe niri.
 
 Validated: crash recovery in a temporary test build (#153), then again in #154 on the production binary and the installed `kanade.service` unit, with the start limit and its recovery.
 

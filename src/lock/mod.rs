@@ -9,9 +9,9 @@
 //! typed since being checked or accepted. logind's `LockedHint` may still say the last lock right
 //! after an unlock, so it is only for a crash.
 //!
-//! A crash while locked leaves niri locked on its red screen; the user unit (`UNIT`) restarts the
-//! shell, which finds logind's `LockedHint` true and locks again, so niri swaps the dead lock for
-//! this one.
+//! A crash while locked leaves niri locked on red; its user unit restarts the shell, which reads
+//! logind's `LockedHint` and locks again. Under Umbriel, the recovery parent instead keeps
+//! acknowledged lock intent in memory and passes it to the replacement (ADR 0149).
 
 use std::env;
 use std::panic::{self, AssertUnwindSafe};
@@ -351,6 +351,12 @@ impl Requests {
         }
     }
 
+    // Only compositor-confirmed unlock or definite refusal/end of our newest request clears
+    // the recovery parent's intent. Password acceptance and connection loss cannot do so.
+    fn clears_recovery(&self, news: News) -> bool {
+        matches!(news, News::Unlocked(request) | News::Finished(request) if request == self.newest)
+    }
+
     fn status(&self) -> String {
         let holding = match self.holding() {
             Holding::Held => format!("confirmed #{}", self.confirmed),
@@ -531,20 +537,26 @@ pub fn relock() {
     // known before the first lock, which may come just before sleep, so it shows them from its first frame
     look_up();
 
+    let inherited = crate::recovery::relock();
     let started = LOCKER.get_or_init(|| {
         Locker::start(decode, Box::new(submit), Box::new(heard), Box::new(touched))
     });
     if let Err(error) = started {
         eprintln!("kanade: no lock screen: {error}");
+        if inherited {
+            // Keep retrying a required replacement lock, rather than running without a locker.
+            process::exit(1);
+        }
     }
 
     let session = session();
-
-    if session.is_empty() {
-        eprintln!("kanade: logind names no session, so a crash while locked is not locked again");
+    if session.is_empty() && !inherited {
+        eprintln!(
+            "kanade: logind names no session; only an Umbriel recovery parent can restore a lock"
+        );
     }
 
-    if locked(session) == Some(true) {
+    if inherited || locked(session) == Some(true) {
         eprintln!("kanade: the session is locked, locking it again");
         if pam().is_none() {
             eprintln!(
@@ -660,6 +672,9 @@ fn locker() -> Result<&'static Locker, String> {
 
 // asks niri for a lock, or keeps the one held, and hands back the request's number
 fn request_lock(requests: &mut Requests, locker: &Locker) -> u64 {
+    // The surviving parent acknowledges intent before anything can ask the compositor to lock.
+    // A crash from here through confirmation/unlock therefore always starts a replacement locker.
+    crate::recovery::checkpoint(true);
     let newest = requests.request();
 
     // only spawns, so nothing waits on it under the requests
@@ -692,6 +707,11 @@ fn heard(news: News) {
     let mut requests = requests();
 
     let was = requests.locked;
+    // Unlocked is reported only after a Wayland sync following unlock_and_destroy. Finished is
+    // a definite refusal/end, never a connection loss. Older news cannot clear newer intent.
+    if requests.clears_recovery(news) {
+        crate::recovery::checkpoint(false);
+    }
     requests.heard(news);
     let locked = requests.locked;
     say(&requests);
@@ -994,6 +1014,25 @@ fn say(requests: &Requests) {
 mod tests {
     use super::*;
     use kanade_lock::stage::{Stage, Step};
+
+    #[test]
+    fn recovery_intent_outlives_password_acceptance_and_ignores_stale_news() {
+        let mut requests = Requests::new();
+        let first = requests.request();
+        requests.heard(News::Locked(first));
+        assert!(!requests.clears_recovery(News::Locked(first)));
+        let check = requests.check().unwrap();
+        assert!(requests.checked(check, true));
+        // Acceptance queues an unlock; it is not compositor confirmation.
+        assert!(requests.unlocking);
+        assert!(!requests.clears_recovery(News::Gone));
+        assert!(requests.clears_recovery(News::Unlocked(first)));
+        let second = requests.request();
+        assert!(!requests.clears_recovery(News::Unlocked(first)));
+        assert!(!requests.clears_recovery(News::Finished(first)));
+        assert!(requests.clears_recovery(News::Finished(second)));
+        assert!(requests.clears_recovery(News::Unlocked(second)));
+    }
 
     // an accepted password ends the lock, so sleep asks over it
     #[test]

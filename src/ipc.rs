@@ -270,6 +270,7 @@ fn status() -> Vec<String> {
         std::process::id()
     )];
 
+    lines.extend(crate::recovery::status());
     lines.extend(reload::status());
     lines.extend(modules::status());
 
