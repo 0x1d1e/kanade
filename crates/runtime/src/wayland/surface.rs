@@ -253,10 +253,19 @@ impl Content {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::service::Service;
+    use crate::unpoisoned::MutexExt;
+
+    /*
+     * `animation::moving` is the process's: every `run_view` clears it, so a test that runs a view
+     * while another holds a view's moving status between setting it and reading it would lose it.
+     * Every test that runs a view takes this turn
+     */
+    static VIEW_TURN: Mutex<()> = Mutex::new(());
 
     #[derive(Default)]
     struct NormalTestState;
@@ -284,6 +293,8 @@ mod tests {
 
     #[test]
     fn open_normal_runs_view_once_across_open_and_initial_frame() {
+        let _turn = VIEW_TURN.locked();
+
         RUNS.store(0, Ordering::SeqCst);
 
         // opening the normal window runs the view once to read title and size
@@ -327,6 +338,8 @@ mod tests {
 
     #[test]
     fn open_normal_preserves_moving_animation_across_first_frame() {
+        let _turn = VIEW_TURN.locked();
+
         MOVING_RUNS.store(0, Ordering::SeqCst);
 
         let (mut view, _info) = View::normal("moving_normal", moving_normal_view);

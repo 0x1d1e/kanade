@@ -1151,6 +1151,26 @@ fn forget() {
  * change re-ranks and draws the window that shows it.
  */
 fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> Arc<Found> {
+    found_at(
+        crate::clock::unix_seconds(),
+        visit,
+        apps,
+        query,
+        recording,
+        read,
+    )
+}
+
+// `found` at a given second, which is one of the ranking's inputs: a test that holds it steady is
+// not re-ranked by the wall clock turning over between two of its calls
+fn found_at(
+    now: i64,
+    visit: u64,
+    apps: &[App],
+    query: &str,
+    recording: Rec,
+    read: bool,
+) -> Arc<Found> {
     if let Some((_, choices)) = choose::of(visit) {
         return Arc::new(Found::ranked(provider::ranked(
             &[&Choices(&choices)],
@@ -1198,7 +1218,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
         ],
         radios: *radios,
         titles,
-        now: crate::clock::unix_seconds(),
+        now,
     };
 
     let mut memo = MEMO.locked();
@@ -2694,10 +2714,17 @@ mod tests {
     /*
      * cached rankings follow their inputs: unchanged inputs reuse the answer; app changes rerank.
      * Window titles come from shared Services, so the test holds their write turn across reads.
+     * The second is an input too, so the test holds it: a ranking is made again when the clock turns
+     * over, and a test that straddled that would see it as a cache that forgot
      */
     #[test]
     fn the_ranking_follows_its_inputs() {
         let _turn = windows::TITLES_TURN.locked();
+
+        let now = crate::clock::unix_seconds();
+        let found = |visit, apps: &[App], query: &str, recording, read| {
+            found_at(now, visit, apps, query, recording, read)
+        };
 
         let (visit, rec) = (7, Rec::Idle);
         let one_app = [app("alpha")];
@@ -2737,6 +2764,15 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&first, &after),
             "a dropped ranking was not ranked"
+        );
+
+        // and the next second ranks again, because a score decays with the clock
+        let later = found_at(now + 1, visit, &one_app, "al", rec, true);
+
+        assert_eq!(first, later);
+        assert!(
+            !Arc::ptr_eq(&after, &later),
+            "a later second was not ranked"
         );
     }
 
