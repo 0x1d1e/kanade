@@ -98,6 +98,8 @@ The parent keeps acknowledged lock intent in memory, before any lock request rea
 
 Recovery requires the parent to survive. Abrupt parent death kills the rendering child and loses lock intent; the parent itself is not restarted. Do not stop it while locked expecting a fresh start to restore the lock screen. A hung shell is not detected. If the parent dies while locked, recover from another TTY with a compatible replacement locker; ending the graphical session is the last resort and loses unsaved work. See [ADR 0149](../adr/0149-umbriel-starts-a-shell-recovery-parent.md).
 
+These describe the implemented mechanism and compositor source evidence, checked with disposable subprocess fixtures. Live Umbriel locked-crash recovery, replacement-lock authentication and logout/compositor shutdown acceptance are **NOT RUN**; do not read the automated checks as session acceptance.
+
 The default config includes the `blur-kanade` layer rule. For an existing Umbriel config, Settings under Compositor offers the rule, or `kanade umbriel-config rules apply blur-kanade` writes it on request. The KDL layer rules above apply only to niri. Umbriel area screenshots need `slurp` and `grim`, output screenshots need `grim`, and copying the saved PNG needs `wl-copy`; a copy failure does not discard the saved screenshot. Window screenshots, the color picker and niri's cast controls remain unavailable under Umbriel. See [Settings](Settings.md), [Limitations](Limitations.md) and [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md).
 
 ## Run with niri

@@ -21,7 +21,7 @@ The startup owner must remain Umbriel: `dist/umbriel/config.toml` retains `autos
 
 Disposable subprocess fixtures exercise actual process exit/restart, singleton refusal, a pre-existing shell socket, compositor PID death, parent termination and restart-delay cancellation, reaping, and acknowledged lock intent inherited by a replacement. Channel checks ensure a lock checkpoint waits for acknowledgement and rejects a closed parent channel. Lock request/state checks cover stale confirmations and the existing interleavings.
 
-Live Umbriel crash/lock/replacement/authentication acceptance is a separate session gate. Automated checks neither kill nor lock the user's compositor or shell.
+Live Umbriel locked-crash recovery, replacement-lock authentication and logout/compositor shutdown acceptance are **NOT RUN**, separate session gates. Automated checks neither kill nor lock the user's compositor or shell.
 
 ## Limits
 
