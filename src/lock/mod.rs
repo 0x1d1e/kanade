@@ -732,8 +732,9 @@ fn heard(news: News) {
     drop(requests);
     HEARD.notify_all();
 
-    // the lock's own transition, after the requests are let go: a hook never waits under them
-    if locked != was {
+    // the lock's own transition, after the requests are let go: a hook never waits under them.
+    // Restoring an inherited lock with the Module disabled must not run its configured hooks.
+    if locked != was && modules::on("lock") {
         hooks::fire(if locked { Event::Lock } else { Event::Unlock });
     }
 }
@@ -1029,22 +1030,36 @@ mod tests {
     use super::*;
     use kanade_lock::stage::{Stage, Step};
 
-    // Disposable private child: no compositor, locker, runtime, bus or real config is started.
+    // Disposable private child: only fixture config and harmless hooks; no compositor, locker,
+    // runtime, bus or user config is started.
     #[test]
     fn disabled_recovery_fixture() {
         let Ok(end) = env::var("KANADE_DISABLED_LOCK_FIXTURE") else {
             return;
         };
+        let text = std::fs::read_to_string(env::var_os("KANADE_LOCK_CONFIG").unwrap()).unwrap();
+        let table = config::settings_table(&text).unwrap();
+        let mut config = Config::default();
+        assert!(config::apply_table(&mut config, &table).is_empty());
+        modules::resolve_fixture(&config);
+        assert!(modules::on("hooks"));
+        assert_eq!(config.hooks.configured(), 2);
+        config::install(config);
         crate::recovery::enter_child().unwrap();
         assert!(crate::recovery::relock());
-        assert!(!modules::on("lock"));
         let request = requests().request();
+        heard(News::Locked(request));
+        hooks::settle_fixture();
         heard(match end.as_str() {
             "unlock" => News::Unlocked(request),
             "refusal" => News::Finished(request),
             _ => panic!("unknown fixture end"),
         });
-        panic!("a completed recovery with lock disabled must exit for the next child");
+        assert!(
+            modules::on("lock"),
+            "disabled recovery must exit for the next child"
+        );
+        hooks::settle_fixture();
     }
 
     #[test]
@@ -1054,7 +1069,36 @@ mod tests {
         use std::os::unix::net::UnixStream;
         use std::process::{Command, Stdio};
 
-        for end in ["unlock", "refusal"] {
+        for (end, enabled) in [
+            ("unlock", false),
+            ("refusal", false),
+            ("unlock", true),
+            ("refusal", true),
+        ] {
+            let dir = env::temp_dir().join(format!(
+                "kanade-lock-hooks-{}-{end}-{enabled}",
+                process::id()
+            ));
+            std::fs::create_dir(&dir).unwrap();
+            let log = dir.join("hook-events");
+            let config = dir.join("settings.toml");
+            let argv = toml::Value::Array(
+                [
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    r#"printf '%s\n' "$KANADE_HOOK" >> "$1""#.to_owned(),
+                    "hook-fixture".to_owned(),
+                    log.to_str().unwrap().to_owned(),
+                ]
+                .into_iter()
+                .map(toml::Value::String)
+                .collect(),
+            );
+            std::fs::write(
+                &config,
+                format!("[modules]\nlock = {enabled}\nhooks = true\n[hooks]\nlock = {argv}\nunlock = {argv}\n"),
+            )
+            .unwrap();
             let (mut parent, child) = UnixStream::pair().unwrap();
             parent
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1069,9 +1113,10 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("KANADE_DISABLED_LOCK_FIXTURE", end)
+                .env("KANADE_LOCK_CONFIG", &config)
                 .stdin(Stdio::from(OwnedFd::from(child)))
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
             parent.write_all(b"L").unwrap();
@@ -1091,9 +1136,18 @@ mod tests {
                 "the clear still needs an ack"
             );
             parent.write_all(b"A").unwrap();
+            let result = child.wait_with_output().unwrap();
+            let events = std::fs::read_to_string(log).unwrap_or_default();
+            std::fs::remove_dir_all(dir).unwrap();
             assert!(
-                child.wait().unwrap().success(),
-                "{end} must finish recovery"
+                result.status.success(),
+                "{end} must finish recovery: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(
+                events,
+                if enabled { "lock\nunlock\n" } else { "" },
+                "{end}: lock/unlock hooks follow the lock Module gate"
             );
         }
     }

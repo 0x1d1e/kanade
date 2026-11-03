@@ -348,6 +348,12 @@ fn cycle(all: &[Module], start: usize) -> Option<Vec<&'static str>> {
 
 static MODULES: OnceLock<Modules> = OnceLock::new();
 
+// Disposable subprocess fixtures need real Module gates without starting sources or windows.
+#[cfg(test)]
+pub fn resolve_fixture(config: &config::Config) {
+    MODULES.set(resolve(ALL, |name| config.off(name))).unwrap();
+}
+
 /*
  * resolves the Modules against the config, says on stderr what is not as asked, and starts every
  * Module that is on, in order; called once, before the shell runs

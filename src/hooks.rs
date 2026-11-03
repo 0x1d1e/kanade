@@ -729,6 +729,21 @@ fn finish(
 
 static DISPATCHER: LazyLock<Dispatcher<Process>> = LazyLock::new(|| Dispatcher::new(Process));
 
+// Wait only in disposable fixtures, so assertions observe completed hook commands rather than
+// racing their threads. `fire` marks its slot running before returning to the event source.
+#[cfg(test)]
+pub fn settle_fixture() {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while DISPATCHER.slots.locked().iter().any(|slot| slot.running) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture hooks did not settle"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(DISPATCHER.status().is_empty(), "{:?}", DISPATCHER.status());
+}
+
 // fires an event that carries nothing
 pub fn fire(event: Event) -> Option<Done> {
     send(event, None)
