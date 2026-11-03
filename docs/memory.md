@@ -33,6 +33,24 @@ Columns, in MiB: the shell's `rss`, `pss`, `anon` and PSS of mapped files (`file
 
 What the Surfaces show changes the numbers, so record it with each baseline: the config, the calendars and their events, the weather location, a media player and its art, the tray items, and notifications (empty at start, kept only in memory) and clipboard history (empty at start but for the pins, which are loaded from `$XDG_STATE_HOME/kanade/clipboard-pins` at start and so count in the first sample, a pinned picture in full; ADR 0115; a picture the Clipboard Surface showed also has its preview file on tmpfs, `$XDG_RUNTIME_DIR/kanade-clipboard/<pid>`, RAM that RSS misses, and its decoded thumbnail; ADR 0114). To include cold cache and slab, as on a first start after boot, drop the caches before starting the shell: `sync; echo 3 | sudo tee /proc/sys/vm/drop_caches`.
 
+## Shared emoji font, and a hide cleanup that was dropped
+
+The Emoji Surface and the runtime's text faces both read the color emoji font (`NotoColorEmoji.ttf`, 10.23 MiB here) and kept their own copy. They now share the runtime's cached bytes (`font_file_bytes`), which saves the duplicate 10 MiB of font. Measured after the Emoji Surface was used, three fresh runs against three: RSS 11 MiB lower and anonymous memory (with `VmSwap`) about 20 MiB lower, the ranges not overlapping.
+
+A hide-time cleanup of each layer window's GPU caches (images, glyph pictures, then also the spare textures, painted scenes and atlas) was tried and dropped. Past the font it showed no measurable RSS win, and where it freed the window-size textures, the painted scenes and the atlas, the first frame after a reopen cost about 4 ms more (a Banner reopening) and 5 to 7 MiB of fresh RSS, because the next show makes them again.
+
+- `drm-total` falls only when a whole GPU block empties. While a layer is hidden its swapchain and the shared Vello pool stay allocated, so the GPU buffers of a hidden Annotation or Region (about 168 to 172 MiB) did not move.
+- Run a build under test from disk, not from tmpfs `/tmp`: a copy on tmpfs inflates or shrinks the resident text by about 7 MiB, and made a fresh start look 9 MiB worse than the same binary on disk.
+- Count `VmSwap` with anonymous memory; one run's anonymous memory varies by about 6 MiB, so compare several.
+
+Open, not traced or not fixed:
+
+- The Calendar's first use adds about 100 MiB of heap, and its cause is unresolved.
+- The moving wallpaper's memory stays after it is stopped and hidden.
+- A `kanade dmenu` selection in the detached Launcher returns "the Launcher did not open". It is older than this change.
+- A "wrong configure serial" protocol error ends the shell on repeated layer unmap and remap. It is older than this change and is in the previous binary too.
+- The Welcome and Auth windows cannot be rendered under Umbriel, so they were not measured.
+
 ## Baseline, two monitors
 
 2026-10-20, `main` at 65480a0, release build, files cached. Two monitors: eDP-1 1920x1080 at 144 Hz and HDMI-A-5 1280x1024 at 60.02 Hz, both scale 1. No Kanade config file, calendars or Google Calendar events, weather location, or media player; one tray host (blueman). One run in a fresh transient unit. The shell drew with Intel UHD Graphics (ADL-S GT0.5, Vulkan, integrated GPU). `kanade.service` was restored after the run.

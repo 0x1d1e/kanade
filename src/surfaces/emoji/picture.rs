@@ -4,13 +4,12 @@
  */
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{LazyLock, Mutex};
 
 use fontconfig::Fontconfig;
-use kanade_runtime::{MutexExt, request_frame};
+use kanade_runtime::{MutexExt, font_file_bytes, request_frame};
 use rustybuzz::ttf_parser::{GlyphId, RasterImageFormat};
 use rustybuzz::{Face, UnicodeBuffer};
 
@@ -52,7 +51,7 @@ static REQUESTS: LazyLock<Option<SyncSender<&'static str>>> = LazyLock::new(|| {
 static FACE: LazyLock<Option<Face<'static>>> = LazyLock::new(|| {
     let (bytes, index) = font()?;
 
-    Face::from_slice(Box::leak(bytes.into_boxed_slice()), index)
+    Face::from_slice(bytes, index)
 });
 
 // `emoji`'s picture, rasterized the first time it is asked for
@@ -117,13 +116,13 @@ fn drawn(emoji: &str) -> Option<PathBuf> {
 }
 
 // the font fontconfig picks for emoji, and which of the file's fonts it is
-fn font() -> Option<(Vec<u8>, u32)> {
+fn font() -> Option<(&'static [u8], u32)> {
     let found = Fontconfig::new()?.find("emoji", None).ok()?;
 
     // fontconfig keeps a variable font's named style in the upper half, the file only knows the lower
     let index = found.index.unwrap_or(0) as u32 & 0xffff;
 
-    match fs::read(&found.path) {
+    match font_file_bytes(&found.path) {
         Ok(bytes) => Some((bytes, index)),
         Err(error) => {
             eprintln!("kanade: failed to read {}: {error}", found.path.display());

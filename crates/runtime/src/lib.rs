@@ -38,7 +38,9 @@ pub use allocator::limit as limit_allocator;
 pub use animation::{Animation, Blend, Easing, request_frame};
 pub use app::App;
 pub use full::Full;
-pub use graphics::font::{install as install_face, installed as installed_face};
+pub use graphics::font::{
+    install as install_face, installed as installed_face, read_file as font_file_bytes,
+};
 pub use graphics::image::{
     Bitmap, Format as ImageFormat, ImageState, MOST_PIXELS, decode as decode_image, draw_svg,
     format as image_format,

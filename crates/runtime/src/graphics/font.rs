@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use fontconfig::{CharSet, Fontconfig, Pattern, UnicodeCoverage};
@@ -17,7 +18,7 @@ static LOADED: LazyLock<Mutex<HashMap<String, &'static Face<'static>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // font files read from disk, cached forever so faces in the same file share the bytes
-static FILES: LazyLock<Mutex<HashMap<String, &'static [u8]>>> =
+static FILES: LazyLock<Mutex<HashMap<PathBuf, &'static [u8]>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // the font found for each letter, none when no installed font has it
@@ -135,7 +136,7 @@ fn open_family(family: &str, style: Option<&str>) -> Option<Face<'static>> {
     // a .ttc file holds several fonts, the index says which one
     let index = found.index.unwrap_or(0) as u32;
 
-    open(&found.path.to_string_lossy(), index)
+    open(&found.path, index)
 }
 
 // the font the fontconfig crate carries, so text draws even when no file can be read
@@ -145,8 +146,8 @@ fn built_in() -> Face<'static> {
     Face::parse(&[], 0).expect("failed to parse the built-in font")
 }
 
-fn open(path: &str, index: u32) -> Option<Face<'static>> {
-    let bytes = read_file(path)?;
+fn open(path: &Path, index: u32) -> Option<Face<'static>> {
+    let bytes = read_file(path).ok()?;
 
     // fontconfig keeps a variable font's named style in the upper half, the file only knows the lower
     let face_index = index & 0xffff;
@@ -154,19 +155,21 @@ fn open(path: &str, index: u32) -> Option<Face<'static>> {
     Face::parse(bytes, face_index).ok()
 }
 
-fn read_file(path: &str) -> Option<&'static [u8]> {
+/// Font file bytes kept for the process lifetime, shared with the runtime's text faces.
+/// A failed read is returned to the caller and can be tried again.
+pub fn read_file(path: &Path) -> std::io::Result<&'static [u8]> {
     let mut files = FILES.locked();
 
     if let Some(bytes) = files.get(path) {
-        return Some(*bytes);
+        return Ok(*bytes);
     }
 
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = std::fs::read(path)?;
     let bytes: &'static [u8] = Vec::leak(bytes);
 
-    files.insert(String::from(path), bytes);
+    files.insert(path.to_path_buf(), bytes);
 
-    Some(bytes)
+    Ok(bytes)
 }
 
 // the font that has this letter: the text's own font first, then a fallback
@@ -300,7 +303,7 @@ fn load_file(path: &str, index: u32) -> Option<&'static Face<'static>> {
         return Some(face);
     }
 
-    let face = Box::leak(Box::new(open(path, index)?));
+    let face = Box::leak(Box::new(open(Path::new(path), index)?));
 
     loaded.insert(key, face);
 
@@ -327,18 +330,18 @@ mod tests {
         let found = fontconfig
             .find("sans-serif", None)
             .expect("sans-serif font should exist");
-        let path = found.path.to_string_lossy();
+        let path = &found.path;
 
-        let first = open(&path, 0).expect("first face should open");
-        let second = open(&path, 0).expect("second face should open");
+        let first = open(path, 0).expect("first face should open");
+        let second = open(path, 0).expect("second face should open");
 
         assert!(std::ptr::eq(first.raw_face().data, second.raw_face().data));
 
-        let cached = read_file(&path).expect("cached bytes should exist");
+        let cached = crate::font_file_bytes(&found.path).expect("cached bytes should exist");
         assert!(std::ptr::eq(first.raw_face().data, cached));
 
         if ttf_parser::fonts_in_collection(first.raw_face().data).unwrap_or(0) > 1 {
-            let other = open(&path, 1).expect("second face in collection should open");
+            let other = open(path, 1).expect("second face in collection should open");
             assert!(std::ptr::eq(first.raw_face().data, other.raw_face().data));
         }
     }
