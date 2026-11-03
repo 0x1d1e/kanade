@@ -95,9 +95,9 @@ On Arch Linux and derivatives, the script installs dependencies, clones `main` a
 curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 ```
 
-For existing niri setups or selective installs, pass options after `sh -s --`:
+For existing niri or Umbriel setups or selective installs, pass options after `sh -s --`:
 
-- `--shell-only`: Installs Kanade without the desktop packages, and does not install a niri config.
+- `--shell-only`: Installs Kanade without the desktop packages; a missing niri config is installed only with `--niri` or `--sddm`.
 - `--yes`: Accepted for compatibility.
 - `--optional`: Installs optional feature packages and enables Bluetooth, UPower, and power-profiles-daemon services.
 - `--ref REF`: Builds that branch or tag instead of `main`.

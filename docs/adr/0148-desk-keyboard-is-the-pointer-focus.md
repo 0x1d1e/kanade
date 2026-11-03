@@ -9,15 +9,17 @@ ADR 0137 deferred a keyboard story for the Desk itself: a ring on the layer, rea
 ## Decision
 
 - **The Desk stays `Layer::Bottom`, `Zone::Ignore`, and `Keyboard::None`**, except while the pointer is on a drawn control, a note is being typed, or a face is held by its handle. Then it is `Keyboard::OnDemand`, and never `Exclusive`.
-- **A ring, when one is built, visits only the media buttons that can act** (`media/previous`, `media/play-pause`, `media/next`), on that same `OnDemand` focus the pointer already obtained. It does not take a key while a note is being typed. Escape during a drag still restores the place ([ADR 0143](0143-desk-faces-move-by-their-handle.md)) and is not the ring's.
+- **The ring visits only the media buttons that can act** (`media/previous`, `media/play-pause`, `media/next`), on that same `OnDemand` focus the pointer already obtained. It does not take a key while a note is being typed. Escape during a drag still restores the place ([ADR 0143](0143-desk-faces-move-by-their-handle.md)) and is not the ring's.
 - **A keybind or a Launcher verb does not focus the Desk.** Leaving the ring, or the keyboard leaving the window, returns the window to `Keyboard::None`. The compositor gives the window below its focus back. Kanade does not call `focus_window` for it. `focus_toplevel` in `island/service.rs` is niri-only and must not be copied here.
 - **Read-only faces are not ring targets:** the clock, the weather, the agenda and the track title. Drag handles are holds, not ring targets; ADR 0143 keeps them out of `kanade ui`. Private titles stay behind `desk.agenda_titles` and `desk.media_titles`. Click-through outside drawn controls is unchanged.
 - **No new idle frame.** The ring draws on the key that already wakes the window. The overview still hides the Desk on both compositors.
 - **Not in this slice.** Focusing the Desk from a Launcher verb or a niri or Umbriel bind. A ring over notes, handles, or read-only faces. `Keyboard::Exclusive`.
 
-## Later slice
+## Implementation and acceptance
 
-Not built here. With the pointer already over the media row, `desk.media` on and a player that can act: the first Left/Right only draws the ring on a button and presses nothing; the next Enter runs that button's existing `media::request`; Escape clears the ring and the next character types into the window below. A note being typed and a drag in progress are unchanged. E2E on the user's session, niri and Umbriel. Not a unit test of geometry.
+Implemented in `4532a93` (`src/desk/ring.rs`). With the pointer already over the media row, `desk.media` on and a player that can act: the first Left/Right only draws the ring on a button and presses nothing; later Left/Right moves it, skipping disabled buttons; Enter or Space runs that button's existing `media::request`; Escape clears the ring and drops the keyboard ask so the next character can type into the window below. A note being typed and a drag in progress take their keys first.
+
+**NOT RUN (live):** niri and Umbriel Bottom-layer `OnDemand` focus, navigation and transport, disabled-button skipping, Escape returning typing to the window below, notes/drag precedence, click-through and no extra idle frames. These need E2E on the user's session, not a unit test of geometry.
 
 ## Consequences
 
