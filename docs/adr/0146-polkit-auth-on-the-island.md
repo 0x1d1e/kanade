@@ -24,7 +24,7 @@ A prompt is outside text and a password at once. What polkit and PAM say is not 
 
 ## Consequences
 
-- The `polkit` Module is on unless turned off, needs only the core, and registers on start.
-- Registration is refused while another polkit agent holds this session, and stderr says so once. The shipped niri config and installer add no agent of their own, so this is now only a session that starts one itself; Kanade's prompt shows once that agent exits and polkitd takes Kanade.
+- The `polkit` Module is on unless turned off, needs only the core, and registers on start. **Current compositor limit:** prompt placement reads niri's focused output (`sources/polkit.rs`, `open_prompt`), so Auth does not open under Umbriel. Umbriel sessions should retain an external authentication agent and turn this Module off; no Umbriel Auth support is claimed here.
+- Registration is refused while another polkit agent holds this session, and stderr says why. The attached subscription retries with backoff from 250 ms to at most 30 s between attempts. Under niri, stop the competing agent and wait for registration; a shell restart is not required. The shipped niri config and installer add no external agent.
 - **The `BeginAuthentication` argument layout, the identity array and the user name are verified** against polkit 128 on 2026-10-30 by a real request that ended in a granted authorization.
 - Nothing waits on the Island forever: three tries, the session lock, a closed prompt, or 30 minutes with nothing typed each end a request as not authorized.

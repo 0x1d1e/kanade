@@ -10,11 +10,11 @@ The curl URL fetches the script from `main`. On Arch Linux and derivatives it in
 
 Packages are not installed with `pacman -S`. The script uses `paru` if it is on PATH, otherwise `yay` if that is already on PATH, as the user, with `--needed --noconfirm`. If neither is on PATH, it runs `sudo pacman -S --needed paru` and then uses that paru. If pacman cannot install paru, it stops. It does not build paru with makepkg, and it does not publish an AUR package. The script prints `helper: paru`, `helper: yay`, or `helper: none` for what they found.
 
-A fresh TTY install still adds niri with its portal, the GPU's Vulkan driver, audio, fonts, kitty, qt6ct and awww for Kanade's default random wallpaper, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Kanade is the session's polkit authentication agent itself (ADR 0146); the installer does not add polkit-gnome. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY. Run it again to update. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
+A fresh TTY install still adds niri with its portal, the GPU's Vulkan driver, audio, fonts, kitty, qt6ct and awww for Kanade's default random wallpaper, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Under niri, Kanade is the session's polkit authentication agent itself (ADR 0146); the installer does not add polkit-gnome. Under Umbriel, retain an external agent and turn Kanade's `polkit` Module off as described below. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY. Run it again to update. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
 
 - `--shell-only` installs Kanade without the desktop packages, for a niri or Umbriel desktop you already have. It does not install a niri config unless you also choose Niri (`--niri`) or SDDM (`--sddm`); those install the default config only when yours is missing. Explicit Niri or SDDM installs also include awww; pure shell-only without either omits it.
-- `--no-niri` skips the niri package and does not write a niri config, even on a desktop install. `--sddm` still installs the niri package.
-- `--niri` installs the niri package without the rest of the desktop packages. With `--shell-only` it also installs the default niri config when yours is missing.
+- `--no-niri` skips automatic niri package selection and does not write a niri config, even on a desktop install. Explicit `--niri` or `--sddm` still installs the package; only `--sddm` also overrides the config skip.
+- `--niri` explicitly selects the niri package; it does not disable the default desktop package set. Use `--shell-only --niri` to omit that set while installing niri, awww and the default niri config when yours is missing (unless `--no-niri` also skips that config).
 - `--sddm` installs `sddm`, `qt6-declarative` and `qt6-5compat` with the helper, and `niri` if that package is not already being installed. After `~/.cargo/bin/kanade` is in place, the script creates the root-owned overlay and the user-owned data directory, runs `kanade sddm setup` as root and `kanade sddm sync` as you, and writes `/etc/sddm.conf.d/zz-kanade.conf` only when `metadata.desktop` is there and the file differs. That file sets `[Theme]` only. It does not turn `sddm.sync` on. A login screen of niri writes `/etc/sddm.conf.d/zy-kanade-greeter.conf` and a root-owned `/usr/local/share/kanade-sddm/niri-greeter.kdl`, separate from the theme file. keep writes neither and deletes nothing. If `sddm.service` is not already enabled, the script removes a `display-manager.service` symlink that points elsewhere, disables an enabled `gdm`, `lightdm`, `lxdm`, `greetd` or `plasmalogin`, and runs `systemctl enable sddm` with no `--now`. It does not start SDDM. If `sddm` is already enabled, other display managers are left alone and the theme is still refreshed. A failed step stops, and SDDM is not pointed at a theme that was not installed.
 - `--sddm-greeter keep|niri` chooses that login screen with `--sddm`. Without it, `--sddm` uses niri on a hybrid NVIDIA machine and keep otherwise.
 - `--yes` is accepted for compatibility.
@@ -80,6 +80,13 @@ layer-rule {
 Only one Kanade runs per session. A second one stops at start with `failed to listen: kanade is already running`.
 
 ## Umbriel
+
+Kanade's Auth Surface is currently niri-only: its prompt placement needs niri's focused output. Keep an external polkit authentication agent such as polkit-gnome under Umbriel. Disable Kanade's agent with `kanade module disable polkit`, then restart Kanade through your existing Umbriel startup method so the change applies. Before first start, the equivalent in Kanade's `config.toml` is:
+
+```toml
+[modules]
+polkit = false
+```
 
 Install Umbriel separately; `scripts/install` does not install its package. Use `--shell-only` for an existing desktop, or `--no-niri` to keep the desktop packages while skipping niri. The installer also copies `dist/umbriel/config.toml` to `$XDG_CONFIG_HOME/umbriel/config.toml` (default `~/.config/umbriel/config.toml`) when missing, including on a shell-only install, and keeps an existing file.
 
