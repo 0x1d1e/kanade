@@ -1831,12 +1831,9 @@ usage key
             },
         }],
         start: |app| {
-            lock::relock();
+            let app = lock::prepare(app);
             sleep::spawn();
-
-            // the layout in use shows in the password field; a hint, which the lock never needs
-            niri::on_keyboard(lock::keyboard);
-            app.window_per_monitor(lock::scene)
+            app
         },
     },
     /*

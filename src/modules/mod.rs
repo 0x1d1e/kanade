@@ -1,9 +1,11 @@
 //! Modules (docs/archived/design.md Modules): every feature the user can turn off. A Module names the
 //! Modules it requires and those it can do without; `resolve` decides once at start which run, and
 //! `start` starts only those. A Module that is off starts no thread, opens no window, reads no
-//! Service and refuses its verbs, so the Services only it reads stay cold. Turning one on or
-//! off takes a restart, since the runtime registers windows only at start. `kanade module` lists
-//! them and turns one on or off in the settings file, saying what the restart will change.
+//! Service and refuses its verbs, so the Services only it reads stay cold. An inherited Umbriel
+//! lock is restored even with `lock` off, until its confirmed end restarts a fully disabled child.
+//! Turning one on or off takes a restart, since the runtime registers windows only at start.
+//! `kanade module` lists them and turns one on or off in the settings file, saying what the restart
+//! will change.
 
 use std::sync::OnceLock;
 
@@ -354,19 +356,13 @@ pub fn start(mut app: App) -> App {
     let modules = MODULES.get_or_init(|| resolve(ALL, |name| config::get().off(name)));
     appearance::sync(&config::get());
 
-    for module in ALL {
-        let state = modules.state(module.name).expect("every module resolved");
-
-        if let Some(problem) = state.problem(module.name) {
-            eprintln!("kanade: {problem}");
-        }
-
-        match (state, module.warns) {
-            (State::On { .. }, _) => app = (module.start)(app),
-            (_, Some(warning)) => eprintln!("kanade: module {} is off: {warning}", module.name),
-            (_, None) => {}
-        }
-    }
+    app = activate(
+        app,
+        ALL,
+        modules,
+        crate::recovery::relock(),
+        crate::lock::prepare,
+    );
 
     // after every Module has taken the window and screenshot events it hears, so none is missed
     match crate::sources::compositor::Compositor::current() {
@@ -381,6 +377,38 @@ pub fn start(mut app: App) -> App {
     }
     if modules.on("wallpaper") {
         wallpaper::look_for_appearance();
+    }
+
+    app
+}
+
+// Dispatch startup after resolution, separately from compositor following and the runtime.
+fn activate(
+    mut app: App,
+    all: &[Module],
+    modules: &Modules,
+    inherited: bool,
+    restore: impl FnOnce(App) -> App,
+) -> App {
+    // A persisted disable cannot discard the lock the surviving parent asks us to restore.
+    // Keep the Module off (including its verbs and sleep handling); only finish that old lock.
+    if inherited && !modules.on("lock") {
+        eprintln!("kanade: restoring the existing lock before disabling the lock module");
+        app = restore(app);
+    }
+
+    for module in all {
+        let state = modules.state(module.name).expect("every module resolved");
+
+        if let Some(problem) = state.problem(module.name) {
+            eprintln!("kanade: {problem}");
+        }
+
+        match (state, module.warns) {
+            (State::On { .. }, _) => app = (module.start)(app),
+            (_, Some(warning)) => eprintln!("kanade: module {} is off: {warning}", module.name),
+            (_, None) => {}
+        }
     }
 
     app
@@ -518,6 +546,64 @@ mod tests {
 
     fn states(modules: &Modules) -> Vec<(&'static str, State)> {
         modules.states.clone()
+    }
+
+    #[test]
+    fn persisted_lock_disable_cannot_suppress_inherited_recovery() {
+        use std::cell::RefCell;
+        use std::fs;
+
+        thread_local! {
+            static STARTED: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+        }
+
+        let all = [
+            Module {
+                start: |app| {
+                    STARTED.with_borrow_mut(|started| started.push("island"));
+                    app
+                },
+                ..module(CORE, &[])
+            },
+            Module {
+                start: |app| {
+                    STARTED.with_borrow_mut(|started| started.push("lock and sleep"));
+                    app
+                },
+                ..module("lock", &[CORE])
+            },
+        ];
+        let path =
+            std::env::temp_dir().join(format!("kanade-lock-disable-{}.toml", std::process::id()));
+
+        // The running shell can still lock after `module disable lock` writes the next config.
+        // Each row is a fresh child, reading the persisted setting before startup dispatch.
+        for (enabled, inherited, expected) in [
+            (false, true, vec!["restore existing lock", "island"]),
+            (false, false, vec!["island"]),
+            (true, true, vec!["island", "lock and sleep"]),
+            (true, false, vec!["island", "lock and sleep"]),
+        ] {
+            fs::write(&path, format!("[modules]\nlock = {enabled}\n")).unwrap();
+            let table = config::settings_table(&fs::read_to_string(&path).unwrap()).unwrap();
+            let mut config = config::Config::default();
+            assert!(config::apply_table(&mut config, &table).is_empty());
+            let modules = resolve(&all, |name| config.off(name));
+            assert_eq!(modules.on("lock"), enabled);
+            STARTED.with_borrow_mut(Vec::clear);
+            activate(App::new(), &all, &modules, inherited, |app| {
+                STARTED.with_borrow_mut(|started| started.push("restore existing lock"));
+                app
+            });
+            STARTED.with_borrow(|started| assert_eq!(*started, expected));
+            assert_eq!(
+                modules.on("lock"),
+                enabled,
+                "recovery must not enable lock verbs"
+            );
+        }
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

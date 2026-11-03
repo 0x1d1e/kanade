@@ -527,6 +527,14 @@ fn locked(session: &str) -> Option<bool> {
     }
 }
 
+// The connection and scenes needed to restore an existing lock, without starting sleep handling
+// or enabling lock verbs. A disabled Module uses this only for inherited Umbriel lock intent.
+pub fn prepare(app: kanade_runtime::App) -> kanade_runtime::App {
+    relock();
+    crate::sources::niri::on_keyboard(keyboard);
+    app.window_per_monitor(scene)
+}
+
 /*
  * at start, before the shell runs: starts the lock screen's connection, and a session logind still
  * counts as locked was locked by a shell that died, so this one locks it again. niri refuses while
@@ -711,6 +719,12 @@ fn heard(news: News) {
     // a definite refusal/end, never a connection loss. Older news cannot clear newer intent.
     if requests.clears_recovery(news) {
         crate::recovery::checkpoint(false);
+        if crate::recovery::relock() && !modules::on("lock") {
+            // The parent has acknowledged the end. Its next child starts with no inherited lock
+            // and keeps the disabled Module entirely cold, including its registered scenes.
+            eprintln!("kanade: recovered lock ended; restarting with the lock module disabled");
+            process::exit(0);
+        }
     }
     requests.heard(news);
     let locked = requests.locked;
@@ -1014,6 +1028,75 @@ fn say(requests: &Requests) {
 mod tests {
     use super::*;
     use kanade_lock::stage::{Stage, Step};
+
+    // Disposable private child: no compositor, locker, runtime, bus or real config is started.
+    #[test]
+    fn disabled_recovery_fixture() {
+        let Ok(end) = env::var("KANADE_DISABLED_LOCK_FIXTURE") else {
+            return;
+        };
+        crate::recovery::enter_child().unwrap();
+        assert!(crate::recovery::relock());
+        assert!(!modules::on("lock"));
+        let request = requests().request();
+        heard(match end.as_str() {
+            "unlock" => News::Unlocked(request),
+            "refusal" => News::Finished(request),
+            _ => panic!("unknown fixture end"),
+        });
+        panic!("a completed recovery with lock disabled must exit for the next child");
+    }
+
+    #[test]
+    fn disabled_lock_recovery_exits_only_after_parent_acknowledges_its_end() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsFd, OwnedFd};
+        use std::os::unix::net::UnixStream;
+        use std::process::{Command, Stdio};
+
+        for end in ["unlock", "refusal"] {
+            let (mut parent, child) = UnixStream::pair().unwrap();
+            parent
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            parent
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut child = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "lock::tests::disabled_recovery_fixture",
+                    "--nocapture",
+                ])
+                .env("KANADE_DISABLED_LOCK_FIXTURE", end)
+                .stdin(Stdio::from(OwnedFd::from(child)))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            parent.write_all(b"L").unwrap();
+            let mut byte = [0];
+            parent.read_exact(&mut byte).unwrap();
+            assert_eq!(&byte, b"A");
+            parent.read_exact(&mut byte).unwrap();
+            assert_eq!(&byte, b"U");
+            let stopped = crate::clock::process_fd(child.id()).unwrap();
+            assert!(
+                !crate::clock::wait_readable(&[stopped.as_fd()], Some(Duration::from_millis(50)))
+                    .unwrap()[0],
+                "the child exited before its clear was acknowledged"
+            );
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "the clear still needs an ack"
+            );
+            parent.write_all(b"A").unwrap();
+            assert!(
+                child.wait().unwrap().success(),
+                "{end} must finish recovery"
+            );
+        }
+    }
 
     #[test]
     fn recovery_intent_outlives_password_acceptance_and_ignores_stale_news() {
