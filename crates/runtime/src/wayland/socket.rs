@@ -232,9 +232,25 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};
 
+    /*
+     * the queue and the reader slots are the process's, so a test takes this turn. A reader still
+     * ends on its own thread after the test that started it has what it came for, so the turn
+     * is handed on only once every slot is back
+     */
     fn the_queue_turn() -> MutexGuard<'static, ()> {
         static CALLS: Mutex<()> = Mutex::new(());
-        CALLS.lock().unwrap_or_else(|error| error.into_inner())
+        let turn = CALLS.lock().unwrap_or_else(|error| error.into_inner());
+
+        let start = Instant::now();
+        while READER_SLOTS.available() != READERS {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "readers of an earlier test did not end"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        turn
     }
 
     /*

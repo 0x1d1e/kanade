@@ -677,9 +677,16 @@ pub fn follow() {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::Mutex;
     use std::thread;
 
+    use kanade_runtime::MutexExt;
+
     use super::*;
+
+    // `Subscriptions` is the process's: a worker publishes its feeds there, so the tests that drive
+    // one and read them back take turns
+    static PUBLISHING: Mutex<()> = Mutex::new(());
 
     const FEED: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n";
 
@@ -860,6 +867,8 @@ mod tests {
     // a restart offline still finds it
     #[test]
     fn a_failing_feed_keeps_its_last_good_copy() {
+        let _turn = PUBLISHING.locked();
+
         let dir = std::env::temp_dir().join(format!("kanade-subscriptions-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let (url, _) = serve(vec![
@@ -909,6 +918,8 @@ mod tests {
 
     #[test]
     fn concurrent_fetch_results_preserve_feed_order_and_survive_feed_removal() {
+        let _turn = PUBLISHING.locked();
+
         let now = Instant::now();
         let mut worker = Worker::new(agent(false), None);
         let mut entry1 = worker.entry("https://a.example.org/feed.ics", now);

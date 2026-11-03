@@ -1336,6 +1336,8 @@ mod tests {
      */
     #[test]
     fn only_an_answer_lets_the_next_request() {
+        let _island = crate::island::service::ISLAND_TURN.locked();
+
         let refusing = logind(Some((
             None,
             "org.freedesktop.login1.BlockedByInhibitorLock",

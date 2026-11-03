@@ -1794,6 +1794,13 @@ impl IslandService {
     }
 }
 
+/*
+ * the island is the process's: a test that opens a Surface on it, or reads which one is open, shares
+ * it with every other, so those take this turn
+ */
+#[cfg(test)]
+pub(crate) static ISLAND_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;

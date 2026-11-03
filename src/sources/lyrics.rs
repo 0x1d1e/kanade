@@ -900,6 +900,10 @@ mod tests {
 
     use super::*;
 
+    // `CURRENT` is the process's: a worker that resolves puts its lyrics there, and `line` reads
+    // them back, so the tests that do both take turns
+    static LOADED_TURN: Mutex<()> = Mutex::new(());
+
     fn wanted(mode: LyricsSource, url: &str) -> Wanted {
         Wanted::new(
             mode,
@@ -1206,6 +1210,8 @@ mod tests {
 
     #[test]
     fn a_worker_finds_beside_then_cache_then_asks_once() {
+        let _turn = LOADED_TURN.locked();
+
         let dir = scratch("worker");
         let (url, asked) = serve(vec![answer(
             "200 OK",
@@ -1291,6 +1297,8 @@ mod tests {
 
     #[test]
     fn lrclib_answers_strip_bidi_and_control_characters() {
+        let _turn = LOADED_TURN.locked();
+
         let (url, _asked) = serve(vec![answer(
             "200 OK",
             "",
@@ -1314,6 +1322,8 @@ mod tests {
 
     #[test]
     fn a_paused_track_finds_local_beside_and_cached_lyrics() {
+        let _turn = LOADED_TURN.locked();
+
         let dir = scratch("paused");
         let (url, _asked) = serve(vec![answer(
             "200 OK",

@@ -756,7 +756,7 @@ mod tests {
         assert!(store.damaged());
 
         // and such a file is kept aside, not dropped on the next save
-        let dir = temporary("hostile");
+        let dir = temporary("tiny");
         let path = dir.join("clipboard-pins");
 
         fs::write(&path, &bytes).unwrap();

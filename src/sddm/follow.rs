@@ -262,6 +262,23 @@ mod tests {
         assert_eq!(pending.submit("/d.png".into()), Some(2));
     }
 
+    /*
+     * flock stays with every copy of the open file. A process another test is starting holds one
+     * from its fork until its exec, so a lock this test already dropped can still be taken for
+     * that long. A holder on this call does not let go while this waits, so the bound still fails
+     * when the lock is kept across the ask
+     */
+    fn wait_until_free(file: &fs::File, why: &str) {
+        let start = std::time::Instant::now();
+        while file.try_lock().is_err() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "{why}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn writers_of_the_overlay_take_turns() {
         let root = std::env::temp_dir().join(format!("kanade-sddm-flock-{}", std::process::id()));
@@ -281,7 +298,7 @@ mod tests {
         ));
 
         drop(first);
-        assert!(second.try_lock().is_ok());
+        wait_until_free(&second, "the lock was not released");
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -312,9 +329,9 @@ mod tests {
         let done = refresh(&w, follows, &source, || {
             asked.set(asked.get() + 1);
             let held = fs::OpenOptions::new().append(true).open(&lock).unwrap();
-            assert!(
-                held.try_lock().is_ok(),
-                "the overlay's lock is not held while niri is asked for the size"
+            wait_until_free(
+                &held,
+                "the overlay's lock is not held while niri is asked for the size",
             );
 
             (16, 16)

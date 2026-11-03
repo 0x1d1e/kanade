@@ -1683,10 +1683,12 @@ mod tests {
 
     const TEST: &str = "test";
 
-    // `Adding` and the island are one global Service each, so tests that write them take this in turn
+    // `Adding` and the island are one global Service each, so tests that write them take this in turn;
+    // the island's is the one every test that opens a Surface on it takes
     fn field_tests() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+        crate::island::service::ISLAND_TURN
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     // pressing a day wrote the Browse it still held a read of, which hung the UI thread for good

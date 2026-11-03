@@ -363,7 +363,15 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
+
+    // `RegionOverlay` is one global Service, so the tests that open, drag and close it take turns
+    fn overlay_turn() -> MutexGuard<'static, ()> {
+        static TURN: Mutex<()> = Mutex::new(());
+        TURN.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
 
     #[test]
     fn drag_normalization_handles_any_drag_direction() {
@@ -460,6 +468,8 @@ mod tests {
 
     #[test]
     fn cancel_when_inactive_quiets_write() {
+        let _turn = overlay_turn();
+
         close();
         assert_eq!(RegionOverlay::read().serial, None);
         assert_eq!(RegionOverlay::read().drag, None);
@@ -471,6 +481,8 @@ mod tests {
 
     #[test]
     fn drag_update_when_inactive_quiets_write_and_ignores_event() {
+        let _turn = overlay_turn();
+
         close();
         assert_eq!(RegionOverlay::read().serial, None);
 
@@ -480,6 +492,8 @@ mod tests {
 
     #[test]
     fn overlay_state_transitions_open_drag_and_close() {
+        let _turn = overlay_turn();
+
         close();
         assert_eq!(RegionOverlay::read().serial, None);
         assert_eq!(RegionOverlay::read().drag, None);

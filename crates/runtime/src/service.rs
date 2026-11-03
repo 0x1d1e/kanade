@@ -262,6 +262,14 @@ fn keep_listening<S: Service>() {
     }
 }
 
+/*
+ * `derive` takes every pending write, and running a view calls it and clears the moving status, so
+ * the tests that call either take turns: one that derives while another has writes pending would
+ * run their watchers on its own thread and return before they were done
+ */
+#[cfg(test)]
+pub(crate) static DERIVING: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
@@ -289,9 +297,6 @@ mod tests {
 
         fn listen() {}
     }
-
-    // `derive` takes every pending write, so the tests that call it take turns
-    static DERIVING: Mutex<()> = Mutex::new(());
 
     static SEEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
