@@ -30,7 +30,7 @@ use crate::config::{self, Config};
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::modules;
-use crate::sources::{dictation, recording, sleep, wallpaper_moving};
+use crate::sources::{dictation, polkit, recording, sleep, wallpaper_moving};
 
 mod keyboard;
 mod password;
@@ -573,7 +573,8 @@ pub fn relock() {
             );
         }
         if let Ok(locker) = started {
-            request_lock(&mut requests(), locker);
+            let auth = polkit::lock_onset();
+            request_lock(&mut requests(), locker, &auth);
         }
     }
 }
@@ -623,7 +624,8 @@ pub fn start() -> Result<u64, String> {
 
     let locker = locker()?;
 
-    Ok(request_lock(&mut requests(), locker))
+    let auth = polkit::lock_onset();
+    Ok(request_lock(&mut requests(), locker, &auth))
 }
 
 // answers `later` once the request `number` settles, on a thread of its own as niri may take a while
@@ -679,7 +681,7 @@ fn locker() -> Result<&'static Locker, String> {
 }
 
 // asks niri for a lock, or keeps the one held, and hands back the request's number
-fn request_lock(requests: &mut Requests, locker: &Locker) -> u64 {
+fn request_lock(requests: &mut Requests, locker: &Locker, _auth: &polkit::LockOnset) -> u64 {
     // The surviving parent acknowledges intent before anything can ask the compositor to lock.
     // A crash from here through confirmation/unlock therefore always starts a replacement locker.
     crate::recovery::checkpoint(true);
@@ -747,6 +749,7 @@ pub fn holds() -> bool {
 // Private subprocess fixtures can exercise pending-lock gates without contacting a locker.
 #[cfg(test)]
 pub(crate) fn pending_fixture() {
+    let _auth = polkit::lock_onset();
     let mut requests = requests();
     requests.request();
     say(&requests);
@@ -881,14 +884,19 @@ fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
 
     let locker = locker()?;
     let deadline = Instant::now() + patience;
-    let mut requests = requests();
     let mut asked = None;
-
-    // decided before this asks, under the requests: a lock held already, or an unlock on its way,
-    // is not one this lock may open
-    let mut grace = grace.filter(|_| requests.graceable());
+    let mut first = true;
+    let mut grace = grace;
 
     loop {
+        // Match input/helper lock ordering, and never retain Auth's guard while waiting on news.
+        let auth = polkit::lock_onset();
+        let mut requests = requests();
+        // A lock held already, or an unlock on its way, is not one this lock may open.
+        if first {
+            grace = grace.filter(|_| requests.graceable());
+            first = false;
+        }
         match requests.next(asked) {
             Next::Done => {
                 if let (Some(grace), Some(asked)) = (grace, asked) {
@@ -901,7 +909,7 @@ fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
                 if asked.is_some() {
                     grace = None;
                 }
-                asked = Some(request_lock(&mut requests, locker));
+                asked = Some(request_lock(&mut requests, locker, &auth));
                 continue;
             }
             Next::Denied => {
@@ -917,10 +925,13 @@ fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
             return Err(format!("niri did not lock within {patience:?}"));
         }
 
-        requests = HEARD
-            .wait_timeout(requests, left)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
+        drop(auth);
+        drop(
+            HEARD
+                .wait_timeout(requests, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0,
+        );
     }
 }
 

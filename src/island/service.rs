@@ -118,6 +118,9 @@ pub struct IslandService {
     // from niri; none while unknown or without niri, which counts every monitor as focused
     focused_output: Option<String>,
 
+    // Confirmed compositor focus, without the remembered output used for navigation.
+    confirmed_output: Option<String>,
+
     // from `retime`, else the defaults
     timings: Timings,
 
@@ -238,6 +241,7 @@ impl Service for IslandService {
             arbiter: Arbiter::default(),
             presentations: Presentations::default(),
             focused_output: None,
+            confirmed_output: None,
             timings: Timings::default(),
             sizes: Sizes::default(),
             auto: None,
@@ -433,9 +437,9 @@ impl IslandService {
             .is_none_or(|focused| focused == monitor)
     }
 
-    // the selected compositor's focused output, absent until its event stream names one
-    pub fn focused_output(&self) -> Option<&str> {
-        self.focused_output.as_deref()
+    // The selected compositor's confirmed, present output; never a navigation fallback.
+    pub fn confirmed_output(&self) -> Option<&str> {
+        self.confirmed_output.as_deref()
     }
 
     /*
@@ -449,7 +453,20 @@ impl IslandService {
         overview: bool,
         now: Instant,
     ) -> bool {
-        if focused_output == self.focused_output && overview == self.presentations.overview() {
+        self.set_compositor(focused_output.clone(), focused_output, overview, now)
+    }
+
+    pub fn set_compositor(
+        &mut self,
+        focused_output: Option<String>,
+        confirmed_output: Option<String>,
+        overview: bool,
+        now: Instant,
+    ) -> bool {
+        if focused_output == self.focused_output
+            && confirmed_output == self.confirmed_output
+            && overview == self.presentations.overview()
+        {
             return false;
         }
 
@@ -465,6 +482,7 @@ impl IslandService {
         let was = self.expanded_on().map(str::to_owned);
 
         self.focused_output = focused_output;
+        self.confirmed_output = confirmed_output;
         self.presentations.set_overview(overview);
         self.sync(now);
 

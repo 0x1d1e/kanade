@@ -3,7 +3,7 @@
 //! Subscribes to events from Umbriel (overview, windows, workspaces, keyboard_layout, outputs)
 //! over its unix socket and tracks status in `Umbriel` Service.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -176,6 +176,10 @@ pub struct Umbriel {
     raw_windows: Vec<Json>,
     raw_workspaces: Vec<Json>,
     output_widths: HashMap<String, f64>,
+    // Security prompts require fresh explicit focus on an output in the current snapshot.
+    // seen.focused_output intentionally retains navigation's remembered/first-output fallback.
+    confirmed_output: Option<String>,
+    output_names: BTreeSet<String>,
 }
 
 impl Service for Umbriel {
@@ -575,6 +579,8 @@ fn end_stream() {
     state.raw_windows.clear();
     state.raw_workspaces.clear();
     state.output_widths.clear();
+    state.output_names.clear();
+    state.confirmed_output = None;
     state.workspace_bridge.targets.clear();
     drop(state);
     super::windows::hear_umbriel();
@@ -943,6 +949,31 @@ pub(crate) fn handle_event(event: &Json) {
     apply_event(&mut Umbriel::write(), event);
 }
 
+pub(crate) fn publish_island() {
+    if !super::niri::Niri::read().connected {
+        let (seen, confirmed) = {
+            let state = Umbriel::read();
+            let confirmed = state
+                .confirmed_output
+                .as_ref()
+                .filter(|output| state.output_names.contains(*output))
+                .cloned();
+            (state.seen.clone(), confirmed)
+        };
+        let mut island = crate::island::service::IslandService::write();
+        if !island.set_compositor(
+            seen.focused_output,
+            confirmed,
+            seen.overview,
+            std::time::Instant::now(),
+        ) {
+            island.quiet();
+        }
+        drop(island);
+        super::fullscreen::follow_shown();
+    }
+}
+
 // windows, and the snapshots that re-derive them: workspaces and outputs
 fn dock_event(event: &Json) -> bool {
     matches!(
@@ -982,6 +1013,13 @@ fn apply_event(state: &mut Umbriel, event: &Json) {
                 .as_array()
                 .or_else(|| event.get("windows").and_then(Json::as_array));
             if let Some(windows) = windows {
+                if let Some(output) = windows
+                    .iter()
+                    .find(|window| window.get("active").and_then(Json::as_bool) == Some(true))
+                    .and_then(|window| window.get("output").and_then(Json::as_str))
+                {
+                    state.confirmed_output = Some(output.to_owned());
+                }
                 state.raw_windows = windows.to_vec();
                 update_windows_from_raw(state);
             }
@@ -991,6 +1029,19 @@ fn apply_event(state: &mut Umbriel, event: &Json) {
                 .as_array()
                 .or_else(|| event.get("workspaces").and_then(Json::as_array));
             if let Some(workspaces) = workspaces {
+                if let Some(output) = workspaces
+                    .iter()
+                    .find(|workspace| {
+                        workspace
+                            .get("is_focused")
+                            .or_else(|| workspace.get("focused"))
+                            .and_then(Json::as_bool)
+                            == Some(true)
+                    })
+                    .and_then(|workspace| workspace.get("output").and_then(Json::as_str))
+                {
+                    state.confirmed_output = Some(output.to_owned());
+                }
                 update_workspaces(state, workspaces);
             }
         }
@@ -1017,10 +1068,12 @@ fn apply_event(state: &mut Umbriel, event: &Json) {
                 .or_else(|| event.get("outputs").and_then(Json::as_array));
             if let Some(outputs) = outputs {
                 state.output_widths.clear();
+                state.output_names.clear();
                 let mut focused = None;
                 let mut first = None;
                 for out in outputs {
                     if let Some(name) = out.get("name").and_then(Json::as_str) {
+                        state.output_names.insert(name.to_owned());
                         if first.is_none() {
                             first = Some(name.to_string());
                         }
@@ -1052,6 +1105,7 @@ fn apply_event(state: &mut Umbriel, event: &Json) {
                         }
                     }
                 }
+                state.confirmed_output = focused.clone();
                 if let Some(out) = focused {
                     state.seen.focused_output = Some(out);
                 } else if state.seen.focused_output.is_none() {

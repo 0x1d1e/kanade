@@ -158,17 +158,9 @@ pub const ALL: &[Module] = &[
             service::watch::<Niri>(fullscreen::follow_shown);
 
             // what Umbriel IPC stream says when niri is not connected
-            service::watch::<crate::sources::umbriel::Umbriel>(|| {
-                if !Niri::read().connected {
-                    let seen = crate::sources::umbriel::Umbriel::read().seen.clone();
-                    let mut island = IslandService::write();
-
-                    if !island.set_niri(seen.focused_output, seen.overview, Instant::now()) {
-                        island.quiet();
-                    }
-                    fullscreen::follow_shown();
-                }
-            });
+            service::watch::<crate::sources::umbriel::Umbriel>(
+                crate::sources::umbriel::publish_island,
+            );
 
             // a screenshot niri saved, including one Kanade did not ask for; one the annotation
             // editor asked for opens in it, and its saved notice waits until it closes

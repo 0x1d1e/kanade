@@ -19,7 +19,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -103,6 +103,26 @@ static GIVES_UP: Mutex<Option<i64>> = Mutex::new(None);
 
 // Queue, prompt, visit and helper transitions must finish together across input, bus and workers.
 static LIFECYCLE: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+static INPUT_CHECKED: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+
+// Always acquired before lock::Requests. Lock onset, input mutations and helper password writes
+// share this guard: cancellation is complete before pending lock or a compositor request exists.
+// No Service is touched with the polkit Module cold and no Auth state to cancel.
+pub(crate) struct LockOnset {
+    _lifecycle: MutexGuard<'static, ()>,
+}
+
+pub(crate) fn lock_onset() -> LockOnset {
+    let guard = LockOnset {
+        _lifecycle: LIFECYCLE.locked(),
+    };
+    if !PENDING.locked().is_empty() || ATTEMPTING.locked().is_some() {
+        reset_all();
+    }
+    guard
+}
 
 // Each submission has its own identity, including before its worker connects the helper.
 struct Attempt {
@@ -296,6 +316,10 @@ fn edit(letter: Option<char>) {
     if lock::holds() {
         reset_all();
         return;
+    }
+    #[cfg(test)]
+    if let Some(checked) = INPUT_CHECKED.locked().take() {
+        checked();
     }
     if !showing() {
         return;
@@ -592,7 +616,7 @@ fn open_prompt() {
         island.quiet();
         return;
     }
-    let Some(monitor) = island.focused_output().map(str::to_owned) else {
+    let Some(monitor) = island.confirmed_output().map(str::to_owned) else {
         island.quiet();
         return;
     };
@@ -800,6 +824,16 @@ fn check(id: u64, user: &str, cookie: &str, password: &Zeroizing<String>) -> Res
         return Err(String::from("the polkit helper is not running"));
     };
 
+    converse(id, user, cookie, password, stream)
+}
+
+fn converse(
+    id: u64,
+    user: &str,
+    cookie: &str,
+    password: &Zeroizing<String>,
+    stream: UnixStream,
+) -> Result<(), String> {
     // one stream read and one written, so shutting one does not close the other
     let Ok(writer_stream) = stream.try_clone() else {
         return Err(String::from("the polkit helper took no request"));
@@ -824,6 +858,10 @@ fn check(id: u64, user: &str, cookie: &str, password: &Zeroizing<String>) -> Res
 
     let mut reader = BufReader::new(stream);
     let mut writer = writer_stream;
+    // A helper that stops reading must not indefinitely delay lock onset under LIFECYCLE.
+    writer
+        .set_write_timeout(Some(Duration::from_millis(250)))
+        .map_err(|_| String::from("the polkit helper took no request"))?;
 
     // who is asked, and which request is answered: the cookie polkit gave
     if writeln!(writer, "{user}")
@@ -850,6 +888,18 @@ fn check(id: u64, user: &str, cookie: &str, password: &Zeroizing<String>) -> Res
 
         match message {
             Message::Prompt { .. } => {
+                let _lifecycle = LIFECYCLE.locked();
+                if lock::holds() {
+                    reset_all();
+                    return Err(String::from("authentication cancelled"));
+                }
+                if !ATTEMPTING
+                    .locked()
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.id == id)
+                {
+                    return Err(String::from("authentication cancelled"));
+                }
                 // one field: every prompt takes what was typed, echo or not
                 let mut typed = Zeroizing::new(password.as_str().to_owned());
                 typed.push('\n');
@@ -1144,6 +1194,16 @@ mod tests {
             "same-cookie",
             "overview-direct",
             "displaced",
+            "helper-lock",
+            "helper-cancel",
+            "helper-answer",
+            "lock-edit-race",
+            "producer-missing",
+            "producer-stale",
+            "producer-overview",
+            "producer-cached",
+            "producer-window",
+            "producer-workspace",
         ] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -1209,6 +1269,61 @@ mod tests {
         };
         service::watch::<IslandService>(island_changed);
         service::watch::<lock::Said>(lock_changed);
+        if case.starts_with("producer-") {
+            use super::super::umbriel::{self, Umbriel};
+            service::watch::<Umbriel>(umbriel::publish_island);
+            let event = |event| {
+                umbriel::handle_event(&event);
+                service::derive();
+            };
+            if case == "producer-stale" || case == "producer-cached" {
+                let output = if case == "producer-stale" {
+                    "removed"
+                } else {
+                    "selected"
+                };
+                event(serde_json::json!({"event":"outputs", "data":[
+                    {"name":output, "focused":true}
+                ]}));
+                event(serde_json::json!({"event":"windows", "data":[
+                    {"id":"fixture", "output":output, "active":true}
+                ]}));
+            }
+            event(serde_json::json!({"event":"outputs", "data":[
+                {"name":"selected", "focused":false}
+            ]}));
+            if case == "producer-overview" {
+                event(serde_json::json!({"event":"overview", "open":true}));
+            }
+            enqueue("first");
+            advance();
+            assert_ne!(IslandService::read().surface(), Some(Surface::Auth));
+            for output in ["selected", "removed"] {
+                assert_eq!(IslandService::read().keyboard(output), Keyboard::None);
+            }
+            type_char('x');
+            assert!(Prompt::read().secret.is_empty());
+            match case.as_str() {
+                "producer-window" => event(serde_json::json!({"event":"windows", "data":[
+                    {"id":"fixture", "output":"selected", "active":true}
+                ]})),
+                "producer-workspace" => event(serde_json::json!({"event":"workspaces", "data":[
+                    {"id":"fixture", "output":"selected", "focused":true}
+                ]})),
+                _ => event(serde_json::json!({"event":"outputs", "data":[
+                    {"name":"selected", "focused":true}
+                ]})),
+            }
+            if case == "producer-overview" {
+                assert_ne!(IslandService::read().surface(), Some(Surface::Auth));
+                assert_eq!(IslandService::read().keyboard("selected"), Keyboard::None);
+                event(serde_json::json!({"event":"overview", "open":false}));
+            }
+            visible();
+            cancel();
+            cleared();
+            return;
+        }
         if case == "overview-direct" {
             focus(Some("selected"), true);
             IslandService::write().open("selected", Surface::Auth, Instant::now());
@@ -1254,6 +1369,79 @@ mod tests {
         visible();
         type_char('x');
         assert_eq!(Prompt::read().secret.len(), 1);
+        if case == "lock-edit-race" {
+            use std::sync::mpsc;
+            let (checked, after_check) = mpsc::channel();
+            let (resume, resumed) = mpsc::channel();
+            *INPUT_CHECKED.locked() = Some(Box::new(move || {
+                checked.send(()).unwrap();
+                resumed.recv_timeout(Duration::from_secs(2)).unwrap();
+            }));
+            let editor = thread::spawn(|| type_char('y'));
+            after_check.recv_timeout(Duration::from_secs(2)).unwrap();
+            let (started, starting) = mpsc::channel();
+            let (finished, locked) = mpsc::channel();
+            let locker = thread::spawn(move || {
+                started.send(()).unwrap();
+                lock::pending_fixture();
+                finished.send(()).unwrap();
+            });
+            starting.recv_timeout(Duration::from_secs(2)).unwrap();
+            // Lock onset must wait for the edit that already passed its unlocked check.
+            let early = locked.recv_timeout(Duration::from_millis(100));
+            let held_early = lock::holds();
+            resume.send(()).unwrap();
+            editor.join().unwrap();
+            locker.join().unwrap();
+            assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)));
+            assert!(
+                !held_early,
+                "pending lock overtook an in-flight input mutation"
+            );
+            assert!(lock::holds());
+            cleared();
+            assert_eq!(answers.load(Ordering::SeqCst), 1);
+            return;
+        }
+        if case.starts_with("helper-") {
+            // Pause the real helper conversation after publication of its shutdown socket and
+            // receipt of both header lines. Lock/Cancel then precedes PAM's password request,
+            // without service derivation or a late settle() standing in for the external write.
+            let (socket, peer) = UnixStream::pair().unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut peer = BufReader::new(peer);
+            active(55, None);
+            Prompt::write().checking = true;
+            let worker = thread::spawn(move || {
+                converse(55, "fixture", "first", &Zeroizing::new("x".into()), socket)
+            });
+            let mut line = String::new();
+            peer.read_line(&mut line).unwrap();
+            assert_eq!(line, "fixture\n");
+            line.clear();
+            peer.read_line(&mut line).unwrap();
+            assert_eq!(line, "first\n");
+            match case.as_str() {
+                "helper-lock" => lock::pending_fixture(),
+                "helper-cancel" => cancel(),
+                _ => {}
+            }
+            let _ = peer
+                .get_mut()
+                .write_all(b"PAM_PROMPT_ECHO_OFF Password:\nFAILURE\n");
+            line.clear();
+            peer.read_line(&mut line).unwrap();
+            assert!(worker.join().unwrap().is_err());
+            if case == "helper-answer" {
+                assert_eq!(line, "x\n", "the unlocked conversation sends the answer");
+                cancel();
+            } else {
+                assert!(line.is_empty(), "a cancelled helper received a password");
+            }
+            cleared();
+            assert_eq!(answers.load(Ordering::SeqCst), 1);
+            return;
+        }
         if case == "outcomes" {
             active(1, None);
             settle(1, "first", Err("Wrong password".into()));
