@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::input::{KeyHandler, LostHandler};
+use crate::input::{KeyHandler, LostHandler, ReadyHandler};
 use crate::{Full, Key, Widget};
 
 pub struct LayerWindow {
@@ -28,6 +28,7 @@ pub struct LayerWindow {
     pub(crate) root: Option<Box<dyn Widget>>,
 
     pub(crate) on_key: Option<KeyHandler>,
+    pub(crate) on_keyboard_ready: Option<ReadyHandler>,
 
     // keys only arrive while the window is focused, so this says when they stop
     pub(crate) on_lost: Option<LostHandler>,
@@ -209,6 +210,14 @@ impl LayerWindow {
         self
     }
 
+    // Called on keyboard enter and after a shown redraw while focused, once on_key is installed.
+    // This confirms compositor ownership; requesting Keyboard::Exclusive alone does not.
+    pub fn on_keyboard_ready(mut self, handler: impl Fn() + 'static) -> Self {
+        self.on_keyboard_ready = Some(Rc::new(handler));
+
+        self
+    }
+
     // the keyboard focus left the window, as a click elsewhere or another window taking it does
     pub fn on_lost(mut self, handler: impl Fn() + 'static) -> Self {
         self.on_lost = Some(Rc::new(handler));
@@ -256,6 +265,7 @@ impl LayerWindowNeedsHeight {
             root: None,
 
             on_key: None,
+            on_keyboard_ready: None,
 
             on_lost: None,
         }

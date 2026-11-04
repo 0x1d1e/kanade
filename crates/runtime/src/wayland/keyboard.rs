@@ -25,6 +25,9 @@ impl KeyboardHandler for WaylandState {
         _: &[Keysym],
     ) {
         self.keyboard_focus = Some(surface.clone());
+        if let Some(window) = self.window(surface) {
+            window.keyboard_ready.enter();
+        }
     }
 
     fn leave(
@@ -36,6 +39,9 @@ impl KeyboardHandler for WaylandState {
         _: u32,
     ) {
         self.keyboard_focus = None;
+        if let Some(window) = self.window(surface) {
+            window.keyboard_ready.leave();
+        }
         self.modifiers = Modifiers::default();
         if KeyboardState::read().caps_lock {
             *KeyboardState::write() = KeyboardState::default();

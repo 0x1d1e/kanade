@@ -54,6 +54,7 @@ mod destinations;
 pub mod detached;
 mod provider;
 pub mod quicklinks;
+pub mod ready;
 mod units;
 pub mod web;
 pub mod windows;
@@ -789,6 +790,7 @@ pub fn start() {
     service::watch::<clipboard::Clipboard>(forget);
     service::watch::<config::Reloads>(forget);
     service::watch::<IslandService>(choose::follow);
+    service::watch::<IslandService>(ready::follow);
     fit();
 }
 

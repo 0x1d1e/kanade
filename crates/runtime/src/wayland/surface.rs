@@ -10,7 +10,7 @@ use wayland_client::{
 
 use crate::changes::Reads;
 use crate::graphics::Gpu;
-use crate::input::{KeyHandler, LostHandler, Pointer};
+use crate::input::{KeyHandler, LostHandler, Pointer, ReadyHandler};
 use crate::{InputArea, LayerWindow, Monitor, Widget, Window};
 
 use super::{
@@ -49,6 +49,7 @@ pub struct OpenWindow {
     // both come from the last drawn view, so input matches what is on screen
     pub pointer: Pointer,
     pub on_key: Option<KeyHandler>,
+    pub keyboard_ready: super::ready::KeyboardReady,
 
     // the keyboard left this window, which a window that only stands while focused closes on
     pub on_lost: Option<LostHandler>,
@@ -124,18 +125,14 @@ pub enum Content {
 impl OpenWindow {
     // a size of 0 leaves the choice to the window, which then keeps the size it asked for
     pub fn resize(&mut self, width: u32, height: u32) {
-        let (asked_width, asked_height) = self.asked_size();
-
-        self.width = match width {
-            0 => asked_width,
-            width => width,
+        let visible = !matches!(&self.role, Role::Layer { settings, .. } if !settings.visible);
+        let Some((width, height)) = configured_size(visible, self.asked_size(), (width, height))
+        else {
+            return;
         };
 
-        self.height = match height {
-            0 => asked_height,
-            height => height,
-        };
-
+        self.width = width;
+        self.height = height;
         self.redraw();
     }
 
@@ -151,6 +148,26 @@ impl OpenWindow {
             Role::Normal { size, .. } => *size,
         }
     }
+}
+
+fn configured_size(visible: bool, asked: (u32, u32), configured: (u32, u32)) -> Option<(u32, u32)> {
+    // A configure sent before unmapping can arrive after hide zeroed the dimensions. Restoring
+    // them would make reopening await a frame callback on an unmapped surface forever.
+    if !visible {
+        return None;
+    }
+    Some((
+        if configured.0 == 0 {
+            asked.0
+        } else {
+            configured.0
+        },
+        if configured.1 == 0 {
+            asked.1
+        } else {
+            configured.1
+        },
+    ))
 }
 
 impl Role {
@@ -222,6 +239,7 @@ impl View {
 pub struct Parts {
     pub root: Option<Box<dyn Widget>>,
     pub on_key: Option<KeyHandler>,
+    pub on_keyboard_ready: Option<ReadyHandler>,
     pub on_lost: Option<LostHandler>,
 }
 
@@ -240,11 +258,13 @@ impl Content {
             Content::Layer(window) => Parts {
                 root: window.root,
                 on_key: window.on_key,
+                on_keyboard_ready: window.on_keyboard_ready,
                 on_lost: window.on_lost,
             },
             Content::Normal(window) => Parts {
                 root: window.root,
                 on_key: window.on_key,
+                on_keyboard_ready: None,
                 on_lost: window.on_lost,
             },
         }
@@ -258,6 +278,21 @@ mod tests {
     use super::*;
     use crate::service::Service;
     use crate::unpoisoned::MutexExt;
+
+    #[test]
+    fn canceled_open_ignores_late_configure_until_reopened() {
+        let asked = (568, 448);
+        let mut size = (0, 0); // hide resets the drawable size before the first configure arrives
+        for configured in [(568, 448), (600, 480)] {
+            if let Some(next) = configured_size(false, asked, configured) {
+                size = next;
+            }
+        }
+        assert_eq!(size, (0, 0)); // request_frame must redraw immediately while unmapped
+
+        size = configured_size(true, asked, (0, 480)).unwrap();
+        assert_eq!(size, (568, 480)); // the configure for the new opening is accepted
+    }
 
     #[derive(Default)]
     struct NormalTestState;

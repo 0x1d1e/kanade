@@ -126,8 +126,10 @@ impl WaylandState {
         let focused = self.keyboard_focus.take();
 
         let lost = focused.as_ref().and_then(|surface| {
-            self.window(surface)
-                .and_then(|window| window.on_lost.clone())
+            self.window(surface).and_then(|window| {
+                window.keyboard_ready.leave();
+                window.on_lost.clone()
+            })
         });
 
         self.modifiers = crate::Modifiers::default();

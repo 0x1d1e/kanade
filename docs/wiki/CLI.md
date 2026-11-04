@@ -1,6 +1,10 @@
 # CLI
 
-`kanade` with no verb runs the shell. `kanade <verb> [args]` asks the running one:
+`kanade` with no verb runs the shell. `kanade <verb> [args]` asks the running one.
+
+A Launcher opening (`launcher open`, or `launcher toggle` when closed) waits for keyboard focus and its key handler before answering success, in both styles. Typing immediately after the command returns goes to the Launcher. If the Launcher cannot open (for example, during the compositor's overview), or that opening closes or is replaced first, the command refuses. A toggle that closes it succeeds immediately; an unconfirmed focus wait ends with exit 3 after at most 5 seconds.
+
+The verbs:
 
 | Verb | Does |
 |---|---|

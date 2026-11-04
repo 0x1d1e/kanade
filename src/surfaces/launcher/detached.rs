@@ -81,6 +81,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .child(super::surface(&monitor.name, visit, rec));
 
     let name = monitor.name.clone();
+    let ready_on = monitor.name.clone();
 
     LayerWindow::new()
         .width(shape.width + 2.0 * SHADOW)
@@ -98,6 +99,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .on_key(move |key| {
             key_press(&name, visit, key);
         })
+        .on_keyboard_ready(move || super::ready::confirm(&ready_on, visit))
         .on_lost(close)
         .child(body)
 }

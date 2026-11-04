@@ -22,7 +22,7 @@ use crate::dock;
 use crate::island::activity::{Lifetime, Priority};
 use crate::island::arbiter::SATELLITES;
 use crate::island::geometry::{self, Rect};
-use crate::island::presentation::{Content, Input, Presentation};
+use crate::island::presentation::{Content, Input, Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::look::{Anchor, Merge};
 use crate::merge;
@@ -307,6 +307,10 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .as_ref()
         .is_some_and(|shell| shell.form == Merge::Fold);
     let pressed = monitor.name.clone();
+    let ready_on = monitor.name.clone();
+    let ready_visit = island.visit();
+    let launcher_open =
+        island.presentation(&monitor.name) == Presentation::Expanded(Surface::Launcher);
 
     let (holder, room) = form_holder(
         &island,
@@ -444,6 +448,11 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .blur(pane::blurred(blur_shown.then_some(pane_body), (0.0, 0.0)))
         .keyboard(keyboard)
         .on_key(move |key| self::key(&pressed, key))
+        .on_keyboard_ready(move || {
+            if launcher_open {
+                surfaces::launcher::ready::confirm(&ready_on, ready_visit);
+            }
+        })
         // empty under niri's overview, so the pointer reaches the overview beneath
         .input_region(if island.overview() { vec![] } else { reach })
         .child(

@@ -42,6 +42,9 @@ impl OpenWindow {
             _ => name,
         };
 
+        // An unconfigured or hidden window cannot promise its next view's key handler yet.
+        self.keyboard_ready.drawn(None);
+
         // whether a layer change still needs a commit, which only the frame below would make
         let changed = self.update_surface(&content);
 
@@ -99,6 +102,9 @@ impl OpenWindow {
         let drawn = Instant::now();
 
         let presented = self.present(frame.renderer);
+
+        self.keyboard_ready
+            .drawn(self.on_key.as_ref().and(parts.on_keyboard_ready));
 
         /*
          * the frame is on screen, so its time is measured; the wait below frees what it held and

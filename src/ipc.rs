@@ -50,6 +50,8 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
     };
 
     match call {
+        // A Launcher opening is usable only after its host confirms keyboard ownership.
+        Ok(Call::Island(command)) => island_reply(command, reply),
         // answered once the user chooses or dismisses it, so the client waits on the user
         Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
         // answered once the user has picked or left niri's picker, so the client waits on the user
@@ -96,6 +98,10 @@ pub fn draws(arguments: &[String]) -> Draws {
 
         // the overlay window, which `gesture::window` draws, appears from hidden or fades
         Call::Gesture(gesture::Request::Draw | gesture::Request::Record(_)) => true,
+
+        // The readiness reply needs the current host's callback even if an already open Launcher
+        // resolved without a Service change. Switching Surface while focused sends no new enter.
+        Call::Island(Command::Open(Surface::Launcher) | Command::Toggle(Surface::Launcher)) => true,
 
         // a Surface shown at once
         Call::Osd(_) => true,
@@ -154,8 +160,6 @@ pub fn draws(arguments: &[String]) -> Draws {
 
 fn run(call: Call) -> Reply {
     match call {
-        Call::Island(command) => island(command),
-
         // handed to the timer's thread, which posts its Activity itself
         Call::Timer(request) => {
             timer::request(request);
@@ -167,7 +171,8 @@ fn run(call: Call) -> Reply {
         // opens the overlay or answers from the state file; the user's stroke is no answer to this
         Call::Gesture(request) => gesture::run(request),
         // `answer` keeps these waiting
-        Call::Dmenu(_)
+        Call::Island(_)
+        | Call::Dmenu(_)
         | Call::Record(_)
         | Call::Caffeine(_)
         | Call::Dictate(_)
@@ -281,7 +286,7 @@ fn status() -> Vec<String> {
     lines
 }
 
-fn island(command: Command) -> Reply {
+fn island_reply(command: Command, reply: IpcReply) {
     // the Weather Surface opens only from a verb; one asked to open wants a forecast that is not
     // old, as after a suspend (`weather::opened`). A toggle that closes it asks too, harmlessly,
     // as only an old forecast is fetched. Another way to open it must ask as well
@@ -291,8 +296,42 @@ fn island(command: Command) -> Reply {
 
     // its own statement, so the read is released before the write; a write wakes every window
     // even when nothing changed, so only a real change writes
-    let effect = IslandService::read().resolve(command);
+    let effect = IslandService::read().resolve(command.clone());
+    let opens_launcher = launcher_opening(&command, &effect);
+    let answer = apply_island(effect);
+    let answer = if opens_launcher && matches!(answer, Reply::Done(_)) {
+        let opening = launcher_visit(&IslandService::read());
+        match opening {
+            Ok((monitor, visit)) => {
+                launcher::ready::wait(monitor, visit, Later::new(reply));
+                return;
+            }
+            Err(refused) => refused,
+        }
+    } else {
+        answer
+    };
+    reply.send(&answer.encode());
+}
 
+fn launcher_opening(
+    command: &Command,
+    effect: &Result<Option<Effect>, crate::island::service::NoFocus>,
+) -> bool {
+    matches!(
+        command,
+        Command::Open(Surface::Launcher) | Command::Toggle(Surface::Launcher)
+    ) && !matches!(effect, Ok(Some(Effect::Collapse(_))))
+}
+
+fn launcher_visit(island: &IslandService) -> Result<(String, u64), Reply> {
+    island
+        .open_launcher_on()
+        .map(|monitor| (monitor, island.visit()))
+        .ok_or_else(|| Reply::Refused(String::from("the Launcher did not open")))
+}
+
+fn apply_island(effect: Result<Option<Effect>, crate::island::service::NoFocus>) -> Reply {
     match effect {
         Ok(Some(Effect::Dnd(dnd))) => notifications::set_dnd(dnd, Instant::now()),
         Ok(Some(effect)) => {
@@ -328,5 +367,54 @@ fn config(outcome: Outcome, valid: &str) -> Reply {
             "invalid, the config in effect stays:\n{}",
             problems.join("\n")
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::island::presentation::LauncherStyle;
+
+    #[test]
+    fn launcher_no_effect_open_is_refused_but_toggle_close_succeeds() {
+        let now = Instant::now();
+        let monitor = "eDP-1";
+        for style in [LauncherStyle::Island, LauncherStyle::Detached] {
+            let mut island = IslandService::new();
+            island.set_launcher_style(style);
+            island.set_compositor(Some(monitor.into()), Some(monitor.into()), true, now);
+
+            for command in [
+                Command::Open(Surface::Launcher),
+                Command::Toggle(Surface::Launcher),
+            ] {
+                let effect = island.resolve(command.clone());
+                assert!(matches!(effect, Ok(None)));
+                assert!(launcher_opening(&command, &effect));
+                assert!(matches!(apply_island(effect), Reply::Done(_)));
+                // The actual IPC reply gate must refuse that successful domain no-op.
+                assert_eq!(
+                    launcher_visit(&island),
+                    Err(Reply::Refused("the Launcher did not open".into()))
+                );
+            }
+
+            island.set_compositor(Some(monitor.into()), Some(monitor.into()), false, now);
+            let open = Command::Open(Surface::Launcher);
+            let effect = island.resolve(open.clone());
+            assert!(launcher_opening(&open, &effect));
+            island.apply(effect.unwrap().unwrap(), now);
+            assert_eq!(
+                launcher_visit(&island),
+                Ok((monitor.into(), island.visit()))
+            );
+
+            let close = Command::Toggle(Surface::Launcher);
+            let effect = island.resolve(close.clone());
+            assert!(matches!(effect, Ok(Some(Effect::Collapse(_)))));
+            assert!(!launcher_opening(&close, &effect));
+            island.apply(effect.unwrap().unwrap(), now);
+            assert!(island.open_launcher_on().is_none());
+        }
     }
 }

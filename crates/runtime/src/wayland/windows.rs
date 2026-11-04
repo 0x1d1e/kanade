@@ -87,6 +87,7 @@ impl WaylandState {
 
             pointer: Pointer::default(),
             on_key: None,
+            keyboard_ready: super::ready::KeyboardReady::default(),
             on_lost: None,
 
             gpu,
@@ -241,6 +242,9 @@ impl WaylandState {
         }
 
         self.keyboard_focus = None;
+        if let Some(window) = self.window(surface) {
+            window.keyboard_ready.leave();
+        }
         self.modifiers = Modifiers::default();
 
         focus::clear();

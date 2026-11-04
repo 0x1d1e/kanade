@@ -9,6 +9,7 @@ mod layer;
 mod normal;
 mod output;
 mod pointer;
+mod ready;
 mod redraw;
 mod scale;
 mod seat;
