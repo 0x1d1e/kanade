@@ -1185,6 +1185,7 @@ mod tests {
             "cancel-head",
             "cancel-tail",
             "escape",
+            "space-input",
             "outcomes",
             "lock",
             "lock-deferred",
@@ -1367,6 +1368,31 @@ mod tests {
             service::derive();
         }
         visible();
+        if case == "space-input" {
+            use crate::surfaces::auth;
+            use kanade_runtime::Key;
+
+            for key in [
+                Key::Character('a'),
+                Key::Space,
+                Key::Character('x'),
+                Key::Backspace,
+                Key::Character('b'),
+            ] {
+                assert!(auth::key("selected", key));
+            }
+            assert!(Prompt::read().secret().plaintext() == "a b");
+
+            // Input cannot change a password while its helper is checking it.
+            Prompt::write().checking = true;
+            assert!(auth::key("selected", Key::Space));
+            assert!(Prompt::read().secret().plaintext() == "a b");
+            assert!(auth::key("selected", Key::Escape));
+            cleared();
+            assert_eq!(answers.load(Ordering::SeqCst), 1);
+            assert!(!auth::key("selected", Key::Space));
+            return;
+        }
         type_char('x');
         assert_eq!(Prompt::read().secret.len(), 1);
         if case == "lock-edit-race" {

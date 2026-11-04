@@ -82,6 +82,7 @@ pub(crate) fn key(_monitor: &str, key: Key) -> bool {
 
     match key {
         Key::Character(letter) => polkit::type_char(letter),
+        Key::Space => polkit::type_char(' '),
         Key::Backspace => polkit::erase(),
         Key::Enter => polkit::submit(),
         Key::Escape => polkit::cancel(),
