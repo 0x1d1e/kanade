@@ -83,6 +83,19 @@ pub struct Modifiers {
     pub logo: bool,
 }
 
+// Observed keyboard lock state, published only by the existing Wayland modifier events.
+// Unknown (including after keyboard leave) is quiet; no guessed Caps Lock warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyboardState {
+    pub caps_lock: bool,
+}
+
+impl crate::service::Service for KeyboardState {
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
 // where the pointer is, measured from a widget's top-left corner
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Point {

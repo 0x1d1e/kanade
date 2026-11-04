@@ -79,6 +79,108 @@ pub fn field(secret: &Secret, width: f32, placeholder: &str) -> Rectangle {
         )
 }
 
+// Auth's fixed field lane. Wi-Fi keeps its existing field and input behavior above.
+pub fn auth(
+    secret: &Secret,
+    width: f32,
+    focused: bool,
+    checking: bool,
+    failed: bool,
+    caps: bool,
+) -> Rectangle {
+    let colors = theme::island();
+    let caps = caps && !checking;
+    let caps_width = if caps { 76.0 } else { 0.0 };
+    let room = width - 36.0 - 18.0 - 12.0 - CARET - caps_width;
+    let mut copy: Vec<Box<dyn Widget>> = Vec::new();
+    if !checking && focused {
+        copy.push(Box::new(
+            Rectangle::new()
+                .width(CARET)
+                .height(20.0)
+                .fill(colors.on_surface),
+        ));
+    }
+    if checking || secret.is_empty() {
+        copy.push(Box::new(
+            Text::new(if checking {
+                "Input unavailable"
+            } else {
+                "Password"
+            })
+            .size(if checking {
+                text::LABEL
+            } else {
+                text::BODY_LARGE
+            })
+            .color(colors.on_surface_variant)
+            .elide(),
+        ));
+    } else {
+        let count = visible(
+            secret.len(),
+            |text| matches!(text.width(), Size::Fixed(n) if n <= room),
+        );
+        copy.clear();
+        copy.push(Box::new(dots(count)));
+        if focused {
+            copy.push(Box::new(
+                Rectangle::new()
+                    .width(CARET)
+                    .height(20.0)
+                    .fill(colors.on_surface),
+            ));
+        }
+    }
+    let copy = Rectangle::new()
+        .width(room + CARET)
+        .height(24.0)
+        .align_child(Start, Center)
+        .clip()
+        .child(Row::new(copy).gap(2.0).align(Center));
+    let mut row: Vec<Box<dyn Widget>> = vec![
+        Box::new(Icon::Lock.on(18.0, colors.on_surface_variant)),
+        Box::new(copy),
+    ];
+    if caps {
+        row.push(Box::new(
+            Text::new("Caps Lock")
+                .size(text::LABEL_SMALL)
+                .color(colors.on_surface_variant),
+        ));
+    }
+    let border = if failed {
+        theme::signals().critical
+    } else if focused {
+        colors.on_surface
+    } else {
+        colors.outline
+    };
+    Rectangle::new()
+        .width(width)
+        .height(52.0)
+        .radius(26.0)
+        .fill(colors.surface_container)
+        .border(if focused && !checking { 2.0 } else { 1.0 }, border)
+        .padding(Padding {
+            top: 0.0,
+            right: 18.0,
+            bottom: 0.0,
+            left: 18.0,
+        })
+        .align_child(Start, Center)
+        .semantics(move || {
+            Semantics::new(Role::TextInput, "password")
+                .secret()
+                .focused(focused && !checking)
+                .disabled(checking)
+        })
+        .on_click(super::on_left(|| {
+            crate::sources::polkit::focus(crate::sources::polkit::Focus::Password)
+        }))
+        .child(Row::new(row).gap(12.0).align(Center))
+}
+
 // a dot per character typed
 fn dots(count: usize) -> Text {
     Text::new("\u{2022}".repeat(count))

@@ -392,6 +392,13 @@ pub const PAD: Shape = Shape {
     radius: CONTROLS.radius,
 };
 
+// Auth keeps its field, status and actions in fixed lanes in every authentication state.
+pub const AUTH: Shape = Shape {
+    width: 440.0,
+    height: 280.0,
+    radius: 32.0,
+};
+
 // the Tray Surface's body: items and menus are short lines, so it is narrower than Controls
 pub const TRAY_LIST: Shape = Shape {
     width: 320.0,
@@ -531,7 +538,7 @@ impl Sizes {
 }
 
 // every shape a body morphs between; a bouncy spring overshoots them, `bounded` keeps it in
-pub const SHAPES: [Shape; 11] = [
+pub const SHAPES: [Shape; 12] = [
     REST,
     COMPACT,
     SPLIT,
@@ -540,6 +547,7 @@ pub const SHAPES: [Shape; 11] = [
     UPRIGHT_TRAY,
     CONTROLS,
     PAD,
+    AUTH,
     TRAY_LIST,
     MEDIA,
     CALENDAR,
@@ -593,8 +601,9 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
         }
         Presentation::Expanded(Surface::Controls | Surface::Weather) => CONTROLS,
         Presentation::Expanded(
-            Surface::Session | Surface::Timer | Surface::Capture | Surface::Window | Surface::Auth,
+            Surface::Session | Surface::Timer | Surface::Capture | Surface::Window,
         ) => PAD,
+        Presentation::Expanded(Surface::Auth) => AUTH,
         Presentation::Expanded(Surface::Tray) => TRAY_LIST,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Calendar) => CALENDAR,

@@ -6,7 +6,8 @@ use wayland_client::{
     protocol::{wl_keyboard::WlKeyboard, wl_surface::WlSurface},
 };
 
-use crate::input::{focus, paste, released};
+use crate::input::{KeyboardState, focus, paste, released};
+use crate::service::Service;
 use crate::{Key, Modifiers};
 
 use super::WaylandState;
@@ -36,6 +37,9 @@ impl KeyboardHandler for WaylandState {
     ) {
         self.keyboard_focus = None;
         self.modifiers = Modifiers::default();
+        if KeyboardState::read().caps_lock {
+            *KeyboardState::write() = KeyboardState::default();
+        }
 
         // keys stop arriving, so no text input can stay focused, and no key is held
         focus::clear();
@@ -100,6 +104,9 @@ impl KeyboardHandler for WaylandState {
         _: RawModifiers,
         _: u32,
     ) {
+        if KeyboardState::read().caps_lock != modifiers.caps_lock {
+            KeyboardState::write().caps_lock = modifiers.caps_lock;
+        }
         self.modifiers = Modifiers {
             shift: modifiers.shift,
             ctrl: modifiers.ctrl,

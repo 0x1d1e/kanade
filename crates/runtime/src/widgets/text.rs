@@ -68,6 +68,13 @@ impl Text {
         self
     }
 
+    // Like word wrapping, but oversized tokens (e.g. an action ID) also fit the available width.
+    pub fn wrap_anywhere(mut self) -> Self {
+        self.rules.wrap = true;
+        self.rules.break_words = true;
+        self
+    }
+
     pub fn elide(mut self) -> Self {
         self.rules.elide = true;
 

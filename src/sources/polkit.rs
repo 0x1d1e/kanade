@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::MutexExt;
 use kanade_runtime::service::{self, Service};
+use kanade_runtime::{Key, MutexExt};
 use zeroize::Zeroizing;
 
 use super::secret::Secret;
@@ -67,7 +67,8 @@ const MOST: usize = 4;
 
 // how long a message or note may be before it is cut and elided: both say what outside programs
 // said, and what they said is not trusted with the screen
-const MOST_MESSAGE: usize = 120;
+const MOST_MESSAGE: usize = 4096;
+const MOST_ACTION: usize = 512;
 
 // at most as many characters a password may hold here, far more than PAM itself takes
 const MOST_SECRET: usize = 256;
@@ -85,6 +86,7 @@ struct Caller {
 struct Request {
     cookie: String,
     message: String,
+    action: String,
     user: String,
     tries: usize,
 
@@ -143,19 +145,70 @@ static REGISTERED: Mutex<Option<(u64, String)>> = Mutex::new(None);
 static TIMER: OnceLock<Option<Arc<WallTimer>>> = OnceLock::new();
 
 // what polkit asks, whose password is typed, what is typed, what failed, whether the helper runs
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Prompt {
     message: String,
+    action: String,
     user: String,
     secret: Secret,
     note: Option<String>,
     checking: bool,
+    tries: usize,
+    focus: Focus,
+    details: bool,
+    scroll: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Focus {
+    #[default]
+    Password,
+    Cancel,
+    Authenticate,
+    Details,
+    DetailsBody,
 }
 
 impl Prompt {
-    // what polkit's words say, cut to one line
+    // Sanitized request text, bounded independently of the two-line summary.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn action(&self) -> &str {
+        &self.action
+    }
+    pub fn checking(&self) -> bool {
+        self.checking
+    }
+    pub fn can_submit(&self) -> bool {
+        !self.checking && !self.details && !self.secret.is_empty()
+    }
+    pub fn tries(&self) -> usize {
+        self.tries
+    }
+    pub fn focus(&self) -> Focus {
+        self.focus
+    }
+    pub fn details(&self) -> bool {
+        self.details
+    }
+    pub fn scroll(&self) -> f32 {
+        self.scroll
+    }
+
+    fn targets(&self) -> Vec<Focus> {
+        let mut targets = vec![Focus::Details];
+        if self.details {
+            targets.push(Focus::DetailsBody);
+        } else if !self.checking {
+            targets.push(Focus::Password);
+        }
+        targets.push(Focus::Cancel);
+        if self.can_submit() && !self.details {
+            targets.push(Focus::Authenticate);
+        }
+        targets
     }
 
     // whose password is typed
@@ -283,12 +336,13 @@ pub fn submit() {
     let password = {
         let mut prompt = Prompt::write();
 
-        if prompt.checking || prompt.secret.is_empty() {
+        if !prompt.can_submit() {
             return;
         }
 
         prompt.checking = true;
         prompt.note = None;
+        prompt.focus = Focus::Cancel;
 
         Zeroizing::new(prompt.secret.plaintext().to_owned())
     };
@@ -326,7 +380,7 @@ fn edit(letter: Option<char>) {
     }
     let mut prompt = Prompt::write();
 
-    if prompt.checking {
+    if prompt.checking || prompt.details || prompt.focus != Focus::Password {
         return;
     }
 
@@ -340,6 +394,102 @@ fn edit(letter: Option<char>) {
 
     drop(prompt);
     refresh_timer(true);
+}
+
+// Pointer focus and disclosure are input mutations too; stale frames and a lock cannot act.
+pub fn focus(target: Focus) {
+    let _lifecycle = LIFECYCLE.locked();
+    if lock::holds() {
+        reset_all();
+        return;
+    }
+    if !showing() {
+        return;
+    }
+    let mut prompt = Prompt::write();
+    if prompt.targets().contains(&target) {
+        prompt.focus = target;
+    }
+}
+
+pub fn details() {
+    let _lifecycle = LIFECYCLE.locked();
+    if lock::holds() {
+        reset_all();
+        return;
+    }
+    if !showing() {
+        return;
+    }
+    let mut prompt = Prompt::write();
+    prompt.details = !prompt.details;
+    prompt.focus = Focus::Details;
+    prompt.scroll = 0.0;
+}
+
+pub fn scroll(by: f32, maximum: f32) {
+    let _lifecycle = LIFECYCLE.locked();
+    if lock::holds() {
+        reset_all();
+        return;
+    }
+    if !showing() {
+        return;
+    }
+    let mut prompt = Prompt::write();
+    if prompt.details {
+        prompt.scroll = (prompt.scroll + by).clamp(0.0, maximum.max(0.0));
+    }
+}
+
+// All keys stay in Auth. Space types only in the field, and presses a focused action elsewhere.
+pub fn key(key: Key, maximum_scroll: f32) {
+    if key == Key::Escape {
+        cancel();
+        return;
+    }
+    let target = {
+        let _lifecycle = LIFECYCLE.locked();
+        if lock::holds() {
+            reset_all();
+            return;
+        }
+        if !showing() {
+            return;
+        }
+        let mut prompt = Prompt::write();
+        let targets = prompt.targets();
+        if matches!(key, Key::Tab | Key::BackTab)
+            || (matches!(key, Key::Up | Key::Down | Key::Left | Key::Right)
+                && prompt.focus != Focus::DetailsBody)
+        {
+            let at = targets
+                .iter()
+                .position(|target| *target == prompt.focus)
+                .unwrap_or(0);
+            let back = matches!(key, Key::BackTab | Key::Up | Key::Left);
+            prompt.focus = targets[(at + if back { targets.len() - 1 } else { 1 }) % targets.len()];
+            return;
+        }
+        prompt.focus
+    };
+    match (target, key) {
+        (Focus::Password, Key::Character(letter)) => type_char(letter),
+        (Focus::Password, Key::Space) => type_char(' '),
+        (Focus::Password, Key::Backspace) => erase(),
+        (Focus::Password | Focus::Authenticate, Key::Enter) | (Focus::Authenticate, Key::Space) => {
+            submit()
+        }
+        (Focus::Cancel, Key::Enter | Key::Space) => cancel(),
+        (Focus::Details, Key::Enter | Key::Space) => details(),
+        (Focus::DetailsBody, Key::Down) => scroll(24.0, maximum_scroll),
+        (Focus::DetailsBody, Key::Up) => scroll(-24.0, maximum_scroll),
+        (Focus::DetailsBody, Key::PageDown | Key::Space) => scroll(140.0, maximum_scroll),
+        (Focus::DetailsBody, Key::PageUp) => scroll(-140.0, maximum_scroll),
+        (Focus::DetailsBody, Key::Home) => scroll(-f32::MAX, maximum_scroll),
+        (Focus::DetailsBody, Key::End) => scroll(f32::MAX, maximum_scroll),
+        _ => {}
+    }
 }
 
 // what polkit reads, whatever this request's fate
@@ -377,7 +527,7 @@ fn answer(method: Method) {
 fn begin(method: Method) {
     let arguments = method.arguments();
 
-    let (cookie, message, identities) = layout(arguments);
+    let (cookie, message, action, identities) = layout(arguments);
     let cookie = cookie.to_owned();
 
     let Some(caller) = caller() else {
@@ -432,6 +582,7 @@ fn begin(method: Method) {
     PENDING.locked().push(Request {
         cookie,
         message,
+        action,
         user: user.unwrap(),
         tries: TRIES,
         answer: Some(answer),
@@ -444,10 +595,11 @@ fn begin(method: Method) {
 
 // BeginAuthentication's arguments, polkit's `(sss@a{ss}sa(sa{sv}))`: the message second, the
 // cookie fifth and the identities sixth
-fn layout(arguments: &[Value]) -> (&str, String, &Value) {
+fn layout(arguments: &[Value]) -> (&str, String, String, &Value) {
     (
         arguments.get(4).map_or("", Value::text),
         clamp(arguments.get(1).map_or("", Value::text), MOST_MESSAGE),
+        clamp(arguments.first().map_or("", Value::text), MOST_ACTION),
         arguments.get(5).unwrap_or(&Value::Nothing),
     )
 }
@@ -546,6 +698,7 @@ fn advance() {
             (
                 request.cookie.clone(),
                 request.message.clone(),
+                request.action.clone(),
                 request.user.clone(),
             )
         })
@@ -554,13 +707,16 @@ fn advance() {
     let showing = showing();
 
     match head {
-        Some((_cookie, message, user)) => {
+        Some((_cookie, message, action, user)) => {
             let prompt = Prompt {
                 message,
+                action,
                 user,
                 secret: Secret::default(),
                 note: None,
                 checking: false,
+                tries: TRIES,
+                ..Prompt::default()
             };
 
             set_prompt(prompt);
@@ -802,10 +958,11 @@ fn retry(why: String, tries: usize) {
     let mut prompt = Prompt::write();
     prompt.checking = false;
     prompt.secret = Secret::default();
-    prompt.note = Some(format!(
-        "{why}, {tries} tr{} left",
-        if tries == 1 { "y" } else { "ies" }
-    ));
+    prompt.note = Some(clamp(&why, 120));
+    prompt.tries = tries;
+    prompt.focus = Focus::Password;
+    prompt.details = false;
+    prompt.scroll = 0.0;
     drop(prompt);
 
     refresh_timer(true);
@@ -910,7 +1067,7 @@ fn converse(
             }
             Message::Said(_) => {}
             Message::Done => return Ok(()),
-            Message::Failed => return Err(String::from("Wrong password")),
+            Message::Failed => return Err(String::from("Authentication failed.")),
         }
     }
 }
@@ -1018,29 +1175,36 @@ fn typed(secret: &Secret, letter: Option<char>) -> Secret {
 // `text` as one line of at most `most` characters: control characters and those that reorder text
 // become spaces, runs of space one, and a longer line ends in an ellipsis
 fn clamp(text: &str, most: usize) -> String {
-    let spaced: String = text
-        .chars()
-        .map(|letter| {
-            if letter.is_control()
-                || matches!(letter, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-            {
-                ' '
-            } else {
-                letter
+    let mut line = String::new();
+    let mut count = 0;
+    let mut space = false;
+    for letter in text.chars() {
+        if letter.is_whitespace()
+            || letter.is_control()
+            || matches!(letter, '\u{ad}' | '\u{61c}' | '\u{180e}'
+                | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}' | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
+        {
+            space = !line.is_empty();
+            continue;
+        }
+        for next in space
+            .then_some(' ')
+            .into_iter()
+            .chain(std::iter::once(letter))
+        {
+            if count == most {
+                line.pop();
+                line.push('…');
+                return line;
             }
-        })
-        .collect();
-
-    let line = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    if line.chars().count() <= most {
-        return line;
+            line.push(next);
+            count += 1;
+        }
+        space = false;
     }
-
-    line.chars()
-        .take(most - 1)
-        .chain(std::iter::once('\u{2026}'))
-        .collect()
+    line
 }
 
 // whether polkit's subject runs as the caller's own session user
@@ -1186,6 +1350,8 @@ mod tests {
             "cancel-tail",
             "escape",
             "space-input",
+            "navigation",
+            "retry-navigation",
             "outcomes",
             "lock",
             "lock-deferred",
@@ -1238,6 +1404,7 @@ mod tests {
             PENDING.locked().push(Request {
                 cookie: cookie.into(),
                 message: cookie.into(),
+                action: "org.kanade.fixture".into(),
                 user: "fixture".into(),
                 tries: TRIES,
                 answer: Some(Box::new(move || {
@@ -1345,6 +1512,15 @@ mod tests {
             case == "overview",
         );
         enqueue("first");
+        if case == "navigation" || case == "retry-navigation" {
+            let mut queue = PENDING.locked();
+            let request = queue.first_mut().unwrap();
+            request.message = clamp(
+                &"A real request with a long explanation. ".repeat(100),
+                MOST_MESSAGE,
+            );
+            request.action = clamp(&"org.kanade.fixture.action".repeat(40), MOST_ACTION);
+        }
         advance();
         if case == "lock-deferred" {
             lock::pending_fixture();
@@ -1368,6 +1544,78 @@ mod tests {
             service::derive();
         }
         visible();
+        if case == "navigation" || case == "retry-navigation" {
+            use crate::surfaces::auth;
+            let key = |key| assert!(auth::key("selected", key));
+            // Empty Enter never starts a helper; disabled Authenticate is skipped.
+            key(Key::Enter);
+            assert!(ATTEMPTING.locked().is_none());
+            key(Key::Tab);
+            assert_eq!(Prompt::read().focus(), Focus::Cancel);
+            key(Key::Tab);
+            assert_eq!(Prompt::read().focus(), Focus::Details);
+            key(Key::Space);
+            assert!(Prompt::read().details());
+            key(Key::Tab);
+            assert_eq!(Prompt::read().focus(), Focus::DetailsBody);
+            key(Key::End);
+            let bottom = Prompt::read().scroll();
+            assert!(bottom.is_finite() && bottom > 0.0);
+            key(Key::PageDown);
+            assert_eq!(Prompt::read().scroll(), bottom);
+            key(Key::Home);
+            assert_eq!(Prompt::read().scroll(), 0.0);
+            key(Key::PageUp);
+            assert_eq!(Prompt::read().scroll(), 0.0);
+            key(Key::Space);
+            assert!(Prompt::read().scroll() > 0.0);
+            key(Key::Character('q'));
+            assert!(Prompt::read().secret().is_empty());
+            key(Key::BackTab);
+            key(Key::Enter);
+            assert!(!Prompt::read().details());
+            key(Key::Tab);
+            assert_eq!(Prompt::read().focus(), Focus::Password);
+            key(Key::Space);
+            assert!(Prompt::read().secret().plaintext() == " ");
+            key(Key::Tab);
+            key(Key::Tab);
+            assert_eq!(Prompt::read().focus(), Focus::Authenticate);
+            key(Key::Character('q'));
+            assert!(Prompt::read().secret().plaintext() == " ");
+            if case == "retry-navigation" {
+                active(77, None);
+                Prompt::write().checking = true;
+                settle(77, "first", Err("Authentication failed.".into()));
+                assert!(Prompt::read().secret().is_empty());
+                assert!(!Prompt::read().can_submit());
+                assert_eq!(Prompt::read().focus(), Focus::Password);
+                key(Key::Enter);
+                assert!(ATTEMPTING.locked().is_none());
+                key(Key::Character('x'));
+                assert!(Prompt::read().can_submit());
+            } else {
+                // Checking keeps Cancel operable and rejects field/action focus and duplicate input.
+                active(77, None);
+                {
+                    let mut prompt = Prompt::write();
+                    prompt.checking = true;
+                    prompt.focus = Focus::Cancel;
+                }
+                super::focus(Focus::Password);
+                assert_eq!(Prompt::read().focus(), Focus::Cancel);
+                key(Key::Character('q'));
+                assert!(Prompt::read().secret().plaintext() == " ");
+                key(Key::Enter);
+                cleared();
+                assert_eq!(answers.load(Ordering::SeqCst), 1);
+                return;
+            }
+            key(Key::Escape);
+            cleared();
+            assert_eq!(answers.load(Ordering::SeqCst), 1);
+            return;
+        }
         if case == "space-input" {
             use crate::surfaces::auth;
             use kanade_runtime::Key;
@@ -1457,8 +1705,10 @@ mod tests {
                 .write_all(b"PAM_PROMPT_ECHO_OFF Password:\nFAILURE\n");
             line.clear();
             peer.read_line(&mut line).unwrap();
-            assert!(worker.join().unwrap().is_err());
+            let outcome = worker.join().unwrap();
+            assert!(outcome.is_err());
             if case == "helper-answer" {
+                assert_eq!(outcome, Err("Authentication failed.".into()));
                 assert_eq!(line, "x\n", "the unlocked conversation sends the answer");
                 cancel();
             } else {
@@ -1684,14 +1934,47 @@ mod tests {
         };
 
         let arguments = call(identities("unix-user", 1000));
-        let (cookie, message, offered) = layout(&arguments);
+        let (cookie, message, action, offered) = layout(&arguments);
 
         assert_eq!(cookie, "cookie-1");
         assert_eq!(message, "Authentication is required to set the timezone");
+        assert_eq!(action, "org.freedesktop.timedate1.set-timezone");
         assert_eq!(identity(offered), Some(1000));
 
         // a call shorter than the six has no cookie to answer
         assert_eq!(layout(&call(identities("unix-user", 1000))[..4]).0, "");
+    }
+
+    #[test]
+    fn request_metadata_is_bounded_sanitized_and_kept_past_the_summary() {
+        let message = format!(
+            "  A\nrequest\twith\u{202e}outside\u{61c}text\u{200b} {}",
+            "界".repeat(MOST_MESSAGE)
+        );
+        let arguments = vec![
+            Value::Text("a".repeat(MOST_ACTION + 100)),
+            Value::Text(message),
+            Value::Text("untrusted-icon".into()),
+            Value::Map(BTreeMap::from([(
+                "program".into(),
+                Value::Text("unverified".into()),
+            )])),
+            Value::Text("private-cookie".into()),
+            Value::Nothing,
+        ];
+        let (_, message, action, _) = layout(&arguments);
+        assert!(message.starts_with("A request with outside text "));
+        assert_eq!(message.chars().count(), MOST_MESSAGE);
+        assert!(message.ends_with('…'));
+        assert_eq!(action.chars().count(), MOST_ACTION);
+        assert!(action.ends_with('…'));
+        assert!(!message.contains("private-cookie"));
+        assert!(!action.contains("unverified"));
+        let full = "A request with its actual complete ending.".repeat(8);
+        assert_eq!(clamp(&full, MOST_MESSAGE), full);
+        assert_eq!(clamp("ééé", 3), "ééé");
+        assert_eq!(clamp("éééé", 3), "éé…");
+        assert_eq!(clamp(" a  b \n", 3), "a b");
     }
 
     // a try that failed empties the field and says what is left
@@ -1708,12 +1991,16 @@ mod tests {
                 }),
             note: None,
             checking: true,
+            ..Prompt::default()
         };
 
-        retry(String::from("Wrong password"), 2);
+        retry(String::from("Authentication failed."), 2);
 
         let prompt = Prompt::read();
-        assert_eq!(prompt.note(), Some("Wrong password, 2 tries left"));
+        assert_eq!(prompt.note(), Some("Authentication failed."));
         assert!(prompt.secret().is_empty());
+        assert!(!prompt.can_submit());
+        assert_eq!(prompt.tries(), 2);
+        assert_eq!(prompt.focus(), Focus::Password);
     }
 }

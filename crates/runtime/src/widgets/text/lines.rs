@@ -6,6 +6,7 @@ use crate::graphics::font;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rules {
     pub wrap: bool,
+    pub break_words: bool,
     pub elide: bool,
     pub max_lines: Option<usize>,
 }
@@ -56,6 +57,17 @@ pub fn arrange(content: &str, font: &Face, size: f32, width: f32, rules: Rules) 
         true => wrap(content, font, size, width),
         false => vec![String::from(content)],
     };
+
+    if rules.break_words {
+        lines = lines
+            .into_iter()
+            .flat_map(|line| {
+                break_long(&line, width, |letter| {
+                    font::measure_letter(font, letter, size).advance
+                })
+            })
+            .collect();
+    }
 
     let limit = rules.max_lines.unwrap_or(usize::MAX);
 
@@ -110,6 +122,24 @@ fn wrap(content: &str, font: &Face, size: f32, width: f32) -> Vec<String> {
         lines.push(line);
     }
 
+    lines
+}
+
+// Only the opt-in overflow mode splits a token. Always advance, even below one glyph's width.
+fn break_long(line: &str, width: f32, advance: impl Fn(char) -> f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut part = String::new();
+    let mut used = 0.0;
+    for letter in line.chars() {
+        let next = advance(letter);
+        if !part.is_empty() && used + next > width {
+            lines.push(std::mem::take(&mut part));
+            used = 0.0;
+        }
+        part.push(letter);
+        used += next;
+    }
+    lines.push(part);
     lines
 }
 
@@ -177,6 +207,22 @@ pub fn ink(content: &str, font: &Face, size: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overflowing_tokens_remain_complete_and_make_progress_in_narrow_areas() {
+        let value = "org.example.界.action".repeat(100);
+        let widths = |letter| if letter == '界' { 2.0 } else { 1.0 };
+        let lines = break_long(&value, 12.0, widths);
+        assert_eq!(lines.concat(), value);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.chars().map(widths).sum::<f32>() <= 12.0)
+        );
+        let narrow = break_long(&value, 0.0, widths);
+        assert_eq!(narrow.concat(), value);
+        assert!(narrow.iter().all(|line| line.chars().count() == 1));
+    }
 
     // the elision as it was: every shorter copy of the line, the "…" after it, measured whole again
     fn elided_one_letter_at_a_time(
