@@ -49,7 +49,7 @@ Open, not traced or not fixed:
 - The moving wallpaper's memory stays after it is stopped and hidden.
 - A `kanade dmenu` selection in the detached Launcher returns "the Launcher did not open". It is older than this change.
 - A "wrong configure serial" protocol error ends the shell on repeated layer unmap and remap. It is older than this change and is in the previous binary too.
-- The Welcome and Auth windows cannot be rendered under Umbriel, so they were not measured.
+- The Welcome and Auth windows could not be rendered under Umbriel during this baseline, so they were not measured. Later Auth support adds no memory measurement to this record.
 
 ## Baseline, two monitors
 

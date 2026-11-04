@@ -744,6 +744,14 @@ pub fn holds() -> bool {
     matches!(requests().holding(), Holding::Held | Holding::Checking)
 }
 
+// Private subprocess fixtures can exercise pending-lock gates without contacting a locker.
+#[cfg(test)]
+pub(crate) fn pending_fixture() {
+    let mut requests = requests();
+    requests.request();
+    say(&requests);
+}
+
 /*
  * the time since boot, suspend included, which `Instant` leaves out: a grace is a time of the
  * user's presence, and a machine asleep for hours must not have 25 s of it left

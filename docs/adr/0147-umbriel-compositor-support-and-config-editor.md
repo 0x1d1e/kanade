@@ -38,6 +38,14 @@ The Desk's overview visibility and moving wallpaper's overview pause share `sour
 
 Both compositor pages use the same Outputs canvas, monitor cards and trial controller. Umbriel's `outputs` reply supplies the shared monitor model. Trials send `output-set` actions and never write the config. Keep writes `[output."<connector>"]` properties (`enabled`, `mode`, `position`, `scale`, `transform`, `vrr`) through the validated Umbriel editor, then requests `umbriel msg config-reload`; reset and undo reload too. VRR uses `disabled`, `always`, or `fullscreen`. Umbriel's pending recovery file is `umbriel-outputs-pending.json`, separate from niri's record. A rejected live action leaves no trial or config edit; an unanswered action retains recovery state. Umbriel versions without `output-set` can display monitors but reject trials explicitly.
 
+## Auth (extends ADR 0146)
+
+Auth uses the selected compositor's focused output and overview state already bridged into `IslandService`; the historical `set_niri` name does not restrict that snapshot to niri. No second compositor watcher or output fallback is added. A never-shown request waits without holding the keyboard or accepting a password until focus exists and overview ends; the existing Island watcher retries it. Registration backoff remains separate from prompt retry.
+
+Cancellation of the active request shuts down its helper and resets the password before the next request opens. Cancelling a queued request leaves the active prompt intact. Pending or held lock cancels every request, clears prompt state and prevents deferred opening, typing and submission. Each helper attempt has an identity reserved before its worker starts, so cancellation before connection and late outcomes cannot attach to or settle a later request, even if a cookie is reused. Queue, prompt, visit and helper transitions are serialized.
+
+Disposable subprocess regressions exercise shared-focus placement with niri focus absent, niri placement, missing-focus and overview retries through Service derivation, cancellation and helper shutdown, pending lock and late outcomes. They use synthetic requests and local socket pairs, without agent registration, PAM or a running shell. Live Umbriel registration, prompt visibility, keyboard delivery and authentication remain **NOT RUN**; these regressions are not live acceptance.
+
 ## Consequences
 
 - Kanade seamlessly supports both niri and Umbriel sessions.

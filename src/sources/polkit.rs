@@ -101,8 +101,16 @@ static SHOWN: Mutex<Option<u64>> = Mutex::new(None);
 // the moment the prompt gives up waiting, none while nothing waits
 static GIVES_UP: Mutex<Option<i64>> = Mutex::new(None);
 
-// the helper's socket of the check under way, so anything else can shut it now
-static ATTEMPTING: Mutex<Option<UnixStream>> = Mutex::new(None);
+// Queue, prompt, visit and helper transitions must finish together across input, bus and workers.
+static LIFECYCLE: Mutex<()> = Mutex::new(());
+
+// Each submission has its own identity, including before its worker connects the helper.
+struct Attempt {
+    id: u64,
+    socket: Option<UnixStream>,
+}
+static NEXT_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static ATTEMPTING: Mutex<Option<Attempt>> = Mutex::new(None);
 
 /*
  * the bus generation and polkitd unique name this agent is registered with: a new bus can reuse
@@ -155,11 +163,7 @@ impl Service for Prompt {
 // start answering polkit: on the system bus, where polkit itself is, and as the lock engages,
 // nothing waits any more
 pub fn start() {
-    service::watch::<lock::Said>(|| {
-        if lock::holds() {
-            give_up_all();
-        }
-    });
+    service::watch::<lock::Said>(lock_changed);
 
     service::watch::<IslandService>(island_changed);
 
@@ -238,6 +242,15 @@ pub fn erase() {
 
 // Enter pressed: the typed password goes where polkit's helper reads it, one try at a time
 pub fn submit() {
+    let _lifecycle = LIFECYCLE.locked();
+    if lock::holds() {
+        reset_all();
+        return;
+    }
+    if !showing() {
+        return;
+    }
+
     let (cookie, user) = {
         let queue = PENDING.locked();
 
@@ -260,12 +273,14 @@ pub fn submit() {
         Zeroizing::new(prompt.secret.plaintext().to_owned())
     };
 
+    let id = NEXT_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    *ATTEMPTING.locked() = Some(Attempt { id, socket: None });
     if thread::Builder::new()
         .name("kanade polkit".into())
-        .spawn(move || attempt(&cookie, &user, &password))
+        .spawn(move || attempt(id, &cookie, &user, &password))
         .is_err()
     {
-        give_up_all();
+        reset_all();
     }
 }
 
@@ -277,6 +292,14 @@ pub fn cancel() {
 // one letter typed or erased: nothing but what a key types fits, and a control character is never
 // part of a password
 fn edit(letter: Option<char>) {
+    let _lifecycle = LIFECYCLE.locked();
+    if lock::holds() {
+        reset_all();
+        return;
+    }
+    if !showing() {
+        return;
+    }
     let mut prompt = Prompt::write();
 
     if prompt.checking {
@@ -343,6 +366,7 @@ fn begin(method: Method) {
         .filter(|uid| caller.uid == *uid)
         .map(|_| caller.user.clone());
 
+    let _lifecycle = LIFECYCLE.locked();
     let queued = PENDING.locked().len();
 
     // the things a request is refused outright for: nothing is shown, and polkit reads the void
@@ -389,7 +413,9 @@ fn begin(method: Method) {
         answer: Some(answer),
     });
 
-    advance();
+    if queued == 0 {
+        advance();
+    }
 }
 
 // BeginAuthentication's arguments, polkit's `(sss@a{ss}sa(sa{sv}))`: the message second, the
@@ -404,34 +430,37 @@ fn layout(arguments: &[Value]) -> (&str, String, &Value) {
 
 // the cookie polkit cancels, any one of them
 fn cancel_cookie(cookie: &str) {
-    let taken = {
+    let _lifecycle = LIFECYCLE.locked();
+    let (taken, head) = {
         let mut queue = PENDING.locked();
         let Some(at) = queue.iter().position(|request| request.cookie == cookie) else {
             return;
         };
 
-        queue.remove(at)
+        (queue.remove(at), at == 0)
     };
 
+    if head {
+        shut_socket();
+    }
     taken.answer();
-
-    if PENDING.locked().is_empty() {
-        close_prompt();
-    } else {
+    if head {
         advance();
     }
 }
 
 // the request at the head cancelled: polkit reads nothing answered
 fn cancel_head() {
+    let _lifecycle = LIFECYCLE.locked();
+    shut_socket();
     let taken = {
         let mut queue = PENDING.locked();
         (!queue.is_empty()).then(|| queue.remove(0))
     };
 
-    let Some(request) = taken else { return };
-
-    request.answer();
+    if let Some(request) = taken {
+        request.answer();
+    }
     advance();
 }
 
@@ -482,6 +511,10 @@ impl Request {
 
 // the one shown, or nothing: the Surface's own words follow
 fn advance() {
+    if lock::holds() {
+        reset_all();
+        return;
+    }
     let head = {
         let queue = PENDING.locked();
 
@@ -494,15 +527,7 @@ fn advance() {
         })
     };
 
-    let showing = {
-        let visit = *SHOWN.locked();
-
-        visit.is_some_and(|visit| {
-            let island = IslandService::read();
-
-            island.surface() == Some(Surface::Auth) && island.visit() == visit
-        })
-    };
+    let showing = showing();
 
     match head {
         Some((_cookie, message, user)) => {
@@ -530,9 +555,18 @@ fn advance() {
         None => {
             set_prompt(Prompt::default());
             *SHOWN.locked() = None;
+            refresh_timer(false);
             close_prompt();
         }
     }
+}
+
+fn showing() -> bool {
+    let visit = *SHOWN.locked();
+    visit.is_some_and(|visit| {
+        let island = IslandService::read();
+        island.surface() == Some(Surface::Auth) && island.visit() == visit
+    })
 }
 
 // the prompt is over: collapse the Surface it shows, which nothing but its own end opens again
@@ -542,64 +576,72 @@ fn close_prompt() {
 
 // where the prompt is shown, opened over the focused output and held until it ends
 fn open_prompt() {
-    if IslandService::read().surface() == Some(Surface::Auth) {
-        *SHOWN.locked() = Some(IslandService::read().visit());
+    if lock::holds() {
+        reset_all();
         return;
     }
-
-    // nowhere on screen yet, as at a start before niri names an output: try again when anything
-    // changes the island
-    let Some(monitor) = super::niri::Niri::read().seen.focused_output.clone() else {
+    // The existing Island watcher retries when focus arrives or overview ends. A hidden
+    // prompt must never hold the keyboard, and no other output stands in for missing focus.
+    let mut island = IslandService::write();
+    if island.overview() {
+        island.quiet();
+        return;
+    }
+    if island.surface() == Some(Surface::Auth) {
+        *SHOWN.locked() = Some(island.visit());
+        island.quiet();
+        return;
+    }
+    let Some(monitor) = island.focused_output().map(str::to_owned) else {
+        island.quiet();
         return;
     };
 
-    let visit = {
-        let mut island = IslandService::write();
-
-        island.open(&monitor, Surface::Auth, Instant::now());
-        island.visit()
-    };
-
-    if IslandService::read().surface() == Some(Surface::Auth) {
-        *SHOWN.locked() = Some(visit);
+    island.open(&monitor, Surface::Auth, Instant::now());
+    if island.surface() == Some(Surface::Auth) {
+        *SHOWN.locked() = Some(island.visit());
     }
 }
 
 // the island changed what it shows: a prompt shown is closed by anything but its own end, and one
 // never shown is tried again
 fn island_changed() {
+    let _lifecycle = LIFECYCLE.locked();
+    if lock::holds() {
+        reset_all();
+        return;
+    }
     if PENDING.locked().is_empty() {
         return;
     }
 
-    let showing = {
-        let visit = *SHOWN.locked();
+    let showing = showing();
 
-        visit.is_some_and(|visit| {
-            let island = IslandService::read();
-
-            island.surface() == Some(Surface::Auth) && island.visit() == visit
-        })
-    };
-
-    match (showing, *SHOWN.locked()) {
+    let shown = *SHOWN.locked();
+    match (showing, shown) {
         (true, _) => {}
 
         // the user closed the prompt, or anything else did: nothing waits any more
-        (false, Some(_)) => give_up_all(),
+        (false, Some(_)) => reset_all(),
 
         (false, None) => open_prompt(),
     }
 }
 
+fn lock_changed() {
+    if lock::holds() {
+        give_up_all();
+    }
+}
+
 // everything waiting is given up on: the lock engages, or the island collapses the prompt itself
 fn give_up_all() {
+    let _lifecycle = LIFECYCLE.locked();
+    reset_all();
+}
+
+fn reset_all() {
     let taken = std::mem::take(&mut *PENDING.locked());
-
-    if taken.is_empty() {
-        return;
-    }
-
     shut_socket();
 
     for request in taken {
@@ -608,12 +650,17 @@ fn give_up_all() {
 
     *SHOWN.locked() = None;
     set_prompt(Prompt::default());
-    close_prompt();
+    refresh_timer(false);
+    if IslandService::read().surface() == Some(Surface::Auth) {
+        close_prompt();
+    }
 }
 
 // the helper's socket of the check under way is shut, so a PAM stack waiting on an answer ends now
 fn shut_socket() {
-    if let Some(socket) = ATTEMPTING.locked().take() {
+    if let Some(attempt) = ATTEMPTING.locked().take()
+        && let Some(socket) = attempt.socket
+    {
         let _ = socket.shutdown(Shutdown::Both);
     }
 }
@@ -627,18 +674,18 @@ fn set_prompt(prompt: Prompt) {
 
 // the idle window restarts while the user types, and ends when nothing waits
 fn refresh_timer(arm: bool) {
+    if !arm {
+        *GIVES_UP.locked() = None;
+        return;
+    }
     let Some(timer) = TIMER.get().and_then(Option::as_ref) else {
         return;
     };
 
-    if arm {
-        let at = clock::unix_seconds() + LONGEST.as_secs() as i64;
+    let at = clock::unix_seconds() + LONGEST.as_secs() as i64;
 
-        *GIVES_UP.locked() = Some(at);
-        let _ = timer.set(at);
-    } else {
-        *GIVES_UP.locked() = None;
-    }
+    *GIVES_UP.locked() = Some(at);
+    let _ = timer.set(at);
 }
 
 fn timer_loop(timer: Arc<WallTimer>) {
@@ -667,21 +714,24 @@ fn timer_loop(timer: Arc<WallTimer>) {
 // the user stopped answering: the helper's socket is shut, polkit reads the void reply as not
 // authorized, and the next waiting request shows
 fn expired() {
-    shut_socket();
-
-    let taken = {
-        let mut queue = PENDING.locked();
-        (!queue.is_empty()).then(|| queue.remove(0))
-    };
-
-    let Some(request) = taken else { return };
-
-    request.answer();
-    advance();
+    cancel_head();
 }
 
 // one try's fate: the helper answers polkit itself on SUCCESS, and FAILURE keeps the request open
-fn settle(cookie: &str, outcome: Result<(), String>) {
+fn settle(id: u64, cookie: &str, outcome: Result<(), String>) {
+    let _lifecycle = LIFECYCLE.locked();
+    if lock::holds() {
+        reset_all();
+        return;
+    }
+    if !ATTEMPTING
+        .locked()
+        .as_ref()
+        .is_some_and(|attempt| attempt.id == id)
+    {
+        return;
+    }
+    shut_socket();
     let mut answered = None;
     let mut note = None;
     let mut done = false;
@@ -738,14 +788,14 @@ fn retry(why: String, tries: usize) {
 }
 
 // the typed password goes to the helper, which answers polkit itself
-fn attempt(cookie: &str, user: &str, password: &Zeroizing<String>) {
-    let outcome = check(user, cookie, password);
+fn attempt(id: u64, cookie: &str, user: &str, password: &Zeroizing<String>) {
+    let outcome = check(id, user, cookie, password);
 
-    settle(cookie, outcome);
+    settle(id, cookie, outcome);
 }
 
 // the helper's run: the user, then the cookie, then one PAM message at a time until it answers
-fn check(user: &str, cookie: &str, password: &Zeroizing<String>) -> Result<(), String> {
+fn check(id: u64, user: &str, cookie: &str, password: &Zeroizing<String>) -> Result<(), String> {
     let Ok(stream) = UnixStream::connect(HELPER) else {
         return Err(String::from("the polkit helper is not running"));
     };
@@ -759,7 +809,18 @@ fn check(user: &str, cookie: &str, password: &Zeroizing<String>) -> Result<(), S
         return Err(String::from("the polkit helper took no request"));
     };
 
-    *ATTEMPTING.locked() = Some(attempting);
+    {
+        let _lifecycle = LIFECYCLE.locked();
+        if lock::holds() {
+            reset_all();
+            return Err(String::from("authentication cancelled"));
+        }
+        let mut active = ATTEMPTING.locked();
+        let Some(active) = active.as_mut().filter(|attempt| attempt.id == id) else {
+            return Err(String::from("authentication cancelled"));
+        };
+        active.socket = Some(attempting);
+    }
 
     let mut reader = BufReader::new(stream);
     let mut writer = writer_stream;
@@ -1049,7 +1110,10 @@ fn register_locked(generation: Option<u64>) -> Result<(), String> {
                 Argument::from(AGENT),
             ],
         )
-        .map(|_| *REGISTERED.locked() = Some((generation, owner)))
+        .map(|_| {
+            *REGISTERED.locked() = Some((generation, owner));
+            eprintln!("kanade: polkit agent registered for this session");
+        })
 }
 
 const LOGIND: &str = "org.freedesktop.login1";
@@ -1058,6 +1122,238 @@ const AUTO: &str = "/org/freedesktop/login1/session/auto";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_placement_and_cancellation_regressions() {
+        let mut failed = Vec::new();
+        for case in [
+            "umbriel",
+            "niri",
+            "deferred",
+            "overview",
+            "cancel-last",
+            "cancel-head",
+            "cancel-tail",
+            "escape",
+            "outcomes",
+            "lock",
+            "lock-deferred",
+            "lock-input",
+            "lock-submit",
+            "lock-result",
+            "same-cookie",
+            "overview-direct",
+            "displaced",
+        ] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sources::polkit::tests::auth_fixture",
+                    "--nocapture",
+                ])
+                .env("KANADE_AUTH_FIXTURE", case)
+                .status()
+                .unwrap();
+            if !status.success() {
+                failed.push(case);
+            }
+        }
+        assert!(failed.is_empty(), "failed Auth fixtures: {failed:?}");
+    }
+
+    // Private subprocess: no agent registration, stock helper, PAM or live shell.
+    #[test]
+    fn auth_fixture() {
+        use kanade_runtime::Keyboard;
+        use std::io::Read;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let Ok(case) = std::env::var("KANADE_AUTH_FIXTURE") else {
+            return;
+        };
+        let answers = Arc::new(AtomicUsize::new(0));
+        let enqueue = |cookie: &str| {
+            let answers = answers.clone();
+            PENDING.locked().push(Request {
+                cookie: cookie.into(),
+                message: cookie.into(),
+                user: "fixture".into(),
+                tries: TRIES,
+                answer: Some(Box::new(move || {
+                    answers.fetch_add(1, Ordering::SeqCst);
+                })),
+            });
+        };
+        let focus = |output: Option<&str>, overview| {
+            IslandService::write().set_niri(output.map(str::to_owned), overview, Instant::now());
+        };
+        let visible = || {
+            let island = IslandService::read();
+            assert_eq!(island.surface(), Some(Surface::Auth));
+            assert_eq!(island.expanded_on(), Some("selected"));
+            assert_eq!(island.keyboard("selected"), Keyboard::Exclusive);
+            assert_eq!(*SHOWN.locked(), Some(island.visit()));
+        };
+        let cleared = || {
+            assert!(PENDING.locked().is_empty());
+            assert_eq!(*Prompt::read(), Prompt::default());
+            assert!(SHOWN.locked().is_none());
+            assert!(ATTEMPTING.locked().is_none());
+            assert!(GIVES_UP.locked().is_none());
+            let island = IslandService::read();
+            assert_ne!(island.surface(), Some(Surface::Auth));
+            assert_eq!(island.keyboard("selected"), Keyboard::None);
+        };
+        let active = |id, socket| {
+            *ATTEMPTING.locked() = Some(Attempt { id, socket });
+        };
+        service::watch::<IslandService>(island_changed);
+        service::watch::<lock::Said>(lock_changed);
+        if case == "overview-direct" {
+            focus(Some("selected"), true);
+            IslandService::write().open("selected", Surface::Auth, Instant::now());
+            assert_eq!(IslandService::read().keyboard("selected"), Keyboard::None);
+            return;
+        }
+        assert!(
+            super::super::niri::Niri::read()
+                .seen
+                .focused_output
+                .is_none()
+        );
+        if case == "niri" {
+            super::super::niri::Niri::write().seen.focused_output = Some("selected".into());
+        }
+        focus(
+            (case != "deferred" && case != "lock-deferred").then_some("selected"),
+            case == "overview",
+        );
+        enqueue("first");
+        advance();
+        if case == "lock-deferred" {
+            lock::pending_fixture();
+            assert!(lock::holds());
+            focus(Some("selected"), false);
+            service::derive();
+            cleared();
+            assert_eq!(answers.load(Ordering::SeqCst), 1);
+            return;
+        }
+        if case == "deferred" || case == "overview" {
+            assert_ne!(IslandService::read().surface(), Some(Surface::Auth));
+            assert_eq!(IslandService::read().keyboard("selected"), Keyboard::None);
+            assert!(SHOWN.locked().is_none());
+            type_char('x');
+            assert!(
+                Prompt::read().secret.is_empty(),
+                "a hidden prompt accepts no secret"
+            );
+            focus(Some("selected"), false);
+            service::derive();
+        }
+        visible();
+        type_char('x');
+        assert_eq!(Prompt::read().secret.len(), 1);
+        if case == "outcomes" {
+            active(1, None);
+            settle(1, "first", Err("Wrong password".into()));
+            assert!(Prompt::read().secret.is_empty());
+            assert_eq!(PENDING.locked()[0].tries, TRIES - 1);
+            assert_eq!(answers.load(Ordering::SeqCst), 0);
+            active(2, None);
+            settle(2, "first", Ok(()));
+            cleared();
+            settle(2, "first", Err("late".into()));
+            assert_eq!(answers.load(Ordering::SeqCst), 1);
+            return;
+        }
+        if case == "cancel-head" || case == "cancel-tail" {
+            enqueue("second");
+        }
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        active(3, Some(socket));
+        Prompt::write().checking = true;
+        *GIVES_UP.locked() = Some(123);
+        if case.starts_with("lock") || case == "displaced" {
+            enqueue("second");
+            if case == "displaced" {
+                IslandService::write().displace(Surface::Auth, Instant::now());
+                service::derive();
+            } else {
+                lock::pending_fixture();
+                assert!(lock::holds());
+                match case.as_str() {
+                    "lock-input" => type_char('y'),
+                    "lock-submit" => submit(),
+                    "lock-result" => settle(3, "first", Ok(())),
+                    _ => service::derive(),
+                }
+            }
+            cleared();
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+            settle(3, "first", Ok(()));
+            focus(Some("selected"), false);
+            service::derive();
+            cleared();
+            assert_eq!(answers.load(Ordering::SeqCst), 2);
+            return;
+        }
+        match case.as_str() {
+            "cancel-tail" => {
+                let before = Prompt::read().clone();
+                cancel_cookie("second");
+                assert_eq!(*Prompt::read(), before);
+                assert!(ATTEMPTING.locked().is_some());
+                assert_eq!(answers.load(Ordering::SeqCst), 1);
+                cancel_cookie("first");
+            }
+            "escape" => cancel(),
+            _ => cancel_cookie("first"),
+        }
+        assert_eq!(
+            peer.read(&mut [0])
+                .expect("cancellation must shut down the helper"),
+            0
+        );
+        if case == "cancel-head" {
+            visible();
+            assert_eq!(Prompt::read().message(), "second");
+            assert!(Prompt::read().secret.is_empty());
+            active(4, None);
+            settle(3, "first", Err("late".into()));
+            assert_eq!(PENDING.locked()[0].tries, TRIES);
+            cancel();
+        }
+        cleared();
+        if case == "same-cookie" {
+            enqueue("first");
+            advance();
+            active(4, None);
+            let before = Prompt::read().clone();
+            settle(3, "first", Ok(()));
+            settle(3, "first", Err("late".into()));
+            assert_eq!(*Prompt::read(), before);
+            assert_eq!(PENDING.locked()[0].tries, TRIES);
+            assert_eq!(ATTEMPTING.locked().as_ref().unwrap().id, 4);
+            cancel();
+            cleared();
+            assert_eq!(answers.load(Ordering::SeqCst), 2);
+            return;
+        }
+        cancel_cookie("first");
+        cancel();
+        service::derive();
+        assert_eq!(
+            answers.load(Ordering::SeqCst),
+            if case.starts_with("cancel-") && case != "cancel-last" {
+                2
+            } else {
+                1
+            }
+        );
+    }
 
     // nobody answers polkit while the session locks, nor without the helper socket, nor for a
     // user this session does not run as, nor with four requests waiting

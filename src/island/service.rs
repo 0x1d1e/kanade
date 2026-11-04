@@ -433,6 +433,11 @@ impl IslandService {
             .is_none_or(|focused| focused == monitor)
     }
 
+    // the selected compositor's focused output, absent until its event stream names one
+    pub fn focused_output(&self) -> Option<&str> {
+        self.focused_output.as_deref()
+    }
+
     /*
      * everything niri tells the core, in one update reconciled once, and whether it changed
      * anything. Focus moves the FocusedOutput Activities; the focused island is touched, so every
@@ -1067,7 +1072,7 @@ impl IslandService {
          * the session locks, rather than for the hold
          */
         if surface == Surface::Auth {
-            self.island(monitor).held = true;
+            self.island(monitor).held = expanded;
 
             if expanded {
                 self.wait(monitor);

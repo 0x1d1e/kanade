@@ -10,7 +10,7 @@ The curl URL fetches the script from `main`. On Arch Linux and derivatives it in
 
 Packages are not installed with `pacman -S`. The script uses `paru` if it is on PATH, otherwise `yay` if that is already on PATH, as the user, with `--needed --noconfirm`. If neither is on PATH, it runs `sudo pacman -S --needed paru` and then uses that paru. If pacman cannot install paru, it stops. It does not build paru with makepkg, and it does not publish an AUR package. The script prints `helper: paru`, `helper: yay`, or `helper: none` for what they found.
 
-A fresh TTY install still adds niri with its portal, the GPU's Vulkan driver, audio, fonts, kitty, qt6ct and awww for Kanade's default random wallpaper, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Under niri, Kanade is the session's polkit authentication agent itself (ADR 0146); the installer does not add polkit-gnome. Under Umbriel, retain an external agent and turn Kanade's `polkit` Module off as described below. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY. Run it again to update. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
+A fresh TTY install still adds niri with its portal, the GPU's Vulkan driver, audio, fonts, kitty, qt6ct and awww for Kanade's default random wallpaper, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Kanade provides the session's polkit authentication agent under niri and Umbriel (ADRs 0146, 0147); the installer does not add polkit-gnome. Live Umbriel Auth verification remains **NOT RUN**. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY. Run it again to update. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
 
 - `--shell-only` installs Kanade without the desktop packages, for a niri or Umbriel desktop you already have. It does not install a niri config unless you also choose Niri (`--niri`) or SDDM (`--sddm`); those install the default config only when yours is missing. Explicit Niri or SDDM installs also include awww; pure shell-only without either omits it.
 - `--no-niri` skips automatic niri package selection and does not write a niri config, even on a desktop install. Explicit `--niri` or `--sddm` still installs the package; only `--sddm` also overrides the config skip.
@@ -81,12 +81,7 @@ Only one Kanade runs per session. A second one stops at start with `failed to li
 
 ## Umbriel
 
-Kanade's Auth Surface is currently niri-only: its prompt placement needs niri's focused output. Keep an external polkit authentication agent such as polkit-gnome under Umbriel. Disable Kanade's agent with `kanade module disable polkit`, then restart Kanade through your existing Umbriel startup method so the change applies. Before first start, the equivalent in Kanade's `config.toml` is:
-
-```toml
-[modules]
-polkit = false
-```
+Kanade's Auth Surface supports Umbriel through the selected compositor's focused output, with the `polkit` Module on by default. Live Umbriel registration and authentication remain **NOT RUN**. Only one polkit agent can own this session: to use Kanade's agent, stop the competing agent and remove its startup entry. Kanade retries registration automatically, up to 30 s between attempts, and logs `kanade: polkit agent registered for this session` after success. A request waits without taking the keyboard while focus is missing or overview is active, then retries on an Island change. If you previously disabled the Module, enable it with `kanade module enable polkit` and restart through Umbriel. To keep an external agent instead, leave Kanade's `polkit` Module off. See [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md) for automated evidence and live verification limits.
 
 Install Umbriel separately; `scripts/install` does not install its package. Use `--shell-only` for an existing desktop, or `--no-niri` to keep the desktop packages while skipping niri. The installer also copies `dist/umbriel/config.toml` to `$XDG_CONFIG_HOME/umbriel/config.toml` (default `~/.config/umbriel/config.toml`) when missing, including on a shell-only install, and keeps an existing file.
 
