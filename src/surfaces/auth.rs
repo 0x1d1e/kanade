@@ -150,6 +150,7 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
             lane(20.0, header),
             lane(14.0, Rectangle::new().width(0.0).height(0.0)),
             body,
+            lane(14.0, Rectangle::new().width(0.0).height(0.0)),
             actions
         ]))
 }
@@ -165,6 +166,7 @@ fn action(
     let primary = target == Focus::Authenticate;
     let width = if primary { 128.0 } else { 100.0 };
     let colors = theme::island();
+    let focused = focus == target;
     let fill = if enabled {
         colors.on_surface
     } else {
@@ -177,18 +179,22 @@ fn action(
     } else {
         colors.on_surface_variant
     };
+    let (border_thickness, border_color) = if focused {
+        if primary && enabled {
+            (2.0, colors.surface)
+        } else {
+            (2.0, colors.on_surface)
+        }
+    } else if !primary {
+        (1.0, colors.outline)
+    } else {
+        (0.0, colors.outline)
+    };
     let button = Rectangle::new()
         .width(width)
         .height(40.0)
-        .radius(20.0)
-        .border(
-            if focus == target { 2.0 } else { 1.0 },
-            if focus == target {
-                colors.on_surface
-            } else {
-                colors.outline
-            },
-        )
+        .radius(theme::radius::ROW)
+        .border(border_thickness, border_color)
         .align_child(Center, Center)
         .cursor(if enabled {
             Cursor::Pointer
@@ -199,7 +205,7 @@ fn action(
             Semantics::new(Role::Button, node)
                 .label(label)
                 .disabled(!enabled)
-                .focused(focus == target)
+                .focused(focused)
         })
         .on_click(super::on_left(move || {
             if enabled {

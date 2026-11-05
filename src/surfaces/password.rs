@@ -91,7 +91,7 @@ pub fn auth(
     let colors = theme::island();
     let caps = caps && !checking;
     let caps_width = if caps { 76.0 } else { 0.0 };
-    let room = width - 36.0 - 18.0 - 12.0 - CARET - caps_width;
+    let room = width - 32.0 - 18.0 - 12.0 - CARET - caps_width;
     let mut copy: Vec<Box<dyn Widget>> = Vec::new();
     if !checking && focused {
         copy.push(Box::new(
@@ -151,7 +151,7 @@ pub fn auth(
     }
     let border = if failed {
         theme::signals().critical
-    } else if focused {
+    } else if focused && !checking {
         colors.on_surface
     } else {
         colors.outline
@@ -159,14 +159,14 @@ pub fn auth(
     Rectangle::new()
         .width(width)
         .height(52.0)
-        .radius(26.0)
+        .radius(theme::radius::ROW)
         .fill(colors.surface_container)
         .border(if focused && !checking { 2.0 } else { 1.0 }, border)
         .padding(Padding {
             top: 0.0,
-            right: 18.0,
+            right: 16.0,
             bottom: 0.0,
-            left: 18.0,
+            left: 16.0,
         })
         .align_child(Start, Center)
         .semantics(move || {
