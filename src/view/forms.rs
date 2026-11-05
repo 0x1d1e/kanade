@@ -409,7 +409,7 @@ fn dictation(
         }
         Dictation::Transcribing { serial } => (
             "Transcribing",
-            String::from("Sending to Gemini"),
+            String::from("Processing\u{2026}"),
             serial.as_str(),
         ),
         // "Copied; the window changed" is a title and why it fell back to the clipboard

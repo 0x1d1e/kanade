@@ -474,11 +474,6 @@ fn empty_state(query: &str, settings: &Settings, roles: &ThemeRoles) -> Box<dyn 
         .color(roles.on_surface)
         .weight(theme::text::SEMIBOLD);
 
-    let hint = Text::new("Try checking for typos, or jump directly to common settings:")
-        .size(theme::text::LABEL)
-        .color(roles.on_surface_variant)
-        .weight(theme::text::MEDIUM);
-
     let mut buttons: Vec<Box<dyn Widget>> = SUGGESTED_PAGES
         .iter()
         .map(|&(label, target, icon)| quick_link(label, target, icon, settings, roles))
@@ -490,7 +485,7 @@ fn empty_state(query: &str, settings: &Settings, roles: &ThemeRoles) -> Box<dyn 
     let row1 = Row::new(row1_buttons).gap(10.0).align(Center);
     let row2 = Row::new(row2_buttons).gap(10.0).align(Center);
 
-    let content_col = Column::new(children![title, hint, space(8.0), row1, row2,])
+    let content_col = Column::new(children![title, space(8.0), row1, row2])
         .width(inner())
         .gap(10.0);
 

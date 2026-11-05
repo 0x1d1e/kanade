@@ -22,7 +22,7 @@ use crate::theme::space::INSET;
 use crate::theme::{self, text};
 
 const WIDTH: f32 = geometry::AUTH.width - 2.0 * INSET;
-const BODY: f32 = 166.0;
+const BODY: f32 = 130.0;
 
 fn lane(height: f32, child: impl Widget + 'static) -> Rectangle {
     Rectangle::new()
@@ -79,7 +79,7 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
         let caps = KeyboardState::read().caps_lock;
         let content = Column::new(children![
             lane(
-                36.0,
+                32.0,
                 Text::new(prompt.message())
                     .size(text::LABEL)
                     .color(colors.on_surface_variant)
@@ -87,7 +87,7 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
                     .max_lines(2)
                     .elide()
             ),
-            lane(8.0, Rectangle::new().width(0.0).height(0.0)),
+            lane(4.0, Rectangle::new().width(0.0).height(0.0)),
             lane(
                 18.0,
                 Text::new(format!("Password for {}", prompt.user()))
@@ -96,7 +96,7 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
                     .color(colors.on_surface)
                     .elide()
             ),
-            lane(8.0, Rectangle::new().width(0.0).height(0.0)),
+            lane(2.0, Rectangle::new().width(0.0).height(0.0)),
             password::auth(
                 prompt.secret(),
                 WIDTH,
@@ -105,9 +105,8 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
                 failed,
                 caps
             ),
-            lane(6.0, Rectangle::new().width(0.0).height(0.0)),
+            lane(2.0, Rectangle::new().width(0.0).height(0.0)),
             status(&prompt),
-            lane(6.0, Rectangle::new().width(0.0).height(0.0)),
         ]);
         lane(BODY, content)
     };
@@ -148,9 +147,9 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
         .semantics(|| Semantics::new(Role::Region, "authentication").label("Authentication"))
         .child(Column::new(children![
             lane(20.0, header),
-            lane(14.0, Rectangle::new().width(0.0).height(0.0)),
+            lane(12.0, Rectangle::new().width(0.0).height(0.0)),
             body,
-            lane(14.0, Rectangle::new().width(0.0).height(0.0)),
+            lane(12.0, Rectangle::new().width(0.0).height(0.0)),
             actions
         ]))
 }
@@ -217,8 +216,7 @@ fn action(
             Text::new(label)
                 .size(text::LABEL)
                 .weight(text::SEMIBOLD)
-                .color(ink)
-                .elide(),
+                .color(ink),
         );
     if primary { button.fill(fill) } else { button }
 }
@@ -245,7 +243,7 @@ fn status(prompt: &Prompt) -> Rectangle {
             ),
         ]);
         return lane(
-            32.0,
+            20.0,
             Row::new(children![
                 spinner,
                 Text::new("Verifying password…")
@@ -253,35 +251,29 @@ fn status(prompt: &Prompt) -> Rectangle {
                     .color(colors.on_surface_variant)
             ])
             .gap(7.0)
+            .height(20.0)
             .align(Center),
         );
     }
     let Some(note) = prompt.note() else {
-        return lane(32.0, Rectangle::new().width(0.0).height(0.0));
+        return lane(0.0, Rectangle::new().width(0.0).height(0.0));
     };
     let critical = theme::signals().critical;
     lane(
-        32.0,
-        Column::new(children![
-            lane(
-                16.0,
-                Text::new(note)
-                    .size(text::LABEL_SMALL)
-                    .color(critical)
-                    .elide()
-            ),
-            lane(
-                16.0,
-                Text::new(format!(
-                    "{} {} left for this request",
-                    prompt.tries(),
-                    if prompt.tries() == 1 { "try" } else { "tries" }
-                ))
-                .size(text::LABEL_SMALL)
-                .color(critical)
-                .elide()
-            ),
-        ]),
+        20.0,
+        Row::new(children![
+            Text::new(note).size(text::LABEL_SMALL).color(critical),
+            Text::new(format!(
+                "· {} {} left",
+                prompt.tries(),
+                if prompt.tries() == 1 { "try" } else { "tries" }
+            ))
+            .size(text::LABEL_SMALL)
+            .color(critical),
+        ])
+        .gap(6.0)
+        .height(20.0)
+        .align(Center),
     )
 }
 

@@ -106,7 +106,7 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, now: Instant) 
 
     let nothing = Track {
         title: String::from("Nothing playing"),
-        artist: String::from("Start playback in any media player"),
+        artist: String::new(),
         ..Track::default()
     };
 

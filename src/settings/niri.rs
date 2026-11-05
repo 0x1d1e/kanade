@@ -35,8 +35,7 @@ use super::{Settings, WINDOW};
 pub const PAGE: &str = "niri";
 
 /// What the footer says on the page when nothing else needs saying.
-pub const STANDING: &str =
-    "niri applies changes itself within a moment, and keeps its old config if it rejects the file";
+pub const STANDING: &str = "";
 
 // how often the file's modification time is looked at while the page shows; niri polls at 500 ms
 const POLL: Duration = Duration::from_secs(1);

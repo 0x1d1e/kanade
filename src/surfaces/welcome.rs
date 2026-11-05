@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use kanade_runtime::MutexExt;
 use kanade_runtime::service::{self, Service};
 use kanade_runtime::ui::{Role, Semantics};
-use kanade_runtime::{Button, Center, Column, Key, Rectangle, Row, Start, Text, children};
+use kanade_runtime::{
+    Button, Center, Column, Cursor, Key, Padding, Rectangle, Row, Start, Text, children,
+};
 
 use super::visit::Visited;
 use crate::atomic::{self, Mode};
@@ -24,24 +26,11 @@ const STEP_COUNT: usize = TITLES.len();
 
 fn body(step: usize) -> String {
     match step {
-        0 if crate::modules::on("launcher") => String::from(
-            "Click the Island at Rest to open Controls, or open the Launcher from the Island. Mod+Alt+Space is a bind from docs/wiki/Keyboard.md; add it to your niri config to use it.",
-        ),
-        0 => String::from(
-            "Click the Island at Rest to open Controls, then open another available Surface from a tile or Activity. The Launcher Module is off; enable it with `kanade module enable launcher` and restart Kanade. Mod+Alt+Space is a bind from docs/wiki/Keyboard.md; add it to your niri config to use it.",
-        ),
+        0 => String::from("Controls and Launcher are one click away in the Island."),
         1 => String::from(
-            "Controls, Calendar, Media and other available Surfaces live inside the Island. Open one from a tile, an Activity, or a keybind.",
+            "Media, timers, and alerts live in the Island. Click to open, right-click to pin.",
         ),
-        2 if crate::modules::on("keys-surface") && crate::modules::on("launcher") => String::from(
-            "Open Keys from the Launcher. Mod+Alt+Slash is a bind from docs/wiki/Keyboard.md; add it to your niri config to use it. Keys lists your niri binds and the keys Kanade's Surfaces use.",
-        ),
-        2 if crate::modules::on("keys-surface") => String::from(
-            "Open Keys from an available Surface or its keybind. Mod+Alt+Slash is a bind from docs/wiki/Keyboard.md; add it to your niri config to use it. Keys lists your niri binds and the keys Kanade's Surfaces use.",
-        ),
-        2 => String::from(
-            "The Keys Module is off; enable it with `kanade module enable keys-surface` and restart Kanade. Mod+Alt+Slash is a bind from docs/wiki/Keyboard.md; add it to your niri config to use it. The Keyboard page lists the keys Kanade's Surfaces use.",
-        ),
+        2 => String::from("Access Weather, Calendar, and Clipboard directly from the Island."),
         _ => unreachable!(),
     }
 }
@@ -173,6 +162,69 @@ pub fn surface(open: bool, visit: u64) -> Rectangle {
     let title = TITLES[step];
     let body = body(step);
     let size = view::largest();
+
+    let action_label = if step + 1 < STEP_COUNT {
+        "Continue"
+    } else {
+        "Finish"
+    };
+
+    let continue_badge = Rectangle::new()
+        .width(84.0)
+        .height(26.0)
+        .padding(Padding {
+            top: 4.0,
+            bottom: 4.0,
+            left: 12.0,
+            right: 12.0,
+        })
+        .radius(13.0)
+        .fill(theme::island().primary)
+        .cursor(Cursor::Pointer)
+        .align_child(Center, Center)
+        .semantics(|| Semantics::new(Role::Button, "continue"))
+        .on_click(move |button| {
+            if button == Button::Left {
+                if step + 1 < STEP_COUNT {
+                    store(step + 1);
+                } else {
+                    press();
+                }
+            }
+        })
+        .child(
+            Text::new(action_label)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_primary)
+                .weight(theme::text::SEMIBOLD),
+        );
+
+    let close_badge = Rectangle::new()
+        .width(84.0)
+        .height(26.0)
+        .padding(Padding {
+            top: 4.0,
+            bottom: 4.0,
+            left: 12.0,
+            right: 12.0,
+        })
+        .radius(13.0)
+        .fill(theme::island().surface_container_high)
+        .cursor(Cursor::Pointer)
+        .align_child(Center, Center)
+        .semantics(|| Semantics::new(Role::Button, "close"))
+        .on_click(|button| {
+            if button == Button::Left {
+                press();
+            }
+        })
+        .child(
+            Text::new("Close")
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface_variant)
+                .weight(theme::text::MEDIUM),
+        );
+
     Rectangle::new()
         .width(size.width)
         .height(size.height)
@@ -194,19 +246,9 @@ pub fn surface(open: bool, visit: u64) -> Rectangle {
                     .size(theme::text::BODY)
                     .color(theme::island().on_surface_variant)
                     .wrap(),
-                Row::new(children![
-                    Text::new(if step + 1 < STEP_COUNT {
-                        "Enter or Right: continue"
-                    } else {
-                        "Enter or Right: finish"
-                    })
-                    .size(theme::text::LABEL_SMALL)
-                    .color(theme::island().on_surface),
-                    Text::new("Escape: close")
-                        .size(theme::text::LABEL_SMALL)
-                        .color(theme::island().on_surface_variant),
-                ])
-                .gap(16.0),
+                Row::new(children![continue_badge, close_badge])
+                    .gap(10.0)
+                    .align(Center),
             ])
             .gap(18.0)
             .align(Center),

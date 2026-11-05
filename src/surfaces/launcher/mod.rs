@@ -1399,7 +1399,6 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     };
 
     let shape = view::largest();
-    let placeholder = placeholder();
 
     Rectangle::new()
         .width(shape.width)
@@ -1417,7 +1416,7 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
                         match &choosing {
                             Some((Some(prompt), _)) => prompt,
                             Some((None, _)) => "Search choices",
-                            None => &placeholder,
+                            None => placeholder(),
                         },
                     ),
                 )) as Box<dyn Widget>,
@@ -1536,33 +1535,8 @@ fn field(query: &str, caret: usize, select_all: bool, placeholder: &str) -> Rect
         )
 }
 
-// what to type, the prefix keys gated on their Modules
-fn placeholder() -> String {
-    let mut prefixes = Vec::new();
-    if config::get().launcher_commands {
-        prefixes.push("?commands");
-    }
-    if modules::on("wallpaper-surface") {
-        prefixes.push("@wallpaper");
-    }
-    if modules::on("emoji-surface") {
-        prefixes.push(":emoji");
-    }
-    if modules::on("clipboard-surface") {
-        prefixes.push(">clipboard");
-    }
-
-    match prefixes.len() {
-        0 => String::from("Search apps, settings or 2+2"),
-        1 => format!("Search apps, settings, 2+2 or {}", prefixes[0]),
-        _ => {
-            let last = prefixes.pop().unwrap();
-            format!(
-                "Search apps, settings, 2+2, {} or {last}",
-                prefixes.join(", ")
-            )
-        }
-    }
+fn placeholder() -> &'static str {
+    "Search apps, settings, or calculate\u{2026}"
 }
 
 fn cursor_text(query: &str, caret: usize, room: f32, caret_widget: Rectangle) -> Box<dyn Widget> {

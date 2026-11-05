@@ -7,7 +7,7 @@
 //! `sources::binds`). A config niri's binds cannot be read from says which file and why above the
 //! rest, which still lists Kanade's own keys.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
@@ -631,12 +631,8 @@ fn compositor_config() -> Option<PathBuf> {
     }
 }
 
-// where the binds come from, and how many there are, of how many while searching
+// how many binds there are, of how many while searching
 fn footer(laid: &Laid, lookup: &Lookup) -> Row {
-    let from = compositor_config()
-        .map(|path| format!("From {}", shown(&path)))
-        .unwrap_or_default();
-
     let count = match laid.binds {
         _ if !lookup.query.trim().is_empty() => {
             format!("{} of {} keybinds", laid.found, laid.binds)
@@ -646,31 +642,15 @@ fn footer(laid: &Laid, lookup: &Lookup) -> Row {
     };
 
     Row::new(children![
-        Column::new(children![
-            Text::new(from)
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface_variant)
-                .weight(theme::text::MEDIUM)
-                .elide()
-        ])
-        .width(Parent),
         Text::new(count)
             .size(theme::text::LABEL_SMALL)
             .color(theme::island().on_surface_variant)
-            .weight(theme::text::MEDIUM),
+            .weight(theme::text::MEDIUM)
     ])
     .width(width())
     .height(FOOTER)
     .gap(GAP)
     .align(Center)
-}
-
-// a path with home as `~`
-fn shown(path: &Path) -> String {
-    std::env::var_os("HOME")
-        .and_then(|home| path.strip_prefix(home).ok())
-        .map(|rest| format!("~/{}", rest.display()))
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 /*

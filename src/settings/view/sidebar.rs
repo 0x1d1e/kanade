@@ -172,17 +172,10 @@ fn brand(roles: &ThemeRoles) -> Box<dyn Widget> {
         Box::new(
             Row::new(children![
                 mark,
-                Column::new(children![
-                    Text::new("kanade")
-                        .size(theme::text::BODY)
-                        .color(roles.on_surface)
-                        .weight(theme::text::SEMIBOLD),
-                    Text::new("Settings")
-                        .size(theme::text::LABEL_SMALL)
-                        .color(roles.on_surface_variant)
-                        .weight(theme::text::MEDIUM),
-                ])
-                .gap(1.0),
+                Text::new("Settings")
+                    .size(theme::text::BODY)
+                    .color(roles.on_surface)
+                    .weight(theme::text::SEMIBOLD),
             ])
             .width(NAV)
             .height(44.0)
@@ -247,7 +240,7 @@ pub(crate) fn search_field(settings: &Settings, roles: &ThemeRoles) -> Box<dyn W
                             .width(Parent)
                             .size(theme::text::LABEL)
                             .color(roles.on_surface)
-                            .placeholder("Find a setting")
+                            .placeholder("Search")
                             .on_change(search),
                     ])
                     .width(Parent)

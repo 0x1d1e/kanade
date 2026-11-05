@@ -28,8 +28,8 @@ use crate::theme::{self, ThemeRoles, radius};
 use crate::tiles::{self, Placed};
 
 use super::{
-    MatchReason, MatchScore, content, inner, modules_view, most_beside, niri_page, outputs_page,
-    place_page, row_stop_id, umbriel_page,
+    MatchScore, content, inner, modules_view, most_beside, niri_page, outputs_page, place_page,
+    row_stop_id, umbriel_page,
 };
 
 pub(crate) const BAR: f32 = 52.0;
@@ -339,14 +339,9 @@ pub(crate) fn row_view_detailed(
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
     let (direct_nav, hint) = match match_info {
-        Some((page_name, score)) => {
+        Some((page_name, _score)) => {
             let nav = row_stop_id(row).map(|stop_id| (page_name, stop_id));
-            let hint = match score.reason {
-                Some(MatchReason::Key(key)) => Some(format!("(matches key: {key})")),
-                Some(MatchReason::Alias(alias)) => Some(format!("(matches alias: {alias})")),
-                None => None,
-            };
-            (nav, hint)
+            (nav, None)
         }
         None => (None, None),
     };
@@ -733,12 +728,8 @@ pub(crate) fn label(
     let off = shown.iter().find_map(|setting| {
         let owner = owner(setting.key)?;
 
-        (owner.name != CORE && !modules::on(owner.name)).then(|| {
-            format!(
-                "The {} module is off: this applies once it is on, after a restart",
-                owner.name
-            )
-        })
+        (owner.name != CORE && !modules::on(owner.name))
+            .then(|| format!("Requires {} module", owner.name))
     });
 
     Label {

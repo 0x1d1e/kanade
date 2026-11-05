@@ -370,9 +370,9 @@ mod compositor_tests {
         let roles = theme::roles();
         let mut settings = Settings::default();
 
-        // Initial clean state shows settings file target
+        // Initial clean state shows empty status
         let (status, ink) = footer_status(&settings, &roles);
-        assert!(status.contains("Changes are saved to") || status.contains("Changes are written"));
+        assert_eq!(status, "");
         assert_eq!(ink, roles.on_surface_variant);
 
         // When a known Kanade setting is saved
@@ -445,7 +445,7 @@ mod compositor_tests {
         // Discard staged changes in search mode returns footer to clean state
         settings.niri.discard();
         let (status, ink) = footer_status(&settings, &roles);
-        assert!(status.contains("Changes are saved to") || status.contains("Changes are written"));
+        assert_eq!(status, "");
         assert_eq!(ink, roles.on_surface_variant);
     }
 

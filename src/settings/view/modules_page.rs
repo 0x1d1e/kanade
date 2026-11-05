@@ -168,7 +168,7 @@ pub(crate) fn module_filter_field(roles: &ThemeRoles) -> Box<dyn Widget> {
                         .width(Parent)
                         .size(theme::text::LABEL)
                         .color(roles.on_surface)
-                        .placeholder("Filter modules")
+                        .placeholder("Filter")
                         .on_change(module_filter),
                 ])
                 .width(Parent)

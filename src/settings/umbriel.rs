@@ -26,7 +26,7 @@ use super::{Settings, WINDOW};
 pub const PAGE: &str = "umbriel";
 
 /// What the footer says on the page when nothing else needs saying.
-pub const STANDING: &str = "Umbriel applies changes when reloaded or restarted";
+pub const STANDING: &str = "";
 
 // how often the file's modification time is looked at while the page shows
 const POLL: Duration = Duration::from_secs(1);

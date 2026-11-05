@@ -953,7 +953,6 @@ fn agenda(
         .filter(|_| browse.agenda)
         .map(|&at| &month.events.occurrences[at])
     {
-        Some(event) if event.added.is_none() => String::from("Read-only here"),
         Some(event) if confirm::fill(removal(event)) > 0.0 => {
             if confirm::pointer(removal(event)) {
                 String::from("Keep holding to remove")
@@ -961,8 +960,7 @@ fn agenda(
                 String::from("Keep holding d to remove")
             }
         }
-        Some(_) => String::from("e changes, hold d to remove"),
-        None => count,
+        _ => count,
     };
     let count = match account {
         Some(problem) if count.is_empty() => problem.to_owned(),
@@ -1078,13 +1076,11 @@ fn entry(
     let mut lines = vec![
         Box::new(search::field(Icon::Calendar, text, "14:30 Dentist", AGENDA)) as Box<dyn Widget>,
     ];
-    lines.push(match problem {
-        _ if saving => hint("Saving", quiet),
-        Some(problem) => hint(problem, theme::signals().warning),
-        None => hint("Enter saves, Esc cancels", quiet),
-    });
-    lines.push(hint("2026-10-15 moves it; else today", quiet));
-    lines.push(hint("14:30 or 9:00-10:30; else all day", quiet));
+    if saving {
+        lines.push(hint("Saving", quiet));
+    } else if let Some(problem) = problem {
+        lines.push(hint(problem, theme::signals().warning));
+    }
 
     Column::new(vec![
         Box::new(header) as Box<dyn Widget>,

@@ -193,23 +193,18 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
             .map_or_else(|| String::from("the device"), |device| device.name.clone())
     };
 
-    let (title, code, detail, pairs) = match prompt {
-        Prompt::Confirm { device, passkey } => (
-            format!("Pair with {}?", name(device)),
-            passkey.as_str(),
-            "Check it shows the same code",
-            Some(true),
-        ),
+    let (title, code, pairs) = match prompt {
+        Prompt::Confirm { passkey, .. } => {
+            (String::from("Confirm code"), passkey.as_str(), Some(true))
+        }
         Prompt::Show { device, code } => (
-            format!("Type this code on {}", name(device)),
+            format!("Enter code on {}", name(device)),
             code.as_str(),
-            "Then press Enter on it",
             None,
         ),
-        Prompt::Pin { device, pin } => (
-            format!("Type the PIN of {}", name(device)),
+        Prompt::Pin { pin, .. } => (
+            String::from("Enter PIN"),
             pin.as_str(),
-            "Its manual says it, then press Enter",
             Some(!pin.is_empty()),
         ),
         Prompt::None => return Rectangle::new().width(WIDTH).height(LIST),
@@ -243,10 +238,6 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
             .size(CODE)
             .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
-        Text::new(detail)
-            .size(theme::text::LABEL_SMALL)
-            .color(theme::island().on_surface_variant)
-            .weight(theme::text::MEDIUM),
     ])
     .width(WIDTH)
     .gap(6.0)

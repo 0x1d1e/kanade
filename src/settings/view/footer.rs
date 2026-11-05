@@ -3,7 +3,6 @@ use kanade_runtime::{
     Center, Color, Cursor, Parent, Rectangle, Row, SpaceBetween, Start, Text, Widget, children,
 };
 
-use crate::config;
 use crate::icon::Icon;
 use crate::settings::layout::MODULES;
 use crate::settings::ring::{self, Stop};
@@ -38,13 +37,7 @@ pub(crate) fn footer_status(settings: &Settings, roles: &ThemeRoles) -> (String,
         if let Some(status) = outputs_page::status(settings, roles) {
             status
         } else {
-            (
-                config::settings_file().map_or_else(
-                    || String::from("Changes are written as you make them"),
-                    |file| format!("Changes are saved to {}", shortened(&file)),
-                ),
-                roles.on_surface_variant,
-            )
+            (String::new(), roles.on_surface_variant)
         }
     } else if on_niri {
         niri_page::status(settings, roles)
@@ -75,13 +68,7 @@ pub(crate) fn footer_status(settings: &Settings, roles: &ThemeRoles) -> (String,
         };
         (text, roles.on_surface_variant)
     } else {
-        (
-            config::settings_file().map_or_else(
-                || String::from("Changes are written as you make them"),
-                |file| format!("Changes are saved to {}", shortened(&file)),
-            ),
-            roles.on_surface_variant,
-        )
+        (String::new(), roles.on_surface_variant)
     }
 }
 
@@ -196,7 +183,7 @@ pub(crate) fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     // Show technical details: secondary, out of the header bar; toggles each row's key and help
     let technical_id = "show technical details";
     let technical_hovered = settings.is_hovered(technical_id);
-    let technical_text = Text::new("Show technical details")
+    let technical_text = Text::new("Technical details")
         .size(theme::text::LABEL)
         .color(roles.on_surface)
         .weight(theme::text::SEMIBOLD);
@@ -272,15 +259,5 @@ fn setting_name(path: &[String]) -> Option<String> {
                 .or_else(|| setting(&path[..path.len().saturating_sub(1)].join(".")))
                 .map(|setting| setting.label.to_owned())
         }
-    }
-}
-
-// a path with the home directory as ~
-fn shortened(path: &std::path::Path) -> String {
-    match std::env::var_os("HOME")
-        .and_then(|home| path.strip_prefix(home).ok().map(|rest| rest.to_owned()))
-    {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
     }
 }

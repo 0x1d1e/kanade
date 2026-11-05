@@ -13,15 +13,6 @@ pub fn row(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
     let finder = &settings.place;
     let body = inner();
     let free = finder.busy.is_none();
-    let secondary = |text: String| {
-        Box::new(wrapped(
-            Text::new(text)
-                .size(theme::text::LABEL_SMALL)
-                .color(roles.on_surface_variant)
-                .weight(theme::text::MEDIUM),
-            body.min(MOST_MEASURE),
-        )) as Box<dyn Widget>
-    };
 
     let find = |typed: String| {
         if !typed.trim().is_empty() {
@@ -34,29 +25,14 @@ pub fn row(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
             .size(theme::text::BODY)
             .color(roles.on_surface)
             .weight(theme::text::SEMIBOLD),
-        wrapped(
-            Text::new("Type a city, or \u{201c}City, Country\u{201d}, and press Enter. The weather follows the place you pick")
-                .size(theme::text::LABEL)
-                .color(roles.on_surface_variant)
-                .weight(theme::text::MEDIUM),
-            body.min(MOST_MEASURE),
-        ),
         Row::new(children![
             text_field(place::INPUT, WIDE, "Phnom Penh, Cambodia", roles, find),
-            action(
-                "Find",
-                "find place",
-                settings,
-                roles,
-                free,
-                || place::search(&TextInput::text(place::INPUT)),
-            ),
+            action("Find", "find place", settings, roles, free, || {
+                place::search(&TextInput::text(place::INPUT))
+            },),
         ])
         .gap(8.0)
         .align(Center),
-        secondary(String::from(
-            "What you type is sent to Open-Meteo's place search, only when you press Enter or Find",
-        )),
         hairline(inner(), roles),
         Row::new(children![action(
             "Use my location",
@@ -67,17 +43,11 @@ pub fn row(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
             place::locate,
         )])
         .align(Center),
-        secondary(String::from(
-            "Sends your IP address to ipwho.is, a third-party service, to guess your city; nothing is sent until you press this. A VPN can make the guess wrong",
-        )),
     ];
 
     let (line, ink) = match (&finder.busy, &finder.said) {
         (Some(Busy::Searching), _) => (Some(String::from("Searching\u{2026}")), roles.on_surface),
-        (Some(Busy::Locating), _) => (
-            Some(String::from("Asking where this address is\u{2026}")),
-            roles.on_surface,
-        ),
+        (Some(Busy::Locating), _) => (Some(String::from("Locating\u{2026}")), roles.on_surface),
         (
             None,
             Some(Said::Set {
@@ -86,7 +56,7 @@ pub fn row(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
             }),
         ) => (
             Some(if *from_address {
-                format!("Weather set to {label}, from your IP address (approximate)")
+                format!("Location set to {label}")
             } else {
                 format!("Weather set to {label}")
             }),
@@ -109,7 +79,6 @@ pub fn row(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
 
     if !finder.results.is_empty() {
         items.push(Box::new(space(6.0)));
-        items.push(secondary(String::from("Several places match. Pick one:")));
 
         for (index, found) in finder.results.iter().enumerate() {
             let label = found.label();

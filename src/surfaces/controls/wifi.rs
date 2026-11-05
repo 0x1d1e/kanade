@@ -174,7 +174,7 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
          * while the join still reads as one that needs a password
          */
         Some(Failure::NotSaved(_)) => ("Connected, not saved", true),
-        None => ("8 to 63 characters", false),
+        None => ("", false),
     };
 
     let note = Text::new(note)

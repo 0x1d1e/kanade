@@ -591,7 +591,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let search = search.bounded(found.len(), entries.len() > pinned);
 
     let list: Box<dyn Widget> = if entries.is_empty() {
-        Box::new(state("Clipboard is empty", "What you copy shows here"))
+        Box::new(state("Clipboard is empty", ""))
     } else if found.is_empty() {
         Box::new(state(
             "No matching entries",
@@ -626,34 +626,35 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
 // what it means, in the middle of where the rows go
 fn state(title: &str, detail: &str) -> Rectangle {
-    let detail = Text::new(detail)
-        .size(theme::text::LABEL_SMALL)
-        .color(theme::island().on_surface_variant)
-        .weight(theme::text::MEDIUM);
+    let mut children = children![
+        Icon::Clipboard.draw(28.0),
+        Text::new(title)
+            .size(theme::text::BODY)
+            .color(theme::island().on_surface)
+            .weight(theme::text::SEMIBOLD),
+    ];
 
-    // centred while it fits, elided only when a long query does not, since elided text fills its
-    // width
-    let detail = match detail.width() {
-        Size::Fixed(natural) if natural <= width() => detail,
-        _ => detail.elide(),
-    };
+    if !detail.is_empty() {
+        let detail = Text::new(detail)
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::island().on_surface_variant)
+            .weight(theme::text::MEDIUM);
+
+        // centred while it fits, elided only when a long query does not, since elided text fills its
+        // width
+        let detail = match detail.width() {
+            Size::Fixed(natural) if natural <= width() => detail,
+            _ => detail.elide(),
+        };
+
+        children.push(Box::new(detail));
+    }
 
     Rectangle::new()
         .width(width())
         .height(STATE.min(room()))
         .align_child(Center, Center)
-        .child(
-            Column::new(children![
-                Icon::Clipboard.draw(28.0),
-                Text::new(title)
-                    .size(theme::text::BODY)
-                    .color(theme::island().on_surface)
-                    .weight(theme::text::SEMIBOLD),
-                detail,
-            ])
-            .gap(6.0)
-            .align(Center),
-        )
+        .child(Column::new(children).gap(6.0).align(Center))
 }
 
 /*
@@ -861,15 +862,6 @@ fn delete(id: u64, ring: bool) -> Rectangle {
         .border_if(ring)
 }
 
-// what Clear all clears: every entry, or all but the pinned, which it says it keeps
-fn clearing(all: usize, pinned: usize) -> String {
-    if pinned == 0 {
-        format!("all {all}")
-    } else {
-        format!("{}, keeping {pinned} pinned", all - pinned)
-    }
-}
-
 /*
  * how many entries there are, of how many while searching, and Clear all, which clears the whole
  * history but the pinned whatever is found, faded while there is nothing to clear
@@ -880,10 +872,6 @@ fn footer(search: &Search, found: usize, all: usize, pinned: usize) -> Row {
     let count = match all {
         _ if search.copying == Copying::Failed => String::from("The entry was not copied"),
         _ if search.full => format!("Pins are full: at most {PINS}, {} MiB", PIN_BYTES >> 20),
-        _ if confirm::fill(CLEAR) > 0.0 => {
-            format!("Keep holding to clear {}", clearing(all, pinned))
-        }
-        _ if search.clear => format!("Hold Enter to clear {}, no undo", clearing(all, pinned)),
         0 => String::from("0 entries"),
         _ if !search.query.trim().is_empty() => format!("{found} of {all}"),
         1 if pinned > 0 => String::from("1 entry, pinned"),
@@ -899,7 +887,7 @@ fn footer(search: &Search, found: usize, all: usize, pinned: usize) -> Row {
         .height(FOOTER)
         .align_child(Center, Center)
         .child(
-            Text::new("Hold to clear")
+            Text::new("Clear all")
                 .size(theme::text::LABEL_SMALL)
                 .color(ink)
                 .weight(theme::text::SEMIBOLD),

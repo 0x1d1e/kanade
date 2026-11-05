@@ -395,7 +395,7 @@ pub const PAD: Shape = Shape {
 // Auth keeps its field, status and actions in fixed lanes in every authentication state.
 pub const AUTH: Shape = Shape {
     width: 440.0,
-    height: 304.0,
+    height: 264.0,
     radius: 32.0,
 };
 

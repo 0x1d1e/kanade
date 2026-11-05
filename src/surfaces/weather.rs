@@ -459,8 +459,8 @@ fn weekday(date: NaiveDate) -> &'static str {
  */
 fn missing(monitor: &str, state: &State) -> Rectangle {
     let (title, detail) = match state {
-        State::Unset => ("No location", "Search for your city in Settings"),
-        State::Fetching | State::Fetched => ("Fetching the weather", "From Open-Meteo"),
+        State::Unset => ("No location", ""),
+        State::Fetching | State::Fetched => ("Updating\u{2026}", ""),
         State::Failed(problem @ Problem::Offline(_)) => (problem.brief(), "Trying again soon"),
         State::Failed(problem @ Problem::Refused(_)) => {
             (problem.brief(), "Check the location in Settings")
@@ -476,11 +476,16 @@ fn missing(monitor: &str, state: &State) -> Rectangle {
             .size(theme::text::BODY)
             .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
-        Text::new(detail)
-            .size(theme::text::LABEL_SMALL)
-            .color(theme::island().on_surface_variant)
-            .weight(theme::text::MEDIUM),
     ];
+
+    if !detail.is_empty() {
+        lines.push(Box::new(
+            Text::new(detail)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface_variant)
+                .weight(theme::text::MEDIUM),
+        ));
+    }
 
     if settle {
         lines.push(Box::new(search::settings_pill(monitor, search::DATA)));
