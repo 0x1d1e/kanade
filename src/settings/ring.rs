@@ -7,6 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use kanade_runtime::service::Service;
 use kanade_runtime::{Key, TextInput, request_frame};
 
 // a control the keyboard can reach, and what it does there
@@ -71,6 +72,10 @@ pub fn begin() {
 pub fn register(stop: Stop) -> Option<u64> {
     let here = AT.with_borrow(|at| at.as_deref() == Some(stop.id.as_str()));
 
+    if let Some(input) = stop.input.filter(|_| here) {
+        TextInput::focus(input);
+    }
+
     STOPS.with_borrow_mut(|stops| stops.push(stop));
 
     here.then(|| ARRIVALS.get())
@@ -81,36 +86,43 @@ pub fn reset() {
     AT.set(None);
 }
 
-// Whether the keyboard ring is on a niri setting, including while search results show it.
-pub fn on_niri_setting() -> bool {
-    AT.with_borrow(|at| {
-        at.as_deref().is_some_and(|id| {
-            [
-                "field settings niri ",
-                "switch niri ",
-                "choice niri ",
-                "reset niri ",
-            ]
+// programmatically moves the ring focus to a stop by its id, focusing its text input if it has one
+pub fn focus_stop(id: &str) {
+    let input = STOPS.with_borrow(|stops| {
+        stops
             .iter()
-            .any(|prefix| id.starts_with(prefix))
-        })
-    })
+            .find(|stop| stop.id == id)
+            .and_then(|stop| stop.input)
+    });
+
+    match input {
+        Some(input) => TextInput::focus(input),
+        None if id == "search" => TextInput::focus(super::SEARCH),
+        None => TextInput::blur(),
+    }
+
+    AT.set(Some(id.to_string()));
+    ARRIVALS.set(ARRIVALS.get() + 1);
+    request_frame();
 }
 
-// Whether the keyboard ring is on an umbriel setting, including while search results show it.
-pub fn on_umbriel_setting() -> bool {
-    AT.with_borrow(|at| {
-        at.as_deref().is_some_and(|id| {
-            [
-                "field settings umbriel ",
-                "switch umbriel ",
-                "choice umbriel ",
-                "reset umbriel ",
-            ]
-            .iter()
-            .any(|prefix| id.starts_with(prefix))
-        })
-    })
+// focuses the search field and places the ring on it
+pub fn focus_search() {
+    TextInput::focus(super::SEARCH);
+    focus_stop("search");
+}
+
+pub fn is_at(id: &str) -> bool {
+    AT.with_borrow(|at| at.as_deref() == Some(id))
+}
+
+pub fn set_at(id: &str) {
+    AT.set(Some(id.to_string()));
+}
+
+#[cfg(test)]
+pub fn at() -> Option<String> {
+    AT.with_borrow(Clone::clone)
 }
 
 pub fn key(key: Key) {
@@ -120,7 +132,8 @@ pub fn key(key: Key) {
         Key::Enter | Key::Space => run(|stop| stop.press.clone().map(|press| move || press())),
         Key::Left | Key::Up => run(|stop| stop.step.clone().map(|step| move || step(-1))),
         Key::Right | Key::Down => run(|stop| stop.step.clone().map(|step| move || step(1))),
-        Key::Escape => leave(),
+        Key::Escape => escape(),
+        Key::Shortcut('f') | Key::Character('/') => focus_search(),
         _ => {}
     }
 }
@@ -161,6 +174,19 @@ fn travel(direction: i32) {
     request_frame();
 }
 
+// in search, Escape clears the query or blurs the field; elsewhere it turns the ring off
+fn escape() {
+    let in_search = is_at("search");
+    if in_search && !super::Settings::read().query.is_empty() {
+        TextInput::set_text(super::SEARCH, "");
+        super::search(String::new());
+        TextInput::focus(super::SEARCH);
+        request_frame();
+        return;
+    }
+    leave();
+}
+
 // the ring off, and the keyboard back from a text input
 fn leave() {
     if AT.take().is_some() {
@@ -180,5 +206,65 @@ fn run<F: Fn() + 'static>(action: impl Fn(&Stop) -> Option<F>) {
     if let Some(action) = action {
         action();
         request_frame();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{Settings, search};
+
+    #[test]
+    fn focus_search_and_focus_stop_moves_ring() {
+        begin();
+        reset();
+        assert_eq!(at(), None);
+
+        focus_search();
+        assert_eq!(at(), Some("search".to_string()));
+        assert!(is_at("search"));
+
+        focus_stop("switch appearance.tone");
+        assert_eq!(at(), Some("switch appearance.tone".to_string()));
+        assert!(is_at("switch appearance.tone"));
+    }
+
+    #[test]
+    fn keyboard_shortcut_focuses_search() {
+        begin();
+        reset();
+        assert_eq!(at(), None);
+
+        key(Key::Shortcut('f'));
+        assert_eq!(at(), Some("search".to_string()));
+
+        reset();
+        assert_eq!(at(), None);
+
+        key(Key::Character('/'));
+        assert_eq!(at(), Some("search".to_string()));
+    }
+
+    #[test]
+    fn escape_clears_query_or_leaves_ring() {
+        begin();
+        reset();
+
+        focus_search();
+        search("test query".to_string());
+        assert_eq!(Settings::read().query, "test query");
+        assert_eq!(at(), Some("search".to_string()));
+
+        escape();
+        assert_eq!(Settings::read().query, "");
+        assert_eq!(at(), Some("search".to_string()));
+
+        escape();
+        assert_eq!(at(), None);
+
+        focus_stop("test_stop");
+        assert_eq!(at(), Some("test_stop".to_string()));
+        escape();
+        assert_eq!(at(), None);
     }
 }

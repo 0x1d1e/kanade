@@ -73,4 +73,4 @@ pub use placement::Size::Parent;
 pub use toplevels::{FullscreenWindow, Toplevels};
 pub use ui_scale::{set_ui_scale, ui_scale};
 pub use wayland::blur_available;
-pub use window::{Window, close_window, open_window, window_open, window_size};
+pub use window::{Window, close_window, open_window, set_window_size, window_open, window_size};

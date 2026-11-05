@@ -905,7 +905,7 @@ impl State {
             let count = self.staged.len();
             let changes = if count == 1 { "change" } else { "changes" };
 
-            return Some((format!("{count} {changes} not saved"), false));
+            return Some((format!("{count} unsaved {changes}"), true));
         }
 
         self.reload
@@ -953,7 +953,11 @@ impl State {
     }
 
     // a row's change is kept until Save, laid over what the file holds
-    fn stage(&mut self, row: &'static str, changes: Vec<(&'static str, Option<String>)>) {
+    pub(crate) fn stage(
+        &mut self,
+        row: &'static str,
+        changes: Vec<(&'static str, Option<String>)>,
+    ) {
         self.footer = None;
         self.reload = None;
         self.saved = None;
@@ -1030,7 +1034,7 @@ impl State {
     }
 
     // drops every staged change, and sets the rows' inputs back to what the file holds
-    fn discard(&mut self) {
+    pub(crate) fn discard(&mut self) {
         self.in_flight.clear();
         self.take_staged();
         self.footer = None;
@@ -2496,7 +2500,7 @@ mod tests {
         assert!(!shown.default);
         assert_eq!(
             state.status().unwrap(),
-            (String::from("1 change not saved"), false)
+            (String::from("1 unsaved change"), true)
         );
     }
 
@@ -2520,7 +2524,7 @@ mod tests {
         );
         assert_eq!(
             state.status().unwrap(),
-            (String::from("2 changes not saved"), false)
+            (String::from("2 unsaved changes"), true)
         );
 
         save(&mut state, &editor);
@@ -2681,7 +2685,7 @@ mod tests {
 
         assert_eq!(
             state.status().unwrap(),
-            (String::from("1 change not saved"), false)
+            (String::from("1 unsaved change"), true)
         );
     }
 

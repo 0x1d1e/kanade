@@ -493,7 +493,7 @@ impl State {
             let count = self.staged.len();
             let changes = if count == 1 { "change" } else { "changes" };
 
-            return Some((format!("{count} {changes} not saved"), false));
+            return Some((format!("{count} unsaved {changes}"), true));
         }
 
         self.saved.clone().map(|said| (said, false))
@@ -1195,6 +1195,10 @@ mod tests {
         assert!(!state.has_staged());
         state.stage("layout.gap", vec![("layout.gap", Some(String::from("16")))]);
         assert!(state.has_staged());
+        assert_eq!(
+            state.status().unwrap(),
+            (String::from("1 unsaved change"), true)
+        );
 
         let flushed = state.flush().unwrap();
         assert_eq!(flushed.len(), 1);

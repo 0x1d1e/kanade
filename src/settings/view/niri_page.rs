@@ -207,8 +207,11 @@ pub fn rule_row(id: &'static str, settings: &Settings, roles: &ThemeRoles) -> Bo
         detail,
         keys: settings
             .inspect
-            .then(|| String::from("layer-rule  (niri config.kdl)")),
+            .then(|| vec![String::from("layer-rule  (niri config.kdl)")]),
+        value: None,
         off: None,
+        hint: None,
+        direct_nav: None,
     };
 
     labeled(label, control, true, settings, roles)
@@ -264,9 +267,12 @@ fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeR
         )),
         _ => None,
     });
-    let keys = settings
-        .inspect
-        .then(|| format!("{}  (niri config.kdl)", item.paths().join("   ")));
+    let keys = settings.inspect.then(|| {
+        item.paths()
+            .iter()
+            .map(|path| format!("{path}  (niri config.kdl)"))
+            .collect::<Vec<_>>()
+    });
 
     Label {
         node: path,
@@ -276,7 +282,10 @@ fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeR
         marks,
         detail,
         keys,
+        value: None,
         off: shown.refused.clone(),
+        hint: None,
+        direct_nav: None,
     }
 }
 

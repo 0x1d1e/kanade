@@ -148,6 +148,10 @@ pub fn window_size() -> (f32, f32) {
     SIZE.get()
 }
 
-pub(crate) fn set_size(width: f32, height: f32) {
+pub fn set_window_size(width: f32, height: f32) {
     SIZE.set((width, height));
+}
+
+pub(crate) fn set_size(width: f32, height: f32) {
+    set_window_size(width, height);
 }

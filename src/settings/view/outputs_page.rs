@@ -9,6 +9,8 @@ use crate::settings::outputs::{
     Transform, Vrr, snap,
 };
 
+pub const PAGE: &str = "displays";
+
 const CANVAS_HEIGHT: f32 = 220.0;
 const CANVAS_PADDING: f32 = 20.0;
 
@@ -70,6 +72,33 @@ pub fn actions(settings: &Settings, roles: &ThemeRoles) -> Vec<Box<dyn Widget>> 
         ),
         super::pill("keep", "Keep", true, true, settings, roles, outputs::keep),
     ]
+}
+
+/// The footer's words while a trial runs or after Keep/Revert.
+pub fn status(settings: &Settings, roles: &ThemeRoles) -> Option<(String, Color)> {
+    if let Some((text, warns)) = settings.outputs.countdown() {
+        return Some((
+            text,
+            if warns {
+                theme::window_signals().warning
+            } else {
+                roles.primary
+            },
+        ));
+    }
+
+    if let Some((text, warns)) = &settings.outputs.notice {
+        return Some((
+            text.clone(),
+            if *warns {
+                theme::window_signals().warning
+            } else {
+                roles.on_surface_variant
+            },
+        ));
+    }
+
+    None
 }
 
 fn plain(text: &str, roles: &ThemeRoles) -> Box<dyn Widget> {
@@ -247,7 +276,10 @@ fn row_label(
         marks: Vec::new(),
         detail: None,
         keys: None,
+        value: None,
         off,
+        hint: None,
+        direct_nav: None,
     }
 }
 

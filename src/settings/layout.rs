@@ -17,7 +17,9 @@ pub fn visible_pages(comp: Compositor) -> Vec<&'static Page> {
 }
 
 pub fn route_page(page: &'static str, comp: Compositor) -> &'static str {
-    if matches!(page, "compositor" | "niri" | "umbriel") {
+    if matches!(page, "displays" | "outputs") {
+        "displays"
+    } else if matches!(page, "compositor" | "niri" | "umbriel") {
         match comp {
             Compositor::Niri => "niri",
             Compositor::Umbriel => "umbriel",
@@ -641,16 +643,23 @@ pub const PAGES: &[Page] = &[
         ],
     },
     Page {
+        name: "displays",
+        title: "Displays",
+        summary: "Arrangement, resolution, scale and orientation of connected monitors",
+        group: "System",
+        icon: Icon::Capture,
+        sections: &[Section {
+            title: "Monitors",
+            rows: &[Row::Outputs],
+        }],
+    },
+    Page {
         name: "niri",
         title: "niri",
         summary: "Edit niri's own config.kdl: its monitors, layout, focus, keyboard, touchpad, mouse and cursor. niri applies a change itself",
         group: "Compositor",
         icon: Icon::Columns,
         sections: &[
-            Section {
-                title: "Outputs",
-                rows: &[Row::Outputs],
-            },
             Section {
                 title: "Layout",
                 rows: &[
@@ -765,10 +774,6 @@ pub const PAGES: &[Page] = &[
         icon: Icon::Columns,
         sections: &[
             Section {
-                title: "Outputs",
-                rows: &[Row::Outputs],
-            },
-            Section {
                 title: "Layout",
                 rows: &[
                     Row::Umbriel("layout.mode"),
@@ -861,6 +866,12 @@ mod tests {
                 shown.iter().any(|p| p.name == "umbriel"),
                 comp == Compositor::Umbriel
             );
+            assert!(shown.iter().any(|p| p.name == "displays"));
+            for requested in ["displays", "outputs"] {
+                let routed = route_page(requested, comp);
+                assert_eq!(routed, "displays");
+                assert!(shown.iter().any(|page| page.name == routed));
+            }
             for requested in ["compositor", "niri", "umbriel"] {
                 let routed = route_page(requested, comp);
                 assert!(shown.iter().any(|page| page.name == routed));

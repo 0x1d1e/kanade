@@ -29,6 +29,8 @@ use crate::sources::json::Json;
 use crate::sources::niri as ipc;
 
 pub use canvas::{BoundingBox, CanvasFit, Rect, SNAP_THRESHOLD, snap};
+#[cfg(test)]
+pub use work::Trial;
 pub use work::{
     Disconnected, Monitor, State, drag_end, drag_start, drag_update, edit, input, keep,
     recover_at_start, refresh, reset, revert, revert_on_exit, select, sync_inputs, typed,

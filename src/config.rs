@@ -4353,6 +4353,39 @@ fn tomls(dir: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
     files
 }
 
+fn merge_tables(target: &mut toml::Table, source: toml::Table) {
+    for (key, value) in source {
+        match (target.get_mut(&key), value) {
+            (Some(toml::Value::Table(target_sub)), toml::Value::Table(source_sub)) => {
+                merge_tables(target_sub, source_sub);
+            }
+            (_, value) => {
+                target.insert(key, value);
+            }
+        }
+    }
+}
+
+// reads and merges all `*.toml` files from `XDG_CONFIG_HOME/kanade` into a single `toml::Table`
+pub fn user_config_table() -> toml::Table {
+    let home = env::var("HOME").ok();
+    let mut problems = Vec::new();
+    let paths = files(home.as_deref(), false, &mut problems);
+    let mut merged = toml::Table::new();
+
+    for path in paths {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let table = settings_table(&text)
+            .or_else(|_| text.parse::<toml::Table>())
+            .unwrap_or_default();
+        merge_tables(&mut merged, table);
+    }
+
+    merged
+}
+
 // KANADE_REDUCED_MOTION set and not empty wins over the files: 0 is off, anything else on
 fn motion(reduced: Option<&OsStr>) -> Option<Mode> {
     match reduced {
@@ -6375,5 +6408,48 @@ argv = ["kitty", "-e", "vim", "~/notes.md", "x~/y"]
         assert_eq!(motion(Some(OsStr::new("0"))), Some(Mode::Spring));
         assert_eq!(motion(Some(OsStr::new("1"))), Some(Mode::Reduced));
         assert_eq!(motion(Some(OsStr::new("yes"))), Some(Mode::Reduced));
+    }
+
+    #[test]
+    fn merge_tables_recursively_merges_subtables_and_overrides_scalars() {
+        let mut target: toml::Table = r#"
+            appearance = "dark"
+
+            [island]
+            autohide = false
+            position = "top"
+        "#
+        .parse()
+        .unwrap();
+
+        let source: toml::Table = r#"
+            [island]
+            autohide = true
+            size = 40
+
+            [appearance]
+            theme = "light"
+        "#
+        .parse()
+        .unwrap();
+
+        merge_tables(&mut target, source);
+
+        assert_eq!(
+            target.get("island").and_then(|v| v.get("autohide")),
+            Some(&toml::Value::Boolean(true))
+        );
+        assert_eq!(
+            target.get("island").and_then(|v| v.get("position")),
+            Some(&toml::Value::String("top".to_owned()))
+        );
+        assert_eq!(
+            target.get("island").and_then(|v| v.get("size")),
+            Some(&toml::Value::Integer(40))
+        );
+        assert_eq!(
+            target.get("appearance").and_then(|v| v.get("theme")),
+            Some(&toml::Value::String("light".to_owned()))
+        );
     }
 }

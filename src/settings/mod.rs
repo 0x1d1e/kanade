@@ -10,16 +10,16 @@
 //! page is the exception that proves it: niri's config is read and changed by a worker thread
 //! (`niri`), whose results land in the same Service.
 
-mod file;
-mod fonts;
-mod health;
-mod layout;
-mod login;
-mod niri;
+pub(crate) mod file;
+pub(crate) mod fonts;
+pub(crate) mod health;
+pub(crate) mod layout;
+pub(crate) mod login;
+pub(crate) mod niri;
 pub(crate) mod outputs;
-mod place;
-mod ring;
-mod umbriel;
+pub(crate) mod place;
+pub(crate) mod ring;
+pub(crate) mod umbriel;
 mod view;
 
 use std::cell::RefCell;
@@ -97,6 +97,9 @@ pub struct Settings {
     // the settings file as it stands
     file: toml::Table,
 
+    // user configuration files (*.toml in config directory) merged
+    config: toml::Table,
+
     // why the settings file cannot be read whole, which also refuses every write
     unreadable: Option<String>,
 
@@ -133,7 +136,7 @@ impl Settings {
     }
 
     // whether the search shows its results in place of a page
-    fn searching(&self) -> bool {
+    pub(crate) fn searching(&self) -> bool {
         !self.query.trim().is_empty()
     }
 
@@ -151,9 +154,41 @@ impl Settings {
         value.is_some()
     }
 
-    fn pending(&self, key: &str) -> bool {
+    // whether the user config files set the key at `path`
+    fn set_in_config(&self, path: &[String]) -> bool {
+        let [first, rest @ ..] = path else {
+            return false;
+        };
+
+        let mut value = self.config.get(first);
+        for key in rest {
+            value = value.and_then(|value| value.get(key));
+        }
+
+        value.is_some()
+    }
+
+    pub(crate) fn origin(&self, key: &str) -> Origin {
+        let path = path(key, None);
+        if self.set_here(&path) {
+            Origin::SettingsOverride
+        } else if self.set_in_config(&path) {
+            Origin::ConfigFile
+        } else {
+            Origin::Default
+        }
+    }
+
+    pub(crate) fn pending(&self, key: &str) -> bool {
         self.pending.iter().any(|pending| pending == key)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    SettingsOverride,
+    ConfigFile,
+    Default,
 }
 
 // what of the files the window shows, read off the draw thread's Service lock
@@ -161,6 +196,7 @@ struct Snapshot {
     read: Config,
     below: Config,
     file: toml::Table,
+    config: toml::Table,
     unreadable: Option<String>,
     error: Option<String>,
     pending: Vec<String>,
@@ -189,6 +225,7 @@ impl Snapshot {
             read,
             below,
             file,
+            config: config::user_config_table(),
             unreadable,
             error: reload::error(),
             skipped,
@@ -204,6 +241,7 @@ pub fn refresh() {
     settings.read = snapshot.read;
     settings.below = snapshot.below;
     settings.file = snapshot.file;
+    settings.config = snapshot.config;
     settings.unreadable = snapshot.unreadable;
     settings.error = snapshot.error;
     settings.pending = snapshot.pending;
@@ -222,9 +260,15 @@ pub fn pages() -> impl Iterator<Item = &'static str> {
 
 // the page of this name, or the one showing a Module's settings, as pages were named before
 pub fn page(name: &str) -> Option<&'static str> {
-    if name == "compositor" {
+    if matches!(name, "compositor" | "keyboard" | "shortcuts") {
         return Some(layout::route_page(
             "compositor",
+            crate::sources::compositor::active(),
+        ));
+    }
+    if matches!(name, "displays" | "outputs") {
+        return Some(layout::route_page(
+            "displays",
             crate::sources::compositor::active(),
         ));
     }
@@ -235,6 +279,13 @@ pub fn page(name: &str) -> Option<&'static str> {
             let module = modules::ALL.iter().find(|module| module.name == name)?;
 
             layout::page_of(module.settings.first()?.key).map(|page| page.name)
+        })
+        .or_else(|| {
+            if modules::ALL.iter().any(|m| m.name == name) {
+                Some(layout::MODULES)
+            } else {
+                None
+            }
         })
 }
 
@@ -338,7 +389,10 @@ pub fn open(page: Option<&'static str>) {
     // read again for the rows a search finds as well as the page
     niri::load();
     umbriel::load();
-    if matches!(Settings::read().page, niri::PAGE | umbriel::PAGE) {
+    if matches!(
+        Settings::read().page,
+        "displays" | niri::PAGE | umbriel::PAGE
+    ) {
         outputs::refresh();
     }
     kanade_runtime::open_window(WINDOW, view::window);
@@ -352,12 +406,12 @@ pub fn close() {
  * writes the key at `path`, none removing it, and shows the files as they then are; the reload
  * watch applies the write. From a press, on the draw thread
  */
-fn change(path: Vec<String>, value: Option<Value>) {
+pub(crate) fn change(path: Vec<String>, value: Option<Value>) {
     change_all(vec![(path, value)]);
 }
 
 // writes every key in one write or none, as one change Undo takes back whole
-fn change_all(changes: Vec<file::Entry>) {
+pub(crate) fn change_all(changes: Vec<file::Entry>) {
     match file::set_all(changes, &[]) {
         Ok(replaced) => {
             let changed = replaced.iter().any(|each| each.was != each.now);
@@ -372,7 +426,7 @@ fn change_all(changes: Vec<file::Entry>) {
  * since, by hand or `kanade module`, is left as it is and its Undo dropped. A write that failed
  * for another reason, as a file that does not read, keeps its Undo for when that is mended
  */
-fn undo() {
+pub(crate) fn undo() {
     let (back, expected): (Vec<file::Entry>, Vec<file::Entry>) = {
         let settings = Settings::read();
         let Some(last) = settings.history.last() else {
@@ -450,7 +504,7 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<(), String> {
 }
 
 // turns to a page, leaving any search
-fn turn_to(page: &'static str) {
+pub(crate) fn turn_to(page: &'static str) {
     let page = layout::route_page(page, crate::sources::compositor::active());
     {
         let mut settings = Settings::write();
@@ -468,6 +522,9 @@ fn turn_to(page: &'static str) {
     if page == login::PAGE {
         login::load();
     }
+    if page == "displays" {
+        outputs::refresh();
+    }
     if page == niri::PAGE {
         niri::load();
         outputs::refresh();
@@ -478,19 +535,27 @@ fn turn_to(page: &'static str) {
     }
 }
 
-fn search(query: String) {
+pub fn turn_to_setting(page: &'static str, stop_id: &str) {
+    turn_to(page);
+    if !stop_id.is_empty() {
+        ring::focus_stop(stop_id);
+    }
+}
+
+pub(crate) fn search(query: String) {
+    ring::set_at("search");
     Settings::write().query = query;
 }
 
-fn module_filter(query: String) {
+pub(crate) fn module_filter(query: String) {
     Settings::write().module_query = query;
 }
 
-fn font_search(query: String) {
+pub(crate) fn font_search(query: String) {
     Settings::write().font_query = query;
 }
 
-fn select_font(family: Option<String>) {
+pub(crate) fn select_font(family: Option<String>) {
     change(path("appearance.font", None), family.map(Value::String));
 }
 
@@ -542,13 +607,13 @@ pub(crate) fn hover(id: impl Into<String>, inside: bool) {
     }
 }
 
-fn inspect() {
+pub(crate) fn inspect() {
     let mut settings = Settings::write();
     settings.inspect = !settings.inspect;
 }
 
 // the key as the path of tables to it, with an entry of a table kind after it
-fn path(key: &str, entry: Option<&str>) -> Vec<String> {
+pub(crate) fn path(key: &str, entry: Option<&str>) -> Vec<String> {
     key.split('.').chain(entry).map(str::to_owned).collect()
 }
 
@@ -615,9 +680,9 @@ fn reset_inputs(changed: Option<&[Vec<String>]>) {
 }
 
 // the search fields' text input ids
-const SEARCH: &str = "settings search";
-const FONT_SEARCH: &str = "settings font search";
-const MODULE_FILTER: &str = "settings module filter";
+pub(crate) const SEARCH: &str = "settings search";
+pub(crate) const FONT_SEARCH: &str = "settings font search";
+pub(crate) const MODULE_FILTER: &str = "settings module filter";
 
 thread_local! {
     // each setting's text input id, made once, as an id lives as long as the input's text
@@ -626,10 +691,56 @@ thread_local! {
 }
 
 // the id of a setting's one text input
-fn input(setting: &'static Setting) -> &'static str {
+pub(crate) fn input(setting: &'static Setting) -> &'static str {
     INPUTS.with_borrow_mut(|inputs| {
         *inputs
             .entry(setting.key)
             .or_insert_with(|| Box::leak(format!("settings {}", setting.key).into_boxed_str()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn origin_distinguishes_settings_override_config_file_and_default() {
+        let mut settings = Settings::default();
+
+        // 1. Unset in both -> Default
+        assert_eq!(settings.origin("island.autohide"), Origin::Default);
+
+        // 2. Set in user config table -> ConfigFile
+        settings.config = r#"
+            [island]
+            autohide = false
+        "#
+        .parse()
+        .unwrap();
+        assert_eq!(settings.origin("island.autohide"), Origin::ConfigFile);
+        assert_eq!(settings.origin("appearance.theme"), Origin::Default);
+
+        // 3. Set in settings override (file) -> SettingsOverride
+        settings.file = r#"
+            [island]
+            autohide = true
+        "#
+        .parse()
+        .unwrap();
+        assert_eq!(settings.origin("island.autohide"), Origin::SettingsOverride);
+
+        // 4. Another key in settings override only
+        settings.file = r#"
+            [appearance]
+            theme = "dark"
+        "#
+        .parse()
+        .unwrap();
+        assert_eq!(settings.origin("island.autohide"), Origin::ConfigFile);
+        assert_eq!(
+            settings.origin("appearance.theme"),
+            Origin::SettingsOverride
+        );
+        assert_eq!(settings.origin("appearance.font"), Origin::Default);
+    }
 }

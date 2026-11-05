@@ -168,10 +168,7 @@ impl State {
         }
 
         Some((
-            format!(
-                "Keep these changes to {}? It goes back in {} s",
-                trial.output, trial.seconds
-            ),
+            format!("Keep display changes? Reverting in {}s", trial.seconds),
             false,
         ))
     }
