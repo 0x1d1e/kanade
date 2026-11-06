@@ -63,10 +63,16 @@ impl OpenWindow {
             return false;
         }
 
+        if !was_visible && let Some((width, height)) = self.configured {
+            self.width = width;
+            self.height = height;
+        }
+
         /*
-         * the frame this window is about to present carries these out with its own commit; only a
-         * window that presents none needs the commit here, and that commit without a buffer is
-         * also what shows a hidden window again, the compositor answering with a configure
+         * the frame this window is about to present carries these out with its own commit;
+         * previously configured layer surfaces present immediately upon becoming visible again,
+         * whereas only surfaces that have never received an initial configure await a configure
+         * event from the compositor
          */
         layer::apply(layer_surface, &settings);
 
@@ -110,7 +116,9 @@ impl OpenWindow {
 
         self.role.commit();
 
-        // nothing is drawn until showing the window brings a new configure
+        // previously configured layer surfaces present immediately upon becoming visible again,
+        // whereas only surfaces that have never received an initial configure await a configure
+        // event from the compositor
         self.width = 0;
         self.height = 0;
 

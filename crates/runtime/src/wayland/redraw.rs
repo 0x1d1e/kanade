@@ -26,7 +26,12 @@ impl OpenWindow {
         // views and drawing work in the virtual space, the compositor's pixels over the UI scale
         let ui = ui_scale::ui_scale();
 
-        let (width, height) = (self.width as f32 / ui, self.height as f32 / ui);
+        let (w, h) = if self.width == 0 {
+            self.configured.unwrap_or((0, 0))
+        } else {
+            (self.width, self.height)
+        };
+        let (width, height) = (w as f32 / ui, h as f32 / ui);
 
         let (content, reads) = frame::run_view(|| self.view.run(), width, height);
 

@@ -78,6 +78,7 @@ impl WaylandState {
 
             width: 0,
             height: 0,
+            configured: None,
 
             scale: 1.0,
 

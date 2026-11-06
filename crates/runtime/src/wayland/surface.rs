@@ -35,6 +35,7 @@ pub struct OpenWindow {
 
     pub width: u32,
     pub height: u32,
+    pub configured: Option<(u32, u32)>,
 
     pub scale: f32,
 
@@ -131,6 +132,7 @@ impl OpenWindow {
             return;
         };
 
+        self.configured = Some((width, height));
         self.width = width;
         self.height = height;
         self.redraw();
