@@ -125,6 +125,16 @@ pub fn at() -> Option<String> {
     AT.with_borrow(Clone::clone)
 }
 
+#[cfg(test)]
+pub fn has_stop(id: &str) -> bool {
+    STOPS.with_borrow(|stops| stops.iter().any(|stop| stop.id == id))
+}
+
+#[cfg(test)]
+pub fn stop_ids() -> Vec<String> {
+    STOPS.with_borrow(|stops| stops.iter().map(|stop| stop.id.clone()).collect())
+}
+
 pub fn key(key: Key) {
     match key {
         Key::Tab => travel(1),

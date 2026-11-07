@@ -400,11 +400,87 @@ mod compositor_tests {
         let (status, ink) = footer_status(&settings, &roles);
         assert_eq!(status, "1 change pending restart");
         assert_eq!(ink, roles.primary);
+        ring::begin();
+        let _ = footer(&settings, &roles);
+        assert!(ring::has_stop("pill restart"));
 
         settings.pending.push("appearance.font".to_string());
         let (status, ink) = footer_status(&settings, &roles);
         assert_eq!(status, "2 changes pending restart");
         assert_eq!(ink, roles.primary);
+        ring::begin();
+        let _ = footer(&settings, &roles);
+        assert!(ring::has_stop("pill restart"));
+    }
+
+    #[test]
+    fn footer_restart_button_visibility() {
+        let roles = theme::roles();
+        let mut settings = Settings::default();
+
+        // 1. Clean settings: no restart button
+        ring::begin();
+        let _ = footer(&settings, &roles);
+        assert!(!ring::has_stop("pill restart"));
+        assert_eq!(ring::stop_ids(), vec!["show technical details"]);
+
+        // 2. Pending change without history (not undoable): renders restart button before technical details
+        settings.pending = vec!["island.position".to_string()];
+        ring::begin();
+        let _ = footer(&settings, &roles);
+        assert!(ring::has_stop("pill restart"));
+        assert_eq!(
+            ring::stop_ids(),
+            vec!["pill restart", "show technical details"]
+        );
+        let actions = footer_actions(&settings, &roles);
+        assert_eq!(actions.len(), 2);
+
+        // 3. Pending change with undoable history: renders Undo, Restart, Technical details in order
+        settings.history.push(vec![crate::settings::file::Replaced {
+            path: vec!["appearance".to_string(), "tone".to_string()],
+            was: None,
+            now: None,
+        }]);
+        ring::begin();
+        let _ = footer(&settings, &roles);
+        assert!(ring::has_stop("pill restart"));
+        assert_eq!(
+            ring::stop_ids(),
+            vec!["undo", "pill restart", "show technical details"]
+        );
+        let actions = footer_actions(&settings, &roles);
+        assert_eq!(actions.len(), 3);
+
+        // 4. Staged compositor change (e.g. niri): suppresses restart button
+        let mut niri_staged = Settings {
+            page: niri::PAGE,
+            pending: vec!["island.position".to_string()],
+            ..Default::default()
+        };
+        niri_staged
+            .niri
+            .stage("layout.gaps", vec![("layout.gaps", Some("24".into()))]);
+        ring::begin();
+        let _ = footer(&niri_staged, &roles);
+        assert!(!ring::has_stop("pill restart"));
+
+        // 5. Output display trial: suppresses restart button
+        let mut trial_settings = Settings {
+            page: outputs_page::PAGE,
+            pending: vec!["island.position".to_string()],
+            ..Default::default()
+        };
+        trial_settings.outputs.trial = Some(crate::settings::outputs::Trial {
+            id: 1,
+            output: "DP-1".to_string(),
+            edits: std::collections::BTreeMap::new(),
+            seconds: 15,
+            stuck: None,
+        });
+        ring::begin();
+        let _ = footer(&trial_settings, &roles);
+        assert!(!ring::has_stop("pill restart"));
     }
 
     #[test]

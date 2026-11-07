@@ -253,6 +253,35 @@ pub use health::spawn_notice;
 // a trial of the monitors a Kanade that died left, put back at start; one running is put back at exit
 pub use outputs::{recover_at_start as recover_outputs, revert_on_exit as revert_outputs};
 
+// restarts Kanade cleanly when pending changes require a restart
+pub fn restart() {
+    std::thread::spawn(|| {
+        crate::sources::clipboard::pins::flush();
+        crate::settings::revert_outputs();
+
+        let is_systemd = std::process::Command::new("systemctl")
+            .args(["--user", "is-active", "--quiet", "kanade.service"])
+            .status()
+            .is_ok_and(|status| status.success());
+
+        if is_systemd {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "--no-block", "restart", "kanade.service"])
+                .spawn();
+        } else if crate::recovery::status().is_some() {
+            std::process::exit(0);
+        } else {
+            if let Ok(exe) = std::env::current_exe() {
+                use std::os::unix::process::CommandExt;
+                let _ = std::process::Command::new(exe)
+                    .args(std::env::args_os().skip(1))
+                    .exec();
+            }
+            std::process::exit(0);
+        }
+    });
+}
+
 // the pages, as `kanade settings open` names them
 pub fn pages() -> impl Iterator<Item = &'static str> {
     layout::PAGES.iter().map(|page| page.name)

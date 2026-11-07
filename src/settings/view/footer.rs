@@ -72,8 +72,8 @@ pub(crate) fn footer_status(settings: &Settings, roles: &ThemeRoles) -> (String,
     }
 }
 
-// what the files say: a refusal, a problem, a restart waiting, else the last change or where changes go; and Undo
-pub(crate) fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
+// what the footer's actions are: compositor staged actions or undo, restart when pending, and technical details
+pub(crate) fn footer_actions(settings: &Settings, roles: &ThemeRoles) -> Vec<Box<dyn Widget>> {
     let in_search = settings.searching();
     let on_displays = !in_search && settings.page == outputs_page::PAGE;
     let on_niri = !in_search && settings.page == niri::PAGE;
@@ -82,8 +82,7 @@ pub(crate) fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     let in_trial = settings.outputs.trial.is_some();
     let show_niri_staged = (on_niri || in_search) && settings.niri.has_staged();
     let show_umbriel_staged = (on_umbriel || in_search) && settings.umbriel.has_staged();
-
-    let (status, ink) = footer_status(settings, roles);
+    let waiting = settings.pending.len();
 
     let mut actions: Vec<Box<dyn Widget>> = Vec::new();
 
@@ -178,6 +177,18 @@ pub(crate) fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
                 roles,
             ));
         }
+
+        if waiting > 0 {
+            actions.push(pill(
+                "restart",
+                "Restart",
+                true,
+                true,
+                settings,
+                roles,
+                crate::settings::restart,
+            ));
+        }
     }
 
     // Show technical details: secondary, out of the header bar; toggles each row's key and help
@@ -223,6 +234,14 @@ pub(crate) fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         Some(roles.edge()),
         roles,
     ));
+
+    actions
+}
+
+// what the files say: a refusal, a problem, a restart waiting, else the last change or where changes go; and Undo
+pub(crate) fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
+    let (status, ink) = footer_status(settings, roles);
+    let actions = footer_actions(settings, roles);
 
     Rectangle::new()
         .width(Parent)
