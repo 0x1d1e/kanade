@@ -63,16 +63,10 @@ impl OpenWindow {
             return false;
         }
 
-        if !was_visible && let Some((width, height)) = self.configured {
-            self.width = width;
-            self.height = height;
-        }
-
         /*
-         * the frame this window is about to present carries these out with its own commit;
-         * previously configured layer surfaces present immediately upon becoming visible again,
-         * whereas only surfaces that have never received an initial configure await a configure
-         * event from the compositor
+         * a mapped window carries these settings with its next frame. After unmapping,
+         * width and height stay zero until a fresh configure; redraw commits these settings
+         * without a buffer to request it.
          */
         layer::apply(layer_surface, &settings);
 
@@ -116,14 +110,14 @@ impl OpenWindow {
 
         self.role.commit();
 
-        // previously configured layer surfaces present immediately upon becoming visible again,
-        // whereas only surfaces that have never received an initial configure await a configure
-        // event from the compositor
+        // unmapping resets the compositor's configure state; only a fresh configure permits drawing
         self.width = 0;
         self.height = 0;
 
         // a frame callback asked for before hiding may never come
         self.frame_requested = false;
+
+        self.gpu.release_images();
     }
 }
 

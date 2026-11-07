@@ -65,6 +65,9 @@ pub(crate) fn release_pool() {
 
     *shared.vello.borrow_mut() = vello;
 
+    // dropping the renderer queues buffer destruction; process it even if no frame follows
+    let _ = shared.device.poll(vello::wgpu::PollType::Poll);
+
     shared.atlas_drops.set(shared.atlas_drops.get() + 1);
 }
 

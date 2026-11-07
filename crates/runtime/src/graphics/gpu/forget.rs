@@ -9,6 +9,19 @@ use super::Gpu;
  * didn't draw this frame is gone from it, like an old wallpaper
  */
 impl Gpu {
+    // hiding skips draw(), so evict its images without discarding reusable drawing resources
+    pub(crate) fn release_images(&mut self) {
+        if self.shown.is_empty() {
+            return;
+        }
+
+        self.drawn.clear();
+        self.forget_unshown();
+
+        // image textures can now be destroyed even if the window draws no further frames
+        let _ = self.device.poll(vello::wgpu::PollType::Poll);
+    }
+
     // keeps the image alive while this window's copies of it are kept
     pub(super) fn note_shown(&mut self, image: &Arc<Bitmap>) {
         let key = Arc::as_ptr(image) as usize;

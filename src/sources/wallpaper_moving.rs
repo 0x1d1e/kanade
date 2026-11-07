@@ -242,7 +242,7 @@ pub fn run() {
 
         due = Some(due_after(due.unwrap_or(now), shot.delay, now));
 
-        show(&live, &shot);
+        show(&live, shot);
     }
 }
 
@@ -364,8 +364,8 @@ fn pace(delay: Duration) -> Duration {
 }
 
 // hands `shot` to the window of each output, one part each, so only those windows draw again
-fn show(outputs: &[String], shot: &Shot) {
-    let pixels = Arc::new(shot.pixels.clone());
+fn show(outputs: &[String], shot: Shot) {
+    let pixels = Arc::new(shot.pixels);
 
     let mut moving = Moving::write();
 

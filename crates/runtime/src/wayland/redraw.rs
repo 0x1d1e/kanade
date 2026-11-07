@@ -26,6 +26,7 @@ impl OpenWindow {
         // views and drawing work in the virtual space, the compositor's pixels over the UI scale
         let ui = ui_scale::ui_scale();
 
+        // keep view layout stable while awaiting configure; the live dimensions below gate drawing
         let (w, h) = if self.width == 0 {
             self.configured.unwrap_or((0, 0))
         } else {

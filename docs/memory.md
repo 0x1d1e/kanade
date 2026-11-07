@@ -46,10 +46,18 @@ A hide-time cleanup of each layer window's GPU caches (images, glyph pictures, t
 Open, not traced or not fixed:
 
 - The Calendar's first use adds about 100 MiB of heap, and its cause is unresolved.
-- The moving wallpaper's memory stays after it is stopped and hidden.
+- The moving wallpaper's memory stayed after it was stopped and hidden in the historical run. Image ownership cleanup is now in place; its memory effect remains unmeasured.
 - A `kanade dmenu` selection in the detached Launcher returns "the Launcher did not open". It is older than this change.
-- A "wrong configure serial" protocol error ends the shell on repeated layer unmap and remap. It is older than this change and is in the previous binary too.
+- A "wrong configure serial" protocol error ended the shell on repeated layer unmap and remap in the historical run. Remapping now waits for configure before presenting; repeated-cycle verification remains pending.
 - The Welcome and Auth windows could not be rendered under Umbriel during this baseline, so they were not measured. Later Auth support adds no memory measurement to this record.
+
+## Image ownership and layer lifecycle changes
+
+Layer unmap clears the drawable dimensions. Showing the layer commits its settings without a buffer, and drawing resumes from the compositor's configure callback, after SCTK acknowledges its serial. The previous dimensions remain available only for view layout. A trace reporting "layer_surface has never been configured" concerns this lifecycle, not an invalid anchor bitmask.
+
+Hiding now evicts the window's retained image owners, converted image data and quad picture bindings through the existing image eviction path, then polls the device for deferred destruction. The swapchain, spare canvases, painted scenes and glyph atlas remain available for reopening. Moving wallpaper publication consumes the decoded shot and shares its pixel vector across outputs without cloning that vector; decoding, pacing and ring capacity are unchanged.
+
+Closing a normal window now polls the device after replacing the shared Vello renderer, so deferred buffer destruction can be processed without another frame. Memory savings and reopen timing for these changes have not been measured. Driver allocation retention as a cause of the Calendar's historical growth remains a hypothesis; recurrence limits, font storage and heap trimming are unchanged.
 
 ## Baseline, two monitors
 
