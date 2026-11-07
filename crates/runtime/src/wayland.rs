@@ -268,6 +268,9 @@ impl WaylandApp {
             self.event_loop
                 .dispatch(None, &mut self.state)
                 .expect("failed to dispatch events");
+            if let Some(error) = self.state.connection.protocol_error() {
+                panic!("Wayland connection terminated with protocol error: {error}");
+            }
         }
     }
 }
