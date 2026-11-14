@@ -15,10 +15,10 @@ The memory peak journalctl reports when the unit stops is `memory.peak`. The she
 
 ## Procedure
 
-Needs a release build, every monitor connected, no other shell running, and every Surface's Module on. The lock step waits for your password.
+Needs a release build, every monitor connected, no other shell running, and every Surface's Module on. The lock step waits for your password. The commands below are for niri, where `kanade.service` owns the shell.
 
 ```sh
-cargo build --release
+cargo build --release --locked
 systemctl --user stop kanade.service
 systemd-run --user --unit=kanade-memory --collect "$PWD/target/release/kanade"
 sleep 20                                  # settle at Rest
@@ -29,7 +29,11 @@ systemctl --user start kanade.service
 
 The transient unit gives the shell its own cgroup, as `kanade.service` does, so the cgroup columns and journalctl's peak match the installed shell. `scripts/memory` samples at Rest, two seconds after opening each Surface, after collapsing, with the Settings window open and closed, locked, and after you unlock. `scripts/memory sample LABEL` takes one sample; `UNIT=kanade.service` measures the installed shell.
 
-Columns, in MiB: the shell's `rss`, `pss`, `anon` and PSS of mapped files (`file`); `gpu` and `gpu-res`, the GPU buffers it allocated and has resident; then its cgroup's current use, `peak` since start, `anon`, page `cache`, `shmem` (mostly the GPU buffers), reclaimable slab (`slab-r`), and the PSS of the helper processes (`others`). `gpu-res` can drop for a while and recover, with `gpu` and `shmem` unchanged: the installed shell has shown as little as 1 MiB of its 224 MiB of buffers resident, and 218 MiB again a minute later. Why was not traced; the driver may have released the buffers' pages to its shmem cache. Compare `gpu` between runs.
+Under Umbriel, bare `kanade` runs a recovery parent and one renderer child; `kanade.service` is inactive or disabled. Build first, then stop the current `kanade-recover` parent with SIGTERM so it stops and reaps its renderer. Start the transient `kanade-memory` unit with the release binary as above. After measuring, stop that transient unit and restore the shell with `umbriel msg spawn kanade`, rather than starting `kanade.service`. Do not stop only the renderer: its parent would restart it. Confirm the correct recovery parent before stopping it.
+
+The sampler follows a recovery parent's direct renderer child inside the requested unit, using its executable and `--umbriel-shell` argument. It reports an error if that child is missing or ambiguous. The shell columns belong to the renderer; the recovery parent joins the helpers in `others`. Direct shells under niri keep using the unit's MainPID, and all cgroup columns still belong to the requested unit.
+
+Columns, in MiB: the shell's `rss`, `pss`, `anon`, `swap` (`VmSwap` from `/proc/<pid>/status`) and PSS of mapped files (`file`); `gpu` and `gpu-res`, the GPU buffers it allocated and has resident; then its cgroup's current use, `peak` since start, `anon`, page `cache`, `shmem` (mostly the GPU buffers), reclaimable slab (`slab-r`), and the PSS of the helper processes (`others`). Compare anonymous memory together with `swap`. Historical rows below predate the `swap` column. `gpu-res` can drop for a while and recover, with `gpu` and `shmem` unchanged: the installed shell has shown as little as 1 MiB of its 224 MiB of buffers resident, and 218 MiB again a minute later. Why was not traced; the driver may have released the buffers' pages to its shmem cache. Compare `gpu` between runs.
 
 What the Surfaces show changes the numbers, so record it with each baseline: the config, the calendars and their events, the weather location, a media player and its art, the tray items, and notifications (empty at start, kept only in memory) and clipboard history (empty at start but for the pins, which are loaded from `$XDG_STATE_HOME/kanade/clipboard-pins` at start and so count in the first sample, a pinned picture in full; ADR 0115; a picture the Clipboard Surface showed also has its preview file on tmpfs, `$XDG_RUNTIME_DIR/kanade-clipboard/<pid>`, RAM that RSS misses, and its decoded thumbnail; ADR 0114). To include cold cache and slab, as on a first start after boot, drop the caches before starting the shell: `sync; echo 3 | sudo tee /proc/sys/vm/drop_caches`.
 
@@ -43,21 +47,66 @@ A hide-time cleanup of each layer window's GPU caches (images, glyph pictures, t
 - Run a build under test from disk, not from tmpfs `/tmp`: a copy on tmpfs inflates or shrinks the resident text by about 7 MiB, and made a fresh start look 9 MiB worse than the same binary on disk.
 - Count `VmSwap` with anonymous memory; one run's anonymous memory varies by about 6 MiB, so compare several.
 
-Open, not traced or not fixed:
+Historical observations and current status:
 
-- The Calendar's first use adds about 100 MiB of heap, and its cause is unresolved.
+- The Calendar's historical first-use growth was later traced in part to live Vulkan command-pool allocations; see the 2026-11-14 investigation below.
 - The moving wallpaper's memory stayed after it was stopped and hidden in the historical run. Image ownership cleanup is now in place; its memory effect remains unmeasured.
 - A `kanade dmenu` selection in the detached Launcher returns "the Launcher did not open". It is older than this change.
-- A "wrong configure serial" protocol error ended the shell on repeated layer unmap and remap in the historical run. Remapping now waits for configure before presenting; repeated-cycle verification remains pending.
-- The Welcome and Auth windows could not be rendered under Umbriel during this baseline, so they were not measured. Later Auth support adds no memory measurement to this record.
+- A "wrong configure serial" protocol error ended the shell on repeated layer unmap and remap in the historical run. Hidden layers now keep a transparent 1x1 buffer mapped to avoid that race. The 2026-11-14 candidate and production runs completed repeated Calendar and Settings cycles without panic or protocol matches.
+- Welcome and Auth could not be rendered under Umbriel during the historical baseline. On the 2026-11-14 production build, real Auth prompts were exercised, authentication succeeded (`pkexec` exit 0), and lock and unlock completed cleanly. Welcome memory remains unmeasured.
 
 ## Image ownership and layer lifecycle changes
 
-Layer unmap clears the drawable dimensions. Showing the layer commits its settings without a buffer, and drawing resumes from the compositor's configure callback, after SCTK acknowledges its serial. The previous dimensions remain available only for view layout. A trace reporting "layer_surface has never been configured" concerns this lifecycle, not an invalid anchor bitmask.
+Hiding a layer presents a transparent 1x1 buffer, removes its input region and exclusive zone, and keeps it mapped. The runtime zeros its drawable dimensions while hidden and gates drawing until configured again. It does not detach the buffer or introduce an unmap/remap cycle. A trace reporting "layer_surface has never been configured" concerns this lifecycle, not an invalid anchor bitmask.
 
 Hiding now evicts the window's retained image owners, converted image data and quad picture bindings through the existing image eviction path, then polls the device for deferred destruction. The swapchain, spare canvases, painted scenes and glyph atlas remain available for reopening. Moving wallpaper publication consumes the decoded shot and shares its pixel vector across outputs without cloning that vector; decoding, pacing and ring capacity are unchanged.
 
-Closing a normal window now polls the device after replacing the shared Vello renderer, so deferred buffer destruction can be processed without another frame. Memory savings and reopen timing for these changes have not been measured. Driver allocation retention as a cause of the Calendar's historical growth remains a hypothesis; recurrence limits, font storage and heap trimming are unchanged.
+Closing a normal window drains its last frames and rebuilds both already-initialized Vello renderers, including the dedicated path-only renderer, with their existing options. This releases both buffer pools at the existing close boundary and compiles replacements there, preserving reopen timing; a path renderer that has never drawn remains uninitialized. The device is polled after both replacements so deferred buffer destruction can be processed without another frame. Surface hide and collapse do not rebuild these pools.
+
+Cold resource cleanup uses a generation observed independently by every resolver, so one renderer cannot consume another renderer's request. After packing a resourceful resolve, temporary pending image owners are cleared. Resident images and the returned upload list retain their own pixel owners for rendering; cold cleanup clears those caches and any unfinished pending images, including when the next encoding has no resources. Existing `release_cold` callers are unchanged.
+
+These ownership corrections alone showed no measurable retained-memory benefit in two fresh normal-allocator runs: 463.2–470.5 MiB RSS and 148.3 MiB GPU, versus the installed baseline's 460.3–463.9 MiB RSS and 148.3 MiB GPU. They correct retained owners and incomplete renderer cleanup, but do not account for the measured Calendar growth. Recurrence limits, font storage and heap trimming are unchanged.
+
+## Vulkan command-pool retention, 2026-11-14
+
+A separate heap profile attributed more than 51.7 MiB of the Calendar's additional live allocations to `vkAllocateCommandBuffers`. This was live memory held by the graphics stack, not merely freed pages waiting for glibc to return them. The Vulkan HAL recycles completed command buffers into a device-wide allocator whose command pools retain their high-water allocation. Replacing Vello's renderer pools does not release that device-owned storage. This identifies retained pool owners; it does not establish an unreachable-memory leak or attribute every historical allocation to them.
+
+Completion waits after presentation recycle those commands, but a busy frame can already have grown the retained pools before that wait. The runtime now waits after every 32 intermediate submissions so later encoders can reuse completed commands within the frame. Explicit submissions wait on their returned submission index; Vello's internal submission is counted after the renderer borrow ends and waits on the current queue. The final presentation submission keeps its wait after present. Successful waits reset the count; timeouts retain it and use the existing one-second diagnostic. This bounds submission backlog, not memory bytes or every internal encoder Vello creates. There is no configuration setting or diagnostic mode in production.
+
+An initial causal probe used one fresh process per mode, in the order existing pacing, every 8 submissions, then every 32, using the same instrumented release (`523e9ecf59ef54a3a0b78b0ac66ba7cd3976ef9998c43a96e7810fe88492297e`). Waiting every 8 submissions was rejected because it roughly doubled Calendar and Settings frame work (warm Calendar 25.0–31.3 ms, Settings 33.8–42.1 ms) and cut Calendar's recorded frames to 16–19 per open. The 32 limit preserved most memory reduction with Calendar cadence close to existing pacing.
+
+| Retained metric | Existing pacing probe | Every 8 probe | Every 32 probe |
+|---|---:|---:|---:|
+| RSS, MiB | 457.0 | 251.1 | 371.6 |
+| Anonymous + VmSwap, MiB | 362.2 | 154.8 | 275.5 |
+| GPU allocation, MiB | 148.3 | 116.2 | 138.3 |
+| Logged command pools after drain | 83 | 17 | 54 |
+| RSS growth across warm cycles, MiB | 55.1 | 0.8 | 18.7 |
+
+Two fresh production runs were then measured with all temporary probes, environment switches and counters removed (`080310355f68f6604e7cbcd2bb281ab0d4942aadc11da988eb1d02965436cb95`). The runs used the normal allocator, real user configuration, one eDP-1 1920×1080 monitor at 144 Hz, and Intel Vulkan without a driver override: 20 seconds at Rest, 2 seconds per step, three warm Calendar and Settings cycles, and a final 10-second retained wait.
+
+| Stage | Baseline RSS | Production RSS | Baseline anon+swap | Production anon+swap | Baseline GPU | Production GPU |
+|---|---:|---:|---:|---:|---:|---:|
+| Rest | 194.6–199.8 | 192.7–198.4 | 99.3–104.2 | 97.5–103.4 | 74.1 | 74.1 |
+| First Calendar | 336.4–350.2 | 312.2–312.9 | 240.6–254.2 | 216.6–217.0 | 128.2–130.3 | 126.2 |
+| First Settings | 368.8–382.8 | 329.9–331.8 | 272.7–286.3 | 233.8–235.9 | 162.4–164.4 | 158.4 |
+| Retained +10s | 460.3–463.9 | 370.7–374.3 | 363.8–367.6 | 274.5–278.0 | 148.3 | 138.3 |
+
+Retained RSS fell to 370.7–374.3 MiB, a mean reduction of 89.5 MiB (19.4%) against the original baseline. Anonymous memory plus VmSwap fell by 89.4 MiB (24.5%), and GPU allocation by 10.0 MiB (6.8%). Rest RSS was comparable (mean 1.6 MiB lower); GPU buffers at Rest were identical (74.1 MiB). First-Calendar RSS was 30.8 MiB lower on average, clipboard-to-calendar growth fell from 61.0–64.2 to 25.2–30.6 MiB, and warm-cycle growth fell from 55.1–70.1 to 18.1–21.3 MiB. Swap, VmSwap and cgroup swap stayed zero across all samples. File-cache charges varied substantially between runs (105.0 MiB cache at Rest in production run 1 versus 743.2 MiB in the matched A0 run), so unadjusted cgroup totals are not directly comparable.
+
+| Metric | Baseline | Production |
+|---|---|---|
+| First Calendar max combined work | 14.4–16.6 ms | 18.9–19.3 ms |
+| Warm Calendar max combined work | 9.1–16.5 ms | 14.1–24.6 ms |
+| Warm Calendar frames per open | 29–35 | 24–30 |
+| Warm Calendar subsequent-gap P95 | 17.0–26.4 ms | 16.4–24.5 ms |
+| Warm Calendar first-frame work | 2.1–3.2 ms | 1.5–1.6 ms |
+| Warm Settings max combined work | 10.4–14.4 ms | 8.4–11.8 ms |
+| First Settings max combined work | 12.9–13.2 ms | 14.0–15.2 ms |
+
+The 32-submission limit trades Calendar maximum frame work and frame headroom for retained-memory reduction. Warm Calendar cadence shows mild frame reduction with overlapping gap P95; first-frame work and warm Settings work improved slightly. These combined-work numbers sum view, draw and GPU submission through presentation; they are not end-to-end input latency or hardware execution times, and gap vectors include idle redraws. This covers two fresh runs and is not a statistical claim.
+
+Acceptance confirmed that the permanent sampler matched `/proc` and GPU allocations exactly (PID 223889: RSS 198.4 vs 198.41, GPU 74.1 vs 74.14, swap 0), screen locking and unlocking succeeded (locked 390.3 MiB, unlocked 375.5 MiB), actual polkit authentication completed, 42 date cells and 28 emoji cells visibly rendered, and repeated cycles raised no panic or protocol errors. The installed recovery parent (225727) and renderer (225731) were restored with matching focus, configuration and environment.
 
 ## Baseline, two monitors
 

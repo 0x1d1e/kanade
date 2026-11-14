@@ -12,10 +12,10 @@ use vello::{AaSupport, RendererOptions};
 use super::wait::wait;
 
 /*
- * one gpu device and one vello for every window: separate devices are separate contexts the driver
- * switches between, and each compiles every shader again on its first frame. Closing a normal window
- * replaces the renderer and drops the buffer pool only its larger target needed; the next frame does
- * not compile the shaders again, this close does, once
+ * one gpu device for every window: separate devices are separate contexts the driver switches
+ * between, and each compiles every shader again on its first frame. Closing a normal window
+ * replaces both initialized renderers and drops the buffer pools its larger target needed;
+ * the next frame does not compile the shaders again, this close does, once per renderer
  */
 #[derive(Clone)]
 pub struct Shared {
@@ -64,8 +64,9 @@ pub(crate) fn release_pool() {
         vello::Renderer::new(&shared.device, renderer_options()).expect("failed to start vello");
 
     *shared.vello.borrow_mut() = vello;
+    super::flush::release_pool(&shared.device);
 
-    // dropping the renderer queues buffer destruction; process it even if no frame follows
+    // dropping the renderers queues buffer destruction; process it even if no frame follows
     let _ = shared.device.poll(vello::wgpu::PollType::Poll);
 
     shared.atlas_drops.set(shared.atlas_drops.get() + 1);

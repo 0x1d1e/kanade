@@ -1,16 +1,20 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
-use vello::wgpu::{PollError, PollType, SubmissionIndex};
+use vello::wgpu::{Device, PollError, PollType, SubmissionIndex};
 
 use super::shared;
 
 // how long the wait on a frame may take before the gpu is called stuck
 const STUCK: Duration = Duration::from_secs(1);
 
+// recycle commands within busy frames to reduce the device's retained pool high-water
+const SUBMISSION_BUDGET: u32 = 32;
+
 thread_local! {
     // the last frame sent, which the drain waits on
     static LAST: RefCell<Option<SubmissionIndex>> = const { RefCell::new(None) };
+    static PENDING: Cell<u32> = const { Cell::new(0) };
 }
 
 // a frame was sent, and presenting it committed it; the drain waits on this one
@@ -18,10 +22,28 @@ pub(crate) fn note_submitted(submission: SubmissionIndex) {
     LAST.with_borrow_mut(|last| *last = Some(submission));
 }
 
+// wait between intermediate submissions, before another encoder is acquired
+pub(super) fn intermediate_submission(device: &Device, submission: Option<SubmissionIndex>) {
+    let pending = PENDING.get().saturating_add(1);
+    PENDING.set(pending);
+    if pending < SUBMISSION_BUDGET {
+        return;
+    }
+
+    match device.poll(PollType::Wait {
+        submission_index: submission,
+        timeout: Some(STUCK),
+    }) {
+        Ok(_) => PENDING.set(0),
+        Err(PollError::Timeout) => eprintln!("kanade: the gpu is still on a frame {STUCK:?} later"),
+        Err(_) => {}
+    }
+}
+
 /*
- * wgpu frees command buffers only on poll; waiting on submission completion runs after
- * present (while compositor displays the frame) so the morph does not stall, polling every
- * frame to keep heap bounded across window visits.
+ * completion waits recycle command buffers, but the device retains its command-pool high-water.
+ * limiting intermediate submissions reduces that high-water within busy frames; the final wait
+ * stays after present, while the compositor displays the frame.
  */
 pub(crate) fn after_frame() {
     drain();
@@ -48,7 +70,9 @@ pub(crate) fn drain() {
      * fatal error in the poll itself panics. what is left is a gpu still on a frame, whose
      * resources the next drain frees
      */
-    if let Err(PollError::Timeout) = shared.device.poll(wait) {
-        eprintln!("kanade: the gpu is still on a frame {STUCK:?} later");
+    match shared.device.poll(wait) {
+        Ok(_) => PENDING.set(0),
+        Err(PollError::Timeout) => eprintln!("kanade: the gpu is still on a frame {STUCK:?} later"),
+        Err(_) => {}
     }
 }

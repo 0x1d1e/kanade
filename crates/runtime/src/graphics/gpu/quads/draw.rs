@@ -170,6 +170,7 @@ impl Quads {
             }
         }
 
-        queue.submit([encoder.finish()]);
+        let submission = queue.submit([encoder.finish()]);
+        super::super::drain::intermediate_submission(device, Some(submission));
     }
 }

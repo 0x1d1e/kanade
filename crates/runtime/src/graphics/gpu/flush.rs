@@ -15,6 +15,14 @@ thread_local! {
     static PATHS: RefCell<Option<Renderer>> = const { RefCell::new(None) };
 }
 
+pub(super) fn release_pool(device: &Device) {
+    PATHS.with_borrow_mut(|paths| {
+        if let Some(paths) = paths {
+            *paths = renderer(device);
+        }
+    });
+}
+
 impl Gpu {
     // vello always clears what it draws into, so it draws apart and the result is laid on top
     pub(super) fn paint(&mut self, scene: &mut Scene, canvas: &Texture) {
@@ -71,6 +79,8 @@ impl Gpu {
                 .expect("failed to draw scene");
         }
 
+        super::drain::intermediate_submission(&self.device, None);
+
         scratch
     }
 
@@ -87,7 +97,8 @@ impl Gpu {
             [opacity, premultiply, 0.0, 0.0],
         );
 
-        self.queue.submit([encoder.finish()]);
+        let submission = self.queue.submit([encoder.finish()]);
+        super::drain::intermediate_submission(&self.device, Some(submission));
     }
 
     /*

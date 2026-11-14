@@ -17,16 +17,40 @@ sample | '') ;;
 esac
 
 # the unit's own cgroup holds the shell and its helpers, and nothing else
-pid=$(systemctl --user show -p MainPID --value "$unit")
-if [ "${pid:-0}" = 0 ]; then
+main_pid=$(systemctl --user show -p MainPID --value "$unit")
+if [ "${main_pid:-0}" = 0 ]; then
     echo "memory: $unit runs no shell" >&2
     exit 1
 fi
-cgroup=/sys/fs/cgroup$(sed -n 's/^0:://p' "/proc/$pid/cgroup")
+cgroup=/sys/fs/cgroup$(systemctl --user show -p ControlGroup --value "$unit")
+
+select_renderer() {
+    pid=$main_pid
+    if [ "$(cat "/proc/$main_pid/comm" 2> /dev/null)" != kanade-recover ]; then
+        return
+    fi
+
+    pid=
+    children=$(cat "/proc/$main_pid/task/$main_pid/children" 2> /dev/null) || children=
+    for child in $children; do
+        grep -qx "$child" "$cgroup/cgroup.procs" || continue
+        [ "$(readlink "/proc/$child/exe")" = "$(readlink "/proc/$main_pid/exe")" ] || continue
+        tr '\000' '\n' < "/proc/$child/cmdline" 2> /dev/null | grep -qx -- --umbriel-shell || continue
+        if [ -n "$pid" ]; then
+            echo "memory: $unit has more than one recovery renderer" >&2
+            exit 1
+        fi
+        pid=$child
+    done
+    if [ -z "$pid" ]; then
+        echo "memory: $unit recovery parent has no renderer to sample" >&2
+        exit 1
+    fi
+}
 
 header() {
-    printf "%-14s %7s %7s %7s %7s %7s %7s | %7s %7s %7s %7s %7s %7s %7s\n" "" \
-        rss pss anon file gpu gpu-res cgroup peak anon cache shmem slab-r others
+    printf "%-14s %7s %7s %7s %7s %7s %7s %7s | %7s %7s %7s %7s %7s %7s %7s\n" "" \
+        rss pss anon swap file gpu gpu-res cgroup peak anon cache shmem slab-r others
 }
 
 gone() {
@@ -34,26 +58,67 @@ gone() {
     exit 1
 }
 
+interrupted() {
+    echo "memory: incomplete sample for renderer pid $pid: $1" >&2
+    exit 1
+}
+
 sample() {
-    rollup=$(cat "/proc/$pid/smaps_rollup" 2> /dev/null) || gone
-    # /dev/dri file descriptors, for their DRM fdinfo; several can share one client
-    dri=$(find "/proc/$pid/fd" -lname '/dev/dri/*' -printf "/proc/$pid/fdinfo/%f\n" 2> /dev/null || true)
-    others=$(grep -vx "$pid" "$cgroup/cgroup.procs" | sed 's|.*|/proc/&/smaps_rollup|')
+    select_renderer
+    identity=$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$pid/stat" 2> /dev/null) || interrupted "process identity unavailable"
+    executable=$(readlink "/proc/$pid/exe") || interrupted "executable unavailable"
+    rollup=$(cat "/proc/$pid/smaps_rollup" 2> /dev/null) || interrupted "memory rollup unavailable"
+    for key in Rss Pss Anonymous Pss_File; do
+        printf '%s\n' "$rollup" | grep -Eq "^$key:[[:space:]]+[0-9]+[[:space:]]+kB$" || interrupted "$key missing from rollup"
+    done
+    status=$(cat "/proc/$pid/status" 2> /dev/null) || interrupted "process status unavailable"
+    printf '%s\n' "$status" | grep -Eq '^VmSwap:[[:space:]]+[0-9]+[[:space:]]+kB$' || interrupted "VmSwap unavailable"
+
+    # An accessible fd directory with no DRM descriptors is a real zero; a failed scan is not.
+    dri=$(find "/proc/$pid/fd" -lname '/dev/dri/*' -printf "/proc/$pid/fdinfo/%f\n" 2> /dev/null) || interrupted "GPU descriptors unavailable"
+    gpu_info=$(
+        readable=0
+        for file in $dri; do
+            if fdinfo=$(cat "$file" 2> /dev/null); then
+                printf '%s\n' "$fdinfo" | sed "s|^|fdinfo $file |"
+                readable=$((readable + 1))
+            elif [ -e "$file" ]; then
+                exit 1
+            fi
+        done
+        [ -z "$dri" ] || [ "$readable" -gt 0 ]
+    ) || interrupted "GPU fdinfo unavailable"
+
+    processes=$(cat "$cgroup/cgroup.procs") || interrupted "unit processes unavailable"
+    helpers=$(
+        for other in $processes; do
+            [ "$other" != "$pid" ] || continue
+            sed -n 's/^Pss:/others/p' "/proc/$other/smaps_rollup" 2> /dev/null || true
+        done
+    )
+    cg_stat=$(cat "$cgroup/memory.stat") || interrupted "cgroup statistics unavailable"
+    for key in anon file shmem slab_reclaimable; do
+        printf '%s\n' "$cg_stat" | grep -Eq "^$key [0-9]+$" || interrupted "$key missing from cgroup statistics"
+    done
+    cg_current=$(cat "$cgroup/memory.current") || interrupted "cgroup memory unavailable"
+    case $cg_current in
+    '' | *[!0-9]*) interrupted "invalid cgroup memory" ;;
+    esac
+    # memory.peak is optional on kernels before Linux 5.19.
+    cg_peak=$(cat "$cgroup/memory.peak" 2> /dev/null) || cg_peak=
+
+    current_identity=$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$pid/stat" 2> /dev/null) || interrupted "renderer exited during collection"
+    [ -n "$identity" ] && [ "$identity" = "$current_identity" ] || interrupted "renderer changed during collection"
+    [ "$executable" = "$(readlink "/proc/$pid/exe")" ] || interrupted "renderer executable changed during collection"
+    grep -qx "$pid" "$cgroup/cgroup.procs" || interrupted "renderer left the unit during collection"
 
     {
-        echo "$rollup" | sed 's/^/rollup /'
-        # memory.awk reads these prefixed lines;
-        # a descriptor or helper that went away since is skipped
-        for file in $dri; do
-            sed "s|^|fdinfo $file |" "$file" 2> /dev/null || true
-        done
-        for file in $others; do
-            sed -n 's/^Pss:/others/p' "$file" 2> /dev/null || true
-        done
-        sed 's/^/cgroup /' "$cgroup/memory.stat"
-        sed 's/^/cgroup current /' "$cgroup/memory.current"
-        # since the cgroup started; Linux 5.19 and later
-        sed 's/^/cgroup peak /' "$cgroup/memory.peak" 2> /dev/null || true
+        printf '%s\n' "$rollup" | sed 's/^/rollup /'
+        printf '%s\n' "$status" | sed -n 's/^VmSwap:/status VmSwap:/p'
+        printf '%s\n' "$gpu_info" "$helpers"
+        printf '%s\n' "$cg_stat" | sed 's/^/cgroup /'
+        printf 'cgroup current %s\n' "$cg_current"
+        [ -z "$cg_peak" ] || printf 'cgroup peak %s\n' "$cg_peak"
     } | awk -v label="$1" -f "$awk"
 }
 

@@ -5,7 +5,7 @@ use bytemuck::{Pod, Zeroable};
 use peniko::{Extend, ImageData, InterpolationAlphaSpace};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{DrawTag, Encoding, PathTag, StreamOffsets, Style, Transform};
 
@@ -154,12 +154,12 @@ pub fn resolve_solid_paths_only(encoding: &Encoding, packed: &mut Vec<u8>) -> La
     layout
 }
 
-// the next resolve drops glyph encodings and image copies a visit left behind
-static COLD: AtomicBool = AtomicBool::new(false);
+// every resolver drops the visit's encodings and image copies when this moves
+static COLD_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Asks the next resolve to drop encodings and image copies no longer shown.
+/// Asks each resolver to drop encodings and image copies on its next resolve.
 pub fn release_cold() {
-    COLD.store(true, Ordering::Release);
+    COLD_GENERATION.fetch_add(1, Ordering::Release);
 }
 
 /// Resolver for late bound resources.
@@ -171,6 +171,7 @@ pub struct Resolver {
     image_cache: ImageCache,
     pending_images: Vec<PendingImage>,
     patches: Vec<ResolvedPatch>,
+    cold_generation: u64,
 }
 
 impl Resolver {
@@ -188,10 +189,13 @@ impl Resolver {
     }
 
     fn drop_cold(&mut self) {
-        if !COLD.swap(false, Ordering::AcqRel) {
+        let generation = COLD_GENERATION.load(Ordering::Acquire);
+        if self.cold_generation == generation {
             return;
         }
+        self.cold_generation = generation;
 
+        self.pending_images.clear();
         self.glyph_cache.clear();
         self.image_cache.clear_residents();
     }
@@ -413,6 +417,7 @@ impl Resolver {
             }
         }
         self.glyphs.clear();
+        self.pending_images.clear();
         layout.n_draw_objects = layout.n_paths;
         assert_eq!(buffer_size, data.len());
         (layout, self.ramp_cache.ramps(), self.image_cache.images())
@@ -423,7 +428,6 @@ impl Resolver {
         self.glyphs.clear();
         self.glyph_cache.maintain();
         self.image_cache.begin_resolve();
-        self.pending_images.clear();
         self.patches.clear();
         let mut sizes = StreamOffsets::default();
         let resources = &encoding.resources;
@@ -669,4 +673,110 @@ fn size_to_words(byte_size: usize) -> u32 {
 
 fn align_up(len: usize, alignment: u32) -> usize {
     len + (len.wrapping_neg() & (alignment as usize - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peniko::{Blob, ImageAlphaType, ImageBrush, ImageFormat};
+    use std::sync::{Mutex, Weak};
+
+    // All tests that resolve resources share this lock because release_cold is global.
+    static RESOLVE_LOCK: Mutex<()> = Mutex::new(());
+
+    fn image_encoding() -> (Encoding, Weak<Vec<u8>>) {
+        let pixels = Arc::new(vec![255, 0, 0, 255]);
+        let owner = Arc::downgrade(&pixels);
+        let brush = ImageBrush::new(ImageData {
+            data: Blob::new(pixels),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 1,
+            height: 1,
+        });
+        let mut encoding = Encoding::new();
+        encoding.encode_image(&brush, 1.0);
+        (encoding, owner)
+    }
+
+    #[test]
+    fn finished_resolve_keeps_only_resident_and_upload_pixel_owners() {
+        let _guard = RESOLVE_LOCK.lock().unwrap();
+        let (encoding, owner) = image_encoding();
+        let mut resolver = Resolver::new();
+        let mut packed = Vec::new();
+
+        let (layout, _, uploads) = resolver.resolve(&encoding, &mut packed);
+        drop(encoding);
+
+        assert_eq!(uploads.images.len(), 1);
+        assert_eq!(uploads.images[0].0.data.data(), &[255, 0, 0, 255]);
+        assert_eq!(owner.strong_count(), 2, "finished scratch retained pixels");
+        let (_, x, y) = &uploads.images[0];
+        assert_eq!(layout.draw_data(&packed)[0], (x << 16) | y);
+
+        let (_, _, uploads) = resolver.resolve(&Encoding::new(), &mut packed);
+        assert!(uploads.images.is_empty());
+        assert_eq!(owner.strong_count(), 2, "resident data must stay available");
+
+        release_cold();
+        resolver.resolve(&Encoding::new(), &mut packed);
+        assert!(
+            owner.upgrade().is_none(),
+            "cold resolve retained image pixels"
+        );
+    }
+
+    #[test]
+    fn every_resolver_observes_each_cold_release() {
+        let _guard = RESOLVE_LOCK.lock().unwrap();
+        let mut resolvers = [Resolver::new(), Resolver::new()];
+        let mut packed = Vec::new();
+
+        for _ in 0..2 {
+            let (encoding, owner) = image_encoding();
+            for resolver in &mut resolvers {
+                resolver.resolve(&encoding, &mut packed);
+            }
+            drop(encoding);
+
+            release_cold();
+            resolvers[0].resolve(&Encoding::new(), &mut packed);
+            assert_eq!(
+                owner.strong_count(),
+                2,
+                "the other resolver still owns its image"
+            );
+            resolvers[1].resolve(&Encoding::new(), &mut packed);
+            assert!(
+                owner.upgrade().is_none(),
+                "a resolver missed the cold release"
+            );
+
+            let (encoding, _) = image_encoding();
+            for resolver in &mut resolvers {
+                let (_, _, uploads) = resolver.resolve(&encoding, &mut packed);
+                assert_eq!(uploads.images.len(), 1);
+                assert_eq!(uploads.images[0].0.data.data(), &[255, 0, 0, 255]);
+                let (_, _, uploads) = resolver.resolve(&encoding, &mut packed);
+                assert!(uploads.images.is_empty(), "a release was observed twice");
+            }
+        }
+    }
+
+    #[test]
+    fn cold_resource_free_resolve_releases_unfinished_image_scratch() {
+        let _guard = RESOLVE_LOCK.lock().unwrap();
+        let (encoding, owner) = image_encoding();
+        let mut resolver = Resolver::new();
+        resolver.resolve_patches(&encoding);
+        drop(encoding);
+
+        release_cold();
+        resolver.resolve(&Encoding::new(), &mut Vec::new());
+        assert!(
+            owner.upgrade().is_none(),
+            "cold cleanup retained unfinished pixels"
+        );
+    }
 }

@@ -1,6 +1,7 @@
 # one row of scripts/memory: reads its prefixed sample (rollup, fdinfo, others, cgroup lines)
 # and prints the columns, in MiB; -v label=LABEL names the row
 $1 == "rollup" { rollup[$2] = $3 }
+$1 == "status" { status[$2] = $3 }
 # DRM fdinfo (drm-usage-stats), once per client: the GPU buffers the driver holds for the
 # shell, in no RSS, as its maps of them count none. A client id may be unique only per
 # device, given with drm-pdev. drm-total-cycles-* is engine time
@@ -22,8 +23,8 @@ END {
         total += size[fd, "total"]
         resident += size[fd, "resident"]
     }
-    printf "%-14s %s %s %s %s %s %s | %s %s %s %s %s %s %s\n", label,
-        mib(rollup["Rss:"]), mib(rollup["Pss:"]), mib(rollup["Anonymous:"]), mib(rollup["Pss_File:"]),
+    printf "%-14s %s %s %s %s %s %s %s | %s %s %s %s %s %s %s\n", label,
+        mib(rollup["Rss:"]), mib(rollup["Pss:"]), mib(rollup["Anonymous:"]), mib(status["VmSwap:"]), mib(rollup["Pss_File:"]),
         mib(total), mib(resident),
         mib(cg["current"] / 1024), ("peak" in cg ? mib(cg["peak"] / 1024) : sprintf("%7s", "-")), mib(cg["anon"] / 1024),
         mib((cg["file"] - cg["shmem"]) / 1024), mib(cg["shmem"] / 1024),

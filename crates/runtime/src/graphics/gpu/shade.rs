@@ -144,7 +144,8 @@ impl Gpu {
             pass.draw(0..6, 0..1);
         }
 
-        self.queue.submit([encoder.finish()]);
+        let submission = self.queue.submit([encoder.finish()]);
+        super::drain::intermediate_submission(&self.device, Some(submission));
     }
 
     fn uniform(&self, values: [f32; 4]) -> Buffer {

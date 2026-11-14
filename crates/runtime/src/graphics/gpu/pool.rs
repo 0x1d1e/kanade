@@ -69,6 +69,7 @@ impl Gpu {
             ..Default::default()
         });
 
-        self.queue.submit([encoder.finish()]);
+        let submission = self.queue.submit([encoder.finish()]);
+        super::drain::intermediate_submission(&self.device, Some(submission));
     }
 }

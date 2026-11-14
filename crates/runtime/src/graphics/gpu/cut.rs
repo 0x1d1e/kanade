@@ -39,7 +39,8 @@ impl Gpu {
             [strength, 1.0, 0.0, 0.0],
         );
 
-        self.queue.submit([encoder.finish()]);
+        let submission = self.queue.submit([encoder.finish()]);
+        super::drain::intermediate_submission(&self.device, Some(submission));
 
         self.give_back(coverage);
     }
