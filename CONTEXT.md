@@ -106,8 +106,8 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
 - **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request, the Surfaces withheld). No remembered last-used Surface: a click at Rest opens Controls.
 - **Invariant:** at most one island is Expanded at a time.
-- **Rule:** a Presentation change is geometry plus content crossfade in one motion, never collapse-then-grow. A Split whose segments trade places slides each to its new place.
-- **Rule:** content takes pointer input only once it fades in at half strength or more; what fades out takes none, so a click never lands on a control the eye has lost, and the click is taken and ignored, so it neither expands, pins nor claims an AutoExpand Surface. A press that spans the fade is dropped too. Keys go to the open Surface, whatever shows.
+- **Rule:** a Presentation change is geometry plus content crossfade in one motion, never collapse-then-grow. Width makes room first, height reveals the content and corners finish the silhouette, each retaining position and velocity when interrupted. Content follows a monotonic phase, fading out over its first half and in over its second; interrupted sections keep their displayed opacity and lift. A Split whose segments trade places slides each to its new place, preserving speed through reversal.
+- **Rule:** content takes pointer input only once its displayed opacity, the form fade multiplied by its section fade, is at least half strength; what fades out takes none. Premature clicks are consumed, so they neither expand, pin nor claim an AutoExpand Surface. A press or drag that spans an ineligible frame is cancelled permanently and requires a fresh press. Keys go to the open Surface, whatever shows.
 - **Avoid:** state (state is what Services hold)
 
 ## Surface
@@ -211,7 +211,7 @@ Kanade's own screen recording (`wf-recorder` through niri's wlr-screencopy, ADR 
 Small secondary indicator beside the primary island: timer, VPN, low battery, a Live Activity.
 - Capture the privacy cluster sees is no Satellite: the cluster shows it, as dots inside the body. Kanade's own recording is an Activity like any other, so it can be one, carrying Pause or Resume and Stop (a paused one shows a Pause icon).
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary, and a playing Media Activity beside such a primary, so a song keeps its place beside a timer; it counts after the others and shows its cover. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
-- **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops. Coming out or going, it is one liquid shape with the body: a neck stretches and snaps as it parts (ADR 0101), except under reduced motion.
+- **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops. Its mark fades before its liquid shape finishes joining the body. Expanded starts the same tuck-away trajectory; a return before it finishes reuses the identity, position, presence velocity and visible opacities. Coming out or going, it is one liquid shape with the body: a neck stretches and snaps as it parts (ADR 0101). Reduced motion snaps geometry and uses the brief fade for shape and mark together.
 - While the island is Split, or a Peek out of one, the top Satellite is the trailing segment, not a dot; it counts toward `SATELLITES`. The other dots and the count take no pointer.
 
 ## Weather location

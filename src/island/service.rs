@@ -12,7 +12,7 @@ use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
 use super::geometry::{self, Canvas, Hang, Holds, Shape, Sizes, TimePeek};
-use super::motion::{Mode, Spring};
+use super::motion::{Body, Mode, Spring};
 use super::presentation::{
     Content, Input, LauncherStyle, Presentation, Presentations, Prior, Segment, Surface,
 };
@@ -37,7 +37,7 @@ const DAMPING: f32 = 0.72;
 pub struct Timings {
     pub motion: Mode,
 
-    // the body's spring's damping ratio, `motion::CRITICAL` never passing its target
+    // the body axes' damping ratio, `motion::CRITICAL` never passing the target
     pub damping: f32,
 
     pub expand: Duration,
@@ -129,6 +129,9 @@ pub struct IslandService {
 
     // an AutoExpand's Surface open, until it gives the islands back or the user takes them
     auto: Option<Auto>,
+
+    // Offline inspection uses the same policy and motion without starting runtime Services.
+    isolated: bool,
 }
 
 // what an `Interrupt::AutoExpand` opened, and what it puts back at `until`
@@ -182,10 +185,10 @@ struct Island {
     // when a collapse to Rest has faded the Surface out, so its freed heap can be trimmed
     release_at: Option<Instant>,
 
-    // none until the first morph; width, height and radius as one spring group
-    shape: Option<Spring<3>>,
+    // none until the first morph; each body axis keeps its own position and velocity
+    shape: Option<Body>,
 
-    // the content, faded by the shape's progress so both change in one motion
+    // content follows the body's monotonic phase while geometry may overshoot
     content: Crossfade<Content>,
 
     // the track the content shows, while it is a Media Activity's, dissolving to each new one
@@ -245,6 +248,7 @@ impl Service for IslandService {
             timings: Timings::default(),
             sizes: Sizes::default(),
             auto: None,
+            isolated: false,
         }
     }
 
@@ -280,6 +284,24 @@ impl Service for IslandService {
 }
 
 impl IslandService {
+    // A directly owned replay, with synthetic focus and no runtime Service reads or focus effects.
+    pub(crate) fn for_inspection(timings: Timings, hang: Hang, now: Instant) -> Self {
+        let mut island = Self::new();
+        island.isolated = true;
+        island.timings = timings;
+        island.sizes.hang = hang;
+        island.set_niri(Some("inspection".into()), false, now);
+        island
+    }
+
+    // Deadlines run at their own instant, so sampling frequency cannot change a replay.
+    pub(crate) fn advance_inspection(&mut self, now: Instant) {
+        debug_assert!(self.isolated);
+        while let Some(due) = self.next_wake().filter(|due| *due <= now) {
+            self.expire(due);
+        }
+    }
+
     pub fn presentation(&self, monitor: &str) -> Presentation {
         self.presentations.get(monitor)
     }
@@ -371,11 +393,11 @@ impl IslandService {
 
         for (monitor, island) in &mut self.islands {
             let sizes = (&self.sizes, visit, self.sizes.holds(monitor));
-            reaim(island, sizes, response, now);
+            reaim(island, sizes, self.timings, response, now);
         }
 
         let sizes = (&self.sizes, visit, self.sizes.holds(""));
-        reaim(&mut self.untouched, sizes, response, now);
+        reaim(&mut self.untouched, sizes, self.timings, response, now);
     }
 
     // the canvas this output's island moves its body in, before the output clamps it
@@ -558,7 +580,7 @@ impl IslandService {
             self.presentation(monitor),
             Presentation::Peek | Presentation::Expanded(_)
         );
-        let banner_active = crate::banners::active(monitor);
+        let banner_active = !self.isolated && crate::banners::active(monitor);
 
         frame.feedback()
             && matches!(
@@ -571,11 +593,12 @@ impl IslandService {
 
     // read in the view at the frame's time
     pub fn shape(&self, monitor: &str, now: Instant) -> Shape {
-        self.spring(monitor).map_or(
+        let shape = self.spring(monitor).map_or(
             self.sizes
                 .target(Presentation::Rest, 0, self.sizes.holds(monitor)),
-            |spring| geometry::bounded(Shape::from(spring.at(now)), self.canvas(monitor)),
-        )
+            |spring| Shape::from(spring.at(now)),
+        );
+        geometry::bounded(shape, self.canvas(monitor))
     }
 
     // what shows at `now` and how strongly, at most one of them visible
@@ -588,6 +611,18 @@ impl IslandService {
             .map_or(1.0, |spring| spring.progress(now));
 
         island.content.shown(progress)
+    }
+
+    pub fn arrival(&self, monitor: &str, now: Instant) -> f32 {
+        let island = self.get(monitor);
+        let progress = island.shape.as_ref().map_or(1.0, |body| body.progress(now));
+        island.content.arrival(progress)
+    }
+
+    // Raw body velocity for deterministic motion inspection, before canvas bounding.
+    pub fn velocity(&self, monitor: &str, now: Instant) -> [f32; 3] {
+        self.spring(monitor)
+            .map_or([0.0; 3], |body| body.velocity(now))
     }
 
     /*
@@ -690,7 +725,7 @@ impl IslandService {
             .map(|spring| geometry::bounded(Shape::from(spring.target()), self.canvas(monitor)))
     }
 
-    fn spring(&self, monitor: &str) -> Option<&Spring<3>> {
+    fn spring(&self, monitor: &str) -> Option<&Body> {
         self.get(monitor).shape.as_ref()
     }
 
@@ -1273,6 +1308,9 @@ impl IslandService {
          * alone, so the top Satellite is a dot beside it, unless it is the one peeked
          */
         let marks = |frame: &Frame, presentation, peeked: Option<&Id>| {
+            if matches!(presentation, Presentation::Expanded(_)) {
+                return Vec::new();
+            }
             let segment = matches!(presentation, Presentation::Split)
                 || peeked.is_some() && peeked == frame.satellites.first().map(Activity::id);
 
@@ -1349,6 +1387,7 @@ impl IslandService {
                 .as_ref()
                 .is_some_and(|auto| auto.monitor == monitor);
         let Timings { hover, grace, .. } = self.timings;
+        let isolated = self.isolated;
         let island = self.island(monitor);
 
         if island.inside == inside {
@@ -1356,7 +1395,7 @@ impl IslandService {
         }
 
         // before OnDemand, so a later Surface still knows who had the keyboard
-        if inside {
+        if inside && !isolated {
             island.hover_focus = Some(focused_toplevel());
         }
 
@@ -1440,7 +1479,7 @@ impl IslandService {
             faded |= island.release_at.take_if(|at| *at <= now).is_some();
         }
 
-        if faded {
+        if faded && !self.isolated {
             kanade_runtime::release_visit();
         }
     }
@@ -1465,6 +1504,9 @@ fn follow(
     let presentation = content.presentation;
     let expanded = matches!(presentation, Presentation::Expanded(_));
     let motion = timings.motion;
+    if let Some(body) = &mut island.shape {
+        body.configure(timings.damping, motion);
+    }
 
     island.satellites.follow(
         marks,
@@ -1487,6 +1529,7 @@ fn follow(
         reaim(
             island,
             (sizes, visit, holds),
+            timings,
             timings.for_motion(timings.expand),
             now,
         );
@@ -1498,10 +1541,11 @@ fn follow(
      * trading back mid-slide turns around from there
      */
     if island.content.target().swapped(&content) {
-        let stood = island.swap.as_ref().map_or(0.0, |swap| swap.at(now)[0]);
-        let mut swap = Spring::new([1.0 - stood], motion);
-        swap.to([0.0], timings.for_motion(timings.expand), now);
-        island.swap = Some(swap);
+        let swap = island
+            .swap
+            .get_or_insert_with(|| Spring::new([0.0], motion));
+        swap.complement();
+        swap.aim([0.0], timings.for_motion(timings.expand), motion, now);
     }
 
     /*
@@ -1510,12 +1554,12 @@ fn follow(
      * spring
      */
     let spring = island.shape.get_or_insert_with(|| {
-        Spring::new(
+        Body::new(
             sizes.target(Presentation::Rest, visit, holds).into(),
             motion,
         )
     });
-    spring.damp(timings.damping);
+    spring.configure(timings.damping, motion);
 
     let from = island.content.target().presentation;
     let track = match content.activity.as_ref().map(Activity::detail) {
@@ -1560,6 +1604,7 @@ fn follow(
 fn reaim(
     island: &mut Island,
     (sizes, visit, holds): (&Sizes, u64, Holds),
+    timings: Timings,
     duration: Duration,
     now: Instant,
 ) {
@@ -1575,6 +1620,7 @@ fn reaim(
             island.under.get_or_insert_with(|| Shape::from(stands));
         }
 
+        spring.configure(timings.damping, timings.motion);
         island.content.rebase(spring.progress(now));
         spring.to(target, duration, now);
     }
@@ -1708,6 +1754,9 @@ fn focus_toplevel(id: u64) {
 impl IslandService {
     // a Surface opened or closed: remember who had the keyboard, and give it back on collapse
     fn settle_focus(&mut self, was: Option<&str>, now: Instant) {
+        if self.isolated {
+            return;
+        }
         if let Some(monitor) = was.filter(|monitor| !self.expanded(monitor)) {
             self.release_focus(monitor, now);
         }
@@ -2555,53 +2604,6 @@ mod tests {
         assert!(!island.held(MONITOR));
     }
 
-    #[test]
-    fn morph_takes_the_time_of_what_it_changes() {
-        use Presentation::{Compact, Expanded, Peek, Rest};
-
-        let media = Expanded(Surface::Media);
-        let controls = Expanded(Surface::Controls);
-        let response = |from, to| response(from, to, Timings::default());
-
-        assert_eq!(response(Rest, Compact), EXPAND);
-        assert_eq!(response(Compact, Peek), EXPAND);
-        assert_eq!(response(Peek, media), EXPAND);
-        assert_eq!(response(Rest, controls), EXPAND);
-        assert_eq!(response(media, controls), SURFACE_CHANGE);
-        assert_eq!(response(media, Compact), COLLAPSE);
-        assert_eq!(response(Peek, Compact), COLLAPSE);
-        assert_eq!(response(Compact, Rest), COLLAPSE);
-
-        // a new Activity in the same form
-        assert_eq!(response(Compact, Compact), EXPAND);
-    }
-
-    #[test]
-    fn surface_change_is_still_moving_when_an_expand_is_there() {
-        let now = Instant::now();
-        let mut island = IslandService::new();
-
-        // a bouncy spring passes 95% sooner; the responses are measured without
-        island.timings.damping = crate::island::motion::CRITICAL;
-
-        island.open(MONITOR, Surface::Controls, now);
-        let expanded = island.shape(MONITOR, now + EXPAND);
-
-        island.open(MONITOR, Surface::Media, now + ms(1_000));
-        let changed = island.shape(MONITOR, now + ms(1_000) + EXPAND);
-
-        // both 95% of their way by their own response, the slower one not yet
-        let share = |from: Shape, at: Shape, to: Shape| {
-            (at.height - from.height) / (to.height - from.height)
-        };
-
-        let expand = share(REST, expanded, geometry::CONTROLS);
-        let change = share(geometry::CONTROLS, changed, geometry::MEDIA);
-
-        assert!((expand - 0.95).abs() < 0.01, "{expand}");
-        assert!(change < 0.93, "{change}");
-    }
-
     // a configured timing replaces its default everywhere it applies
     #[test]
     fn configured_timings_time_the_island() {
@@ -2658,6 +2660,132 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resizing_an_existing_body_morphs_between_edge_orientations_without_a_jump() {
+        use geometry::{Canvas, DEFAULT_LARGEST, Edge, Hang};
+
+        for edge in [Edge::Left, Edge::Right] {
+            for battery in [false, true] {
+                let start = Instant::now();
+                let top = Hang::default();
+                let side = Hang { edge, ..top };
+                let peek = TimePeek {
+                    battery,
+                    ..TimePeek::default()
+                };
+                let mut island = IslandService::new();
+                island.resize((DEFAULT_LARGEST, peek), HashMap::new(), top, start);
+
+                // An Activity returning to Rest leaves a real spring on the untouched Island.
+                let activity = timer("existing");
+                let id = activity.id().clone();
+                island.post(activity, start);
+                island.withdraw(&id, start + ms(1000));
+                let mut now = start + ms(2000);
+                assert!(island.spring(MONITOR).is_some());
+                assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+                assert_eq!(island.shape(MONITOR, now), geometry::REST);
+
+                for hang in [side, top] {
+                    let pose = island.shape(MONITOR, now);
+                    let velocity = island.velocity(MONITOR, now);
+                    assert!(island.resize((DEFAULT_LARGEST, peek), HashMap::new(), hang, now));
+                    assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+                    assert_eq!(island.shape(MONITOR, now), pose);
+                    assert_eq!(island.velocity(MONITOR, now), velocity);
+                    let target = geometry::rest(hang, battery);
+                    assert_eq!(island.heading(MONITOR, now), Some(target));
+                    let canvas = Canvas::around(DEFAULT_LARGEST, hang);
+                    assert_eq!(island.canvas(MONITOR), canvas);
+
+                    now += ms(2000);
+                    assert!(island.settled(MONITOR, now));
+                    assert_eq!(island.shape(MONITOR, now), target);
+                    assert_eq!(island.canvas(MONITOR), canvas);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn side_morphs_preserve_the_displayed_pose_from_the_first_leg() {
+        use geometry::{Canvas, DEFAULT_LARGEST, Edge, Hang};
+
+        for edge in [Edge::Left, Edge::Right] {
+            for battery in [false, true] {
+                let now = Instant::now();
+                let hang = Hang {
+                    edge,
+                    ..Hang::default()
+                };
+                let peek = TimePeek {
+                    battery,
+                    ..TimePeek::default()
+                };
+                let mut island = IslandService::for_inspection(Timings::default(), hang, now);
+                let monitor = "inspection";
+                island.resize((DEFAULT_LARGEST, peek), HashMap::new(), hang, now);
+                let canvas = Canvas::around(DEFAULT_LARGEST, hang);
+                let rest = geometry::rest(hang, battery);
+                assert_eq!(island.shape(monitor, now), rest);
+
+                island.open(monitor, Surface::Controls, now);
+                assert_eq!(island.shape(monitor, now), rest);
+                assert_eq!(island.velocity(monitor, now), [0.0; 3]);
+                assert_eq!(island.heading(monitor, now), Some(geometry::CONTROLS));
+
+                for (elapsed, surface) in [
+                    (40, None),
+                    (75, Some(Surface::Media)),
+                    (110, Some(Surface::Controls)),
+                ] {
+                    let at = now + ms(elapsed);
+                    let pose = island.shape(monitor, at);
+                    let velocity = island.velocity(monitor, at);
+                    match surface {
+                        Some(surface) => island.open(monitor, surface, at),
+                        None => island.input(monitor, Input::Collapse, at),
+                    }
+                    assert_eq!(island.shape(monitor, at), pose);
+                    assert_eq!(island.velocity(monitor, at), velocity);
+                    assert_eq!(island.canvas(monitor), canvas);
+                }
+
+                let settled = now + ms(2000);
+                assert_eq!(island.shape(monitor, settled), geometry::CONTROLS);
+                island.input(monitor, Input::Collapse, settled);
+                assert_eq!(island.shape(monitor, settled + ms(2000)), rest);
+                assert_eq!(island.canvas(monitor), canvas);
+            }
+        }
+    }
+
+    #[test]
+    fn a_size_reaim_uses_the_reloaded_motion_mode() {
+        let start = Instant::now();
+        let mut island = IslandService::new();
+        island.open(MONITOR, Surface::Launcher, start);
+        let now = start + ms(1000);
+        island.retime(Timings {
+            motion: Mode::Reduced,
+            ..Timings::default()
+        });
+        assert!(island.fit(Surface::Launcher, 300.0, None, now));
+        assert_eq!(island.heading(MONITOR, now).unwrap().height, 300.0);
+        assert_eq!(island.shape(MONITOR, now).height, 300.0);
+        assert!(island.settled(MONITOR, now + ms(100)));
+        let now = now + ms(1000);
+        island.retime(Timings {
+            motion: Mode::Spring,
+            ..Timings::default()
+        });
+        assert!(island.fit(Surface::Launcher, 350.0, None, now));
+        assert_eq!(island.heading(MONITOR, now).unwrap().height, 350.0);
+        assert_eq!(island.shape(MONITOR, now).height, 300.0);
+        assert_ne!(island.shape(MONITOR, now + ms(20)).height, 300.0);
+        assert_eq!(island.shape(MONITOR, now + ms(2000)).height, 350.0);
+    }
+
     // the old content fades out with the start of the morph, the new one in toward its end
     #[test]
     fn content_crossfades_with_the_morph() {
@@ -2703,7 +2831,7 @@ mod tests {
         assert_eq!(shown(settled + ms(1_000)), [(media, 1.0)]);
     }
 
-    // Notifications and Launcher share one shape, so only the spring's in-place leg can time the fade
+    // Notifications and Launcher share one shape, so the body's phase still runs in place.
     #[test]
     fn same_shape_surface_switch_still_crossfades() {
         let now = Instant::now();
@@ -3191,7 +3319,7 @@ mod tests {
         assert_eq!(island.deadline(), None);
     }
 
-    // Compact to Compact keeps the shape, so only the spring's in-place leg times the crossfade
+    // Compact to Compact keeps the shape while the body's phase times the crossfade.
     #[test]
     fn a_new_activity_in_the_same_form_crossfades() {
         let now = Instant::now();

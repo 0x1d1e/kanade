@@ -34,6 +34,7 @@ use crate::config;
 use crate::island::arbiter::SATELLITES;
 use crate::island::geometry::{self, Hang, Rect, Shape};
 use crate::island::motion::{CRITICAL, Mode, Spring};
+use crate::island::satellites::Satellites;
 use crate::island::service::IslandService;
 use crate::look::{Along, Anchor, DockSize, Edge, Magnify, Merge, Placement};
 use crate::merge;
@@ -1494,6 +1495,16 @@ fn beside(island: Anchor, dock: Anchor) -> bool {
             || dock.sits() == Along::Center)
 }
 
+// Coverage follows changing visibility too: a Reduced dot starts transparent at its final place.
+fn coverage_pending(
+    heading: Option<Shape>,
+    drawn: bool,
+    satellites: &Satellites,
+    now: Instant,
+) -> bool {
+    heading.is_some() || drawn && (satellites.moving(now) || satellites.visibility_pending(now))
+}
+
 /*
  * how far (0..1) the Dock yields to an overlapping Island body or Satellite: the body reaching
  * across the row now, or where it heads, sends the fade toward 0; on another edge it goes back
@@ -1522,9 +1533,9 @@ fn covered(
     let island_canvas = view::canvas(monitor);
     let body = island.shape(&monitor.name, now);
     let heading = island.heading(&monitor.name, now);
-    let moving = heading.is_some() || drawn && satellites.moving(now);
+    let pending = coverage_pending(heading, drawn, satellites, now);
 
-    // on another edge, by where both stand on the output; frames while the Island moves
+    // On another edge, follow geometry and visibility changes in the output's coordinates.
     if island_anchor.edge != anchor.edge {
         let output = (monitor.width as f32, monitor.height as f32);
         let strip = dock_strip(output, anchor, canvas_width, row, room, depth);
@@ -1549,7 +1560,7 @@ fn covered(
             0.0
         };
 
-        return (covered, moving);
+        return (covered, pending);
     }
 
     // the output and the Island's window along their edge
@@ -1587,7 +1598,7 @@ fn covered(
 
     (
         covered,
-        moving
+        pending
             && near(
                 width,
                 island_anchor,
@@ -1666,10 +1677,8 @@ fn island_reach(
     slots: impl Iterator<Item = (f32, f32)>,
 ) -> Rect {
     let body = geometry::body(shape, hang, canvas);
-    let shows = geometry::satellite_opacity(shape, hang) > 0.0;
 
     slots
-        .filter(|_| shows)
         .map(|(slot, presence)| geometry::satellite(body, hang, canvas, slot, presence))
         .fold(body, |reach, dot| {
             let x = reach.x.min(dot.x);
@@ -2709,6 +2718,70 @@ fn pointer_at(monitor: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_satellite_visibility_keeps_coverage_scheduled_until_settled() {
+        use crate::island::activity::{Id, Kind, Priority, fixture};
+        use crate::island::presentation::Presentation;
+        use crate::island::service::Timings;
+
+        let start = Instant::now();
+        let timings = Timings {
+            motion: Mode::Reduced,
+            ..Timings::default()
+        };
+        let mut island = IslandService::for_inspection(timings, Hang::default(), start);
+        let monitor = "inspection";
+        island.post(
+            fixture::persistent(Id::new(Kind::Timer, "primary"), Priority::Critical),
+            start,
+        );
+        island.post(
+            fixture::persistent(Id::new(Kind::Live, "segment"), Priority::Critical),
+            start,
+        );
+        let now = start + Duration::from_millis(1000);
+        assert_eq!(island.presentation(monitor), Presentation::Split);
+        assert!(island.settled(monitor, now));
+
+        let activity = fixture::persistent(Id::new(Kind::Battery, "dot"), Priority::Ongoing);
+        let id = activity.id().clone();
+        island.post(activity, now);
+        let pending = |island: &IslandService, at| {
+            coverage_pending(
+                island.heading(monitor, at),
+                true,
+                island.satellites(monitor),
+                at,
+            )
+        };
+        assert!(island.heading(monitor, now).is_none());
+        assert!(!island.satellites(monitor).moving(now));
+        assert!(island.satellites(monitor).shown(now).is_empty());
+        assert!(pending(&island, now));
+        assert!(!coverage_pending(
+            None,
+            false,
+            island.satellites(monitor),
+            now
+        ));
+        assert_eq!(
+            island
+                .satellites(monitor)
+                .shown(now + Duration::from_millis(1))
+                .len(),
+            1
+        );
+
+        let arrived = now + timings.reduced_fade;
+        assert!(!pending(&island, arrived));
+        assert_eq!(island.satellites(monitor).shown(arrived).len(), 1);
+        island.withdraw(&id, arrived);
+        assert!(pending(&island, arrived));
+        let gone = arrived + timings.reduced_fade;
+        assert!(!pending(&island, gone));
+        assert!(island.satellites(monitor).shown(gone).is_empty());
+    }
 
     // the strip a Banner keeps clear of holds every place the grown row can be, and no more
     #[test]

@@ -43,6 +43,7 @@ pub struct Handlers {
 pub struct Target {
     pub area: Area,
     pub handlers: Handlers,
+    pub(crate) inert: bool,
 
     // turns a window position into the area's own space, undoing rotated, scaled or moved parents
     pub inverse: Transform,
@@ -74,12 +75,21 @@ impl Target {
         Self {
             area,
             handlers,
+            inert: false,
             inverse: Transform::IDENTITY,
             key: 0,
             caret: None,
             semantics: None,
             end: 0,
             anchored: false,
+        }
+    }
+
+    pub(crate) fn make_inert(&mut self) {
+        self.inert = true;
+        self.handlers = Handlers::default();
+        if let Some(semantics) = &mut self.semantics {
+            semantics.disabled = true;
         }
     }
 

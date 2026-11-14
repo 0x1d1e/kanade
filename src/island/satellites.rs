@@ -58,6 +58,10 @@ struct Dot {
     // its opacity when the presence's leg began, so a change of mind fades on from there
     faded: f32,
 
+    // Marks disappear before the liquid shape finishes tucking under the body.
+    ink: Spring<1>,
+    ink_faded: f32,
+
     // gone from the Frame, tucking away until it rests
     leaving: bool,
 }
@@ -69,11 +73,29 @@ impl Dot {
         self.faded + (goal - self.faded) * self.presence.progress(now)
     }
 
-    fn go(&mut self, leaving: bool, response: Duration, now: Instant) {
+    fn content_opacity(&self, now: Instant) -> f32 {
+        let goal = if self.leaving { 0.0 } else { 1.0 };
+        self.ink_faded + (goal - self.ink_faded) * self.ink.progress(now)
+    }
+
+    fn go(&mut self, leaving: bool, response: Duration, mode: Mode, now: Instant) {
         self.faded = self.opacity(now);
+        self.ink_faded = self.content_opacity(now);
+        if self.presence.mode() != mode {
+            self.presence = Spring::new([self.presence.at(now)[0]], mode);
+            self.slot = Spring::new([self.slot.at(now)[0]], mode);
+            self.slot.to([self.place as f32], response, now);
+        }
         self.leaving = leaving;
         self.presence
             .to([if leaving { 0.0 } else { 1.0 }], response, now);
+        self.ink = Spring::new([0.0], self.presence.mode());
+        let response = if self.presence.mode() == Mode::Reduced {
+            response
+        } else {
+            response.mul_f32(0.6)
+        };
+        self.ink.to([1.0], response, now);
     }
 }
 
@@ -89,6 +111,7 @@ pub struct Shown<'a> {
     pub presence: f32,
 
     pub opacity: f32,
+    pub content_opacity: f32,
 }
 
 impl Satellites {
@@ -116,10 +139,18 @@ impl Satellites {
             .retain(|dot| !(dot.leaving && dot.presence.settled(now)));
 
         for dot in &mut self.dots {
+            if dot.presence.mode() != mode {
+                dot.go(
+                    dot.leaving,
+                    if dot.leaving { leave } else { enter },
+                    mode,
+                    now,
+                );
+            }
             let staying = marks.iter().any(|mark| mark.key() == dot.mark.key());
 
             if !staying && !dot.leaving {
-                dot.go(true, leave, now);
+                dot.go(true, leave, mode, now);
             }
         }
 
@@ -131,6 +162,16 @@ impl Satellites {
             else {
                 let mut presence = Spring::new([0.0], mode);
                 presence.to([1.0], enter, now);
+                let mut ink = Spring::new([0.0], mode);
+                ink.to(
+                    [1.0],
+                    if mode == Mode::Reduced {
+                        enter
+                    } else {
+                        enter.mul_f32(0.6)
+                    },
+                    now,
+                );
 
                 self.dots.push(Dot {
                     mark,
@@ -138,6 +179,8 @@ impl Satellites {
                     slot: Spring::new([place as f32], mode),
                     presence,
                     faded: 0.0,
+                    ink,
+                    ink_faded: 0.0,
                     leaving: false,
                 });
                 continue;
@@ -146,7 +189,7 @@ impl Satellites {
             dot.mark = mark;
 
             if dot.leaving {
-                dot.go(false, enter, now);
+                dot.go(false, enter, mode, now);
             }
 
             if dot.place != place {
@@ -169,6 +212,7 @@ impl Satellites {
                 slot: dot.slot.at(now)[0],
                 presence: dot.presence.at(now)[0].clamp(0.0, 1.0),
                 opacity: dot.opacity(now).clamp(0.0, 1.0),
+                content_opacity: dot.content_opacity(now).clamp(0.0, 1.0),
             })
             .filter(|shown| shown.opacity > 0.0)
             .collect()
@@ -177,7 +221,15 @@ impl Satellites {
     pub fn settled(&self, now: Instant) -> bool {
         self.dots
             .iter()
-            .all(|dot| dot.presence.settled(now) && dot.slot.settled(now))
+            .all(|dot| dot.presence.settled(now) && dot.slot.settled(now) && dot.ink.settled(now))
+    }
+
+    // Shape alpha can still change after Reduced geometry has snapped. Coverage must follow it.
+    pub fn visibility_pending(&self, now: Instant) -> bool {
+        self.dots.iter().any(|dot| {
+            let goal = if dot.leaving { 0.0 } else { 1.0 };
+            dot.faded != goal && !dot.presence.settled(now)
+        })
     }
 
     // whether a dot still moves; under Reduced motion they are already where they go
@@ -187,5 +239,86 @@ impl Satellites {
                 .into_iter()
                 .any(|spring| spring.mode() == Mode::Spring && !spring.settled(now))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pose(satellites: &Satellites, now: Instant) -> [f32; 4] {
+        let dot = &satellites.shown(now)[0];
+        [dot.slot, dot.presence, dot.opacity, dot.content_opacity]
+    }
+
+    #[test]
+    fn a_returning_satellite_keeps_its_pose_and_presence_velocity() {
+        let start = Instant::now();
+        let response = Duration::from_millis(180);
+        let reduced = Duration::from_millis(40);
+        let mut satellites = Satellites::default();
+        satellites.follow(
+            vec![Mark::Overflow(2)],
+            response,
+            response,
+            reduced,
+            Mode::Spring,
+            start,
+        );
+        let leave = start + Duration::from_secs(1);
+        let before = pose(&satellites, leave);
+        satellites.follow(vec![], response, response, reduced, Mode::Spring, leave);
+        assert_eq!(pose(&satellites, leave), before);
+        let back = leave + Duration::from_millis(50);
+        let before = pose(&satellites, back);
+        assert!(before[3] < before[2], "the mark leaves before the shape");
+        let velocity = satellites.dots[0].presence.velocity(back);
+        satellites.follow(
+            vec![Mark::Overflow(3)],
+            response,
+            response,
+            reduced,
+            Mode::Spring,
+            back,
+        );
+        assert_eq!(pose(&satellites, back), before);
+        assert_eq!(satellites.dots[0].presence.velocity(back), velocity);
+        assert_eq!(satellites.dots.len(), 1);
+        let end = back + Duration::from_secs(2);
+        assert!(satellites.settled(end));
+        assert_eq!(pose(&satellites, end), [0.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn reduced_satellites_snap_geometry_and_finish_the_brief_fade() {
+        let start = Instant::now();
+        let response = Duration::from_millis(180);
+        let reduced = Duration::from_millis(40);
+        let mut satellites = Satellites::default();
+        satellites.follow(
+            vec![Mark::Overflow(2)],
+            response,
+            response,
+            reduced,
+            Mode::Spring,
+            start,
+        );
+        let leave = start + Duration::from_secs(1);
+        satellites.follow(vec![], response, response, reduced, Mode::Reduced, leave);
+        let shown = pose(&satellites, leave);
+        assert_eq!(shown[1], 0.0);
+        assert_eq!(shown[2..], [1.0, 1.0]);
+        assert!(!satellites.settled(leave));
+        assert!(satellites.settled(leave + reduced));
+        assert!(satellites.shown(leave + reduced).is_empty());
+        satellites.follow(
+            vec![],
+            response,
+            response,
+            reduced,
+            Mode::Reduced,
+            leave + reduced,
+        );
+        assert!(satellites.dots.is_empty());
     }
 }

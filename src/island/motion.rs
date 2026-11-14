@@ -4,9 +4,9 @@
 //! passes its target a little and comes back, like macOS's bouncy springs. Only the body's shape
 //! bounces; opacity and the Satellites stay critical. Time is always passed in, never read.
 //!
-//! The dimensions of one `Spring` share `w`, so a group (width, height, radius) moves as one
-//! object. Content opacity and translation derive from `progress`, not from timers of their own.
-//! Each leg takes its own response, so a collapse and a Surface change can take different times.
+//! Dimensions within a `Spring` share a response. `Body` gives width, height and corners their
+//! own springs; a critical phase keeps the content handoff monotonic even when geometry bounces.
+//! Each leg takes its response from the configured expand, change or collapse timing.
 
 use std::time::{Duration, Instant};
 
@@ -54,6 +54,10 @@ pub struct Spring<const N: usize> {
 
     target: [f32; N],
 
+    // Carried state is returned exactly at the leg's start, without reconstructing it.
+    initial_position: [f32; N],
+    initial_velocity: [f32; N],
+
     // the current leg: x(t) = target - (a + b t) e^(-wt), t counted from `start`
     a: [f32; N],
     b: [f32; N],
@@ -72,6 +76,8 @@ impl<const N: usize> Spring<N> {
             z: CRITICAL,
             response: REDUCED_FADE,
             target: value,
+            initial_position: value,
+            initial_velocity: [0.0; N],
             a: [0.0; N],
             b: [0.0; N],
             start: None,
@@ -90,20 +96,28 @@ impl<const N: usize> Spring<N> {
      * Reduced snaps geometry and uses it for opacity
      */
     pub fn to(&mut self, target: [f32; N], response: Duration, now: Instant) {
-        let position = self.at(now);
-        let velocity = self.velocity(now);
+        self.aim(target, response, self.mode, now);
+    }
+
+    // Retarget while changing motion mode; sample the old leg before applying the new mode.
+    pub fn aim(&mut self, target: [f32; N], response: Duration, mode: Mode, now: Instant) {
+        let (position, velocity) = self.sample(now);
+        self.mode = mode;
 
         self.response = response;
-        self.w = match self.mode {
-            Mode::Spring => RESPONSE_FACTOR / response.as_secs_f32(),
-            Mode::Reduced => 0.0,
+        self.w = if self.mode == Mode::Spring && !response.is_zero() {
+            RESPONSE_FACTOR / response.as_secs_f32()
+        } else {
+            0.0
         };
         self.z = self.damping;
 
         for i in 0..N {
             self.a[i] = target[i] - position[i];
 
-            self.b[i] = if self.critical() {
+            self.b[i] = if self.w == 0.0 {
+                0.0
+            } else if self.critical() {
                 // x(0) = target - a, x'(0) = w a - b
                 self.w * self.a[i] - velocity[i]
             } else {
@@ -113,6 +127,8 @@ impl<const N: usize> Spring<N> {
         }
 
         self.target = target;
+        self.initial_position = position;
+        self.initial_velocity = velocity;
         self.start = Some(now);
     }
 
@@ -170,28 +186,39 @@ impl<const N: usize> Spring<N> {
     }
 
     pub fn at(&self, now: Instant) -> [f32; N] {
-        if self.mode == Mode::Reduced || self.settled(now) {
-            return self.target;
-        }
-
-        let t = self.elapsed(now);
-
-        std::array::from_fn(|i| self.target[i] - self.left(i, t).0)
+        self.sample(now).0
     }
 
     pub fn velocity(&self, now: Instant) -> [f32; N] {
-        if self.mode == Mode::Reduced || self.settled(now) {
-            return [0.0; N];
+        self.sample(now).1
+    }
+
+    fn sample(&self, now: Instant) -> ([f32; N], [f32; N]) {
+        if self.mode == Mode::Reduced || self.response.is_zero() {
+            return (self.target, [0.0; N]);
         }
 
         let t = self.elapsed(now);
+        if t == 0.0 {
+            return (self.initial_position, self.initial_velocity);
+        }
+        if self.settled(now) {
+            return (self.target, [0.0; N]);
+        }
 
-        std::array::from_fn(|i| self.left(i, t).1)
+        let mut position = [0.0; N];
+        let mut velocity = [0.0; N];
+        for i in 0..N {
+            let (left, speed) = self.left(i, t);
+            position[i] = self.target[i] - left;
+            velocity[i] = speed;
+        }
+        (position, velocity)
     }
 
     // false while the view should keep asking for frames
     pub fn settled(&self, now: Instant) -> bool {
-        if self.start.is_none() {
+        if self.start.is_none() || self.response.is_zero() {
             return true;
         }
 
@@ -247,6 +274,76 @@ impl<const N: usize> Spring<N> {
     }
 }
 
+impl Spring<1> {
+    // Express a blend from its other endpoint, including its velocity, when two segments trade.
+    pub fn complement(&mut self) {
+        self.target[0] = 1.0 - self.target[0];
+        self.initial_position[0] = 1.0 - self.initial_position[0];
+        self.initial_velocity[0] = -self.initial_velocity[0];
+        self.a[0] = -self.a[0];
+        self.b[0] = -self.b[0];
+    }
+}
+
+// Body geometry has separate responses without changing shared Spring consumers such as the Dock.
+#[derive(Debug, Clone)]
+pub struct Body {
+    axes: [Spring<1>; 3],
+    phase: Spring<1>,
+    mode: Mode,
+}
+
+impl Body {
+    pub fn new(value: [f32; 3], mode: Mode) -> Self {
+        Self {
+            axes: value.map(|value| Spring::new([value], mode)),
+            phase: Spring::new([1.0], mode),
+            mode,
+        }
+    }
+
+    pub fn configure(&mut self, damping: f32, mode: Mode) {
+        self.mode = mode;
+        for axis in &mut self.axes {
+            axis.damp(damping);
+        }
+    }
+
+    pub fn to(&mut self, target: [f32; 3], response: Duration, now: Instant) {
+        // Width makes room first; height reveals the content; corners finish the silhouette.
+        for ((axis, target), pace) in self.axes.iter_mut().zip(target).zip([0.85, 1.0, 1.15]) {
+            let pace = if self.mode == Mode::Reduced {
+                1.0
+            } else {
+                pace
+            };
+            axis.aim([target], response.mul_f32(pace), self.mode, now);
+        }
+        self.phase = Spring::new([0.0], self.mode);
+        self.phase.to([1.0], response, now);
+    }
+
+    pub fn at(&self, now: Instant) -> [f32; 3] {
+        std::array::from_fn(|i| self.axes[i].at(now)[0])
+    }
+
+    pub fn target(&self) -> [f32; 3] {
+        std::array::from_fn(|i| self.axes[i].target()[0])
+    }
+
+    pub fn velocity(&self, now: Instant) -> [f32; 3] {
+        std::array::from_fn(|i| self.axes[i].velocity(now)[0])
+    }
+
+    pub fn progress(&self, now: Instant) -> f32 {
+        self.phase.progress(now)
+    }
+
+    pub fn settled(&self, now: Instant) -> bool {
+        self.phase.settled(now) && self.axes.iter().all(|axis| axis.settled(now))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +374,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn body_retarget_preserves_every_axis_and_settles() {
+        let start = Instant::now();
+        let mut body = Body::new([100.0, 30.0, 15.0], Mode::Spring);
+        body.configure(0.72, Mode::Spring);
+        body.to([500.0, 400.0, 28.0], ms(180), start);
+        for elapsed in [40, 80, 120] {
+            let now = start + ms(elapsed);
+            let position = body.at(now);
+            let velocity = body.velocity(now);
+            body.to([200.0, 50.0, 25.0], ms(140), now);
+            for i in 0..3 {
+                assert!((body.at(now)[i] - position[i]).abs() < 1e-3);
+                assert!((body.velocity(now)[i] - velocity[i]).abs() < 1e-2);
+            }
+        }
+        let settled = start + ms(2000);
+        assert!(body.settled(settled));
+        assert_eq!(body.at(settled), body.target());
+        assert_eq!(body.velocity(settled), [0.0; 3]);
+    }
+
+    #[test]
+    fn body_axes_arrive_in_order_while_content_progress_stays_monotonic() {
+        let start = Instant::now();
+        let mut body = Body::new([0.0; 3], Mode::Spring);
+        body.to([1.0; 3], ms(180), start);
+        let position = body.at(start + ms(60));
+        assert!(position[0] > position[1] && position[1] > position[2]);
+        body.configure(0.72, Mode::Spring);
+        body.to([0.0; 3], ms(180), start + ms(60));
+        let mut last = 0.0;
+        for elapsed in 60..1000 {
+            let progress = body.progress(start + ms(elapsed));
+            assert!(progress >= last);
+            last = progress;
+        }
+        assert_eq!(last, 1.0);
+    }
+
+    #[test]
+    fn swapping_segment_endpoints_preserves_pose_and_speed() {
+        let start = Instant::now();
+        let mut swap = Spring::new([1.0], Mode::Spring);
+        swap.to([0.0], ms(180), start);
+        let now = start + ms(60);
+        let position = swap.at(now)[0];
+        let velocity = swap.velocity(now)[0];
+        swap.complement();
+        swap.aim([0.0], ms(180), Mode::Spring, now);
+        assert!((swap.at(now)[0] - (1.0 - position)).abs() < 1e-6);
+        assert!((swap.velocity(now)[0] + velocity).abs() < 1e-5);
     }
 }

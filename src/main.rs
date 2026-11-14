@@ -25,6 +25,7 @@ mod lock;
 mod look;
 mod merge;
 mod modules;
+mod motion_inspect;
 mod niri_config;
 mod pane;
 mod raster;

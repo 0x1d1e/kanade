@@ -176,6 +176,11 @@ struct Entry {
 // the name of a verb this process answers itself, with what it does and the form it takes
 const OWN: &[(&str, &str, &str)] = &[
     (
+        "motion",
+        "Inspect deterministic synthetic Island motion without a running shell",
+        crate::motion_inspect::USAGE,
+    ),
+    (
         "completions",
         "Print shell completions, from the commands in this list",
         "completions bash|fish|zsh",
@@ -499,6 +504,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 ExitCode::SUCCESS,
             );
         }
+        ["motion", "inspect", ref rest @ ..] => return crate::motion_inspect::run(rest),
         ["update"] => return crate::update::run(),
         ["doctor"] => return doctor::run(),
         ["sddm", "status"] => return sddm::status(),

@@ -144,14 +144,12 @@ pub fn reload() -> Outcome {
                     appearance::sync(&next);
                 }
 
-                // only the timings the island draws by changed, so only then retime and resize
-                if next.animation_timings() != running.animation_timings() {
-                    {
-                        // read under the write, so an output changing meanwhile cannot land first
-                        let mut island = IslandService::write();
-                        island.retime(next.animation_timings());
-                        view::resize(&mut island);
-                    }
+                // Geometry and timings reach the Island together before the next frame.
+                {
+                    // Read under the write, so an output changing meanwhile cannot land first.
+                    let mut island = IslandService::write();
+                    island.retime(next.animation_timings());
+                    view::resize(&mut island);
                 }
 
                 // last, so every other window that reads the config draws all of it at once

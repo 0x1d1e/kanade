@@ -93,9 +93,32 @@ The verbs:
 | `ui key <name> <key>` | sends one key to the node's window: `enter`, `escape`, `tab`, `backspace`, `space`, an arrow, `home`, `end`, `delete`, `pageup`, `pagedown` or a character, after any of `ctrl+`, `alt+`, `shift+`, `super+`. A ctrl chord reaches a Surface's own keys as the shortcut it is, so in the Launcher `ctrl+k` opens the selected answer's actions and `ctrl+1` through `ctrl+9` press the nth answer |
 | `ui scroll <name> <lines>` | wheel lines over the node, positive down |
 | `ui wait <name> [--timeout <seconds>]` | returns 0 once the node is in the tree, 1 after 5 s (up to 600 s with `--timeout`) |
+| `motion inspect [interruptions\|satellites] [--script <file>] [--fps <1-240>] [--duration <ms>] [--at <ms>] [--speed <0.1-10>] [--edge top\|bottom\|left\|right] [--reduced-motion] [--format json\|html]` | local deterministic Island motion inspection with synthetic Activities; no running shell, compositor, source services or user config required. Defaults: interruptions, 60 fps, 2400 ms, speed 1, top edge, JSON |
 | `completions bash\|fish\|zsh` | prints shell completions, derived from the commands `kanade help` lists, see [Installation](Installation.md); works without a shell |
 | `update` | builds `main` from GitHub with `cargo install --locked --git https://github.com/0x1d1e/kanade --branch main --root ~/.cargo --force kanade`, refreshes the user unit (the old unit is kept when it differs), and restarts `kanade.service` if that unit is running; a failed build leaves the installed binary as it was; requires Cargo and the build dependencies, and works without a shell |
 | `doctor` | read-only diagnostics: Kanade and niri versions, niri's open windows and layer-shell surfaces, Wayland protocols, buses and sockets, the config, what each Module on runs worse without, like a missing `pw-dump` or another notification daemon, and, with `wallpaper` on, whether a niri layer rule puts awww in the overview backdrop; works without a shell, exits 1 on a failure; Settings' Health page shows the same checks |
 
 `kanade help` lists every verb with a line on what it does; `kanade help <verb>` or `kanade <verb> --help` gives the forms it takes and what their arguments are, for `debug` the `post` and `withdraw` forms that post test Activities. `kanade --version` prints the version. Output is bold on a terminal unless `NO_COLOR` is set. A verb of a Module turned off in the config answers `module <name> is off`. Titles and details of `activity` are one line of plain text, control characters becoming spaces, cut to 80 and 160 characters, and never logged; an id that is not live is refused. A change to a live Activity within 250 ms of its last is held and shown when that is up, and one that changes nothing shows nothing. With no shell running, a verb says so. Exit status: 0 done, 1 refused, no shell or a failed write to stdout (not a pipe its reader closed, as `head` does), 2 not a verb or not its arguments, 3 not known whether it was done: the shell, or niri for a screenshot, got the call but did not answer in time, so it may still be done; not worth repeating blindly.
+
+
+## Motion inspection
+
+```sh
+kanade motion inspect interruptions --at 75 > /tmp/kanade-motion.json
+kanade motion inspect satellites --fps 144 --format html > /tmp/kanade-motion.html
+kanade motion inspect satellites --edge right --reduced-motion --format html > /tmp/kanade-reduced.html
+```
+
+Open the generated HTML in a browser. It starts paused, with play/pause, sample stepping, a keyboard-accessible sample slider and frame/time seek fields. Playback shows recorded poses without interpolation; time seek picks the nearest recorded sample. Repeat `--at <integer-ms>` to record exact instants beyond the frame grid. JSON includes before/after samples for every command, body geometry and analytic velocity, content and section opacity/lift, and Satellite presence, shape alpha and raw/effective mark alpha. The stage is diagnostic geometry, not a Surface screenshot; pane materials, GPU neck finish and real pointer/keyboard/privacy behavior need live verification.
+
+`--script` accepts a bounded, local replay file (64 KiB, 256 events). Each nonblank line is `<integer-ms> <command>`, ordered by time; equal-time commands keep file order, and `#` starts a comment. Supported commands are Surface `open|close|toggle`, `island collapse`, `peek down|up`, the existing `debug post|withdraw` forms, `dnd on|off|toggle`, `hover in|out`, and `segment primary|satellite`. Nothing dispatches to IPC or external actions. Times and `--duration` are limited to 60000 ms; later events are omitted from a shorter recording. `--speed` changes normal body and Satellite responses while accessibility's brief fade and input deadlines keep their configured durations. Synthetic identifiers and content come from the fixture or replay file, never the running desktop.
+
+```text
+0 debug post timer primary ongoing persistent global none
+0 debug post live secondary ongoing persistent global none
+500 peek down
+650 peek up
+800 controls open
+835 island collapse
+```
 

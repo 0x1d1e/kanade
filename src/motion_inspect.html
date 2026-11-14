@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanade motion inspection</title>
+<style>
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+body { margin: 0; }
+main { max-width: 76rem; margin: auto; padding: 1.5rem; }
+h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
+p { max-width: 74ch; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-block: 1rem; }
+button, input, select { font: inherit; min-block-size: 2.75rem; }
+button { padding-inline: 1rem; cursor: pointer; }
+input[type=range] { flex: 1 1 16rem; min-width: 0; cursor: pointer; }
+input[type=number] { width: 8rem; max-width: 100%; }
+:focus-visible { outline: 3px solid Highlight; outline-offset: 3px; }
+button:disabled { cursor: not-allowed; }
+summary, select { cursor: pointer; }
+figure { margin: 0; }
+.stage { overflow: auto; background: Canvas; border: 1px solid GrayText; }
+svg { display: block; max-width: 100%; height: auto; }
+#body { fill: CanvasText; }
+#dots circle { fill: CanvasText; }
+#marks text { fill: Canvas; font: 11px system-ui; text-anchor: middle; dominant-baseline: central; }
+#sections rect { fill: Canvas; }
+#content-label { fill: Canvas; font: 13px system-ui; text-anchor: middle; }
+figcaption { padding-block: .5rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 28rem; overflow: auto; border-block: 1px solid GrayText; padding-block: 1rem; }
+output { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+<h1>Kanade motion inspection</h1>
+<p>Production motion sampled with synthetic Activities. The stage shows body geometry, Satellite shapes and marks, and section opacity and lift. It does not reproduce Surface widgets, pane materials or the GPU liquid neck. Each step displays recorded values without interpolation.</p>
+<div class="controls">
+<button id="play" type="button">Play</button>
+<button id="previous" type="button">Previous sample</button>
+<button id="next" type="button">Next sample</button>
+<label for="pace">Playback speed</label>
+<select id="pace"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+</div>
+<div class="controls">
+<label for="seek">Sample</label><input id="seek" type="range" min="0" max="0" step="1" value="0" aria-describedby="seek-help">
+<label for="frame">Frame</label><input id="frame" type="number" min="0" step="1" value="0">
+<label for="time">Time (ms)</label><input id="time" type="number" min="0" step="any" value="0">
+</div>
+<p id="seek-help">Frame seeks select the recorded frame. Time seeks select the nearest recorded sample; use CLI <code>--at</code> for an exact extra timestamp. Previous and next include event samples taken immediately before and after each command.</p>
+<output id="position" for="seek frame time"></output>
+<figure>
+<div class="stage"><svg id="stage" role="img" aria-labelledby="stage-title" viewBox="0 0 972 772">
+<title id="stage-title">Sampled Island body, Satellite marks and section poses</title>
+<defs><clipPath id="clip"><rect id="clip-body"/></clipPath></defs>
+<g id="dots"></g><g id="marks"></g><rect id="body"/>
+<g clip-path="url(#clip)"><text id="content-label"></text><g id="sections"></g></g>
+</svg></div>
+<figcaption id="caption">Paused at the first sample.</figcaption>
+</figure>
+<details><summary id="data-title">Recorded sample data</summary><pre tabindex="0" role="region" aria-labelledby="data-title"><code id="data"></code></pre></details>
+<details><summary id="script-title">Replay script</summary><pre tabindex="0" role="region" aria-labelledby="script-title"><code id="script"></code></pre></details>
+<noscript><p>JavaScript is required to inspect the stored samples. Generate JSON with <code>--format json</code> for a text trace.</p></noscript>
+</main>
+<script>
+'use strict';
+const trace = /*TRACE*/null;
+const samples = trace.samples;
+const find = id => document.getElementById(id);
+const seek = find('seek'), play = find('play'), time = find('time'), frame = find('frame');
+let index = 0, playing = false, started = 0, startNs = 0, request = 0;
+const ns = 'http://www.w3.org/2000/svg';
+const stage = find('stage');
+stage.setAttribute('viewBox', `0 0 ${trace.canvas.width} ${trace.canvas.height}`);
+stage.setAttribute('width', trace.canvas.width);
+stage.setAttribute('height', trace.canvas.height);
+seek.max = samples.length - 1;
+time.max = samples.at(-1).t_ns / 1e6;
+const frames = samples.map((sample, index) => ({sample, index})).filter(entry => entry.sample.frame !== null);
+frame.max = frames.at(-1).sample.frame;
+find('script').textContent = trace.script;
+function attrs(element, values) { for (const [key, value] of Object.entries(values)) element.setAttribute(key, value); }
+function svg(tag, values, text) {
+  const element = document.createElementNS(ns, tag); attrs(element, values);
+  if (text !== undefined) element.textContent = text;
+  return element;
+}
+function show(next) {
+  index = Math.max(0, Math.min(samples.length - 1, next));
+  const sample = samples[index], body = sample.body;
+  seek.value = index; time.value = sample.t_ns / 1e6;
+  frame.value = sample.frame === null ? '' : sample.frame;
+  const event = sample.event ? `${sample.event.phase}: ${sample.event.command}` : 'sample';
+  const position = `${sample.t_ns} ns · frame ${sample.frame ?? 'between frames'} · sample ${index + 1}/${samples.length}`;
+  find('position').textContent = position;
+  seek.setAttribute('aria-valuetext', position);
+  find('caption').textContent = `${sample.presentation} · ${sample.settled ? 'settled' : 'moving'} · ${event}`;
+  find('data').textContent = JSON.stringify(sample, null, 2);
+  for (const id of ['body', 'clip-body']) attrs(find(id), {...body, rx: sample.shape.radius});
+  find('dots').replaceChildren(...sample.satellites.map(dot => svg('circle', {
+    cx: dot.rect.x + dot.rect.width / 2, cy: dot.rect.y + dot.rect.height / 2,
+    r: dot.rect.width / 2, opacity: dot.opacity
+  })));
+  find('marks').replaceChildren(...sample.satellites.map(dot => svg('text', {
+    x: dot.rect.x + dot.rect.width / 2, y: dot.rect.y + dot.rect.height / 2,
+    opacity: dot.content_opacity
+  }, dot.mark.split(':')[0].slice(0, 2))));
+  const content = sample.content[0];
+  const label = find('content-label');
+  label.textContent = content?.presentation ?? '';
+  attrs(label, {x: body.x + body.width / 2, y: body.y + 22, opacity: content?.opacity ?? 0});
+  find('sections').replaceChildren(...(content?.sections ?? []).map((section, i) => svg('rect', {
+    x: body.x + 24, y: body.y + 40 + i * 35 + section.lift,
+    width: Math.max(0, body.width - 48), height: 10, opacity: section.opacity, rx: 2
+  })));
+  find('previous').disabled = index === 0;
+  find('next').disabled = index === samples.length - 1;
+}
+function pause() { playing = false; cancelAnimationFrame(request); play.textContent = 'Play'; }
+function tick(now) {
+  if (!playing) return;
+  const target = startNs + (now - started) * 1e6 * Number(find('pace').value);
+  let next = index;
+  while (next + 1 < samples.length && samples[next + 1].t_ns <= target) next++;
+  show(next);
+  if (index === samples.length - 1) pause();
+  else request = requestAnimationFrame(tick);
+}
+play.addEventListener('click', () => {
+  if (playing) { pause(); return; }
+  if (index === samples.length - 1) show(0);
+  playing = true; play.textContent = 'Pause';
+  started = performance.now(); startNs = samples[index].t_ns;
+  request = requestAnimationFrame(tick);
+});
+find('previous').addEventListener('click', () => { pause(); show(index - 1); });
+find('next').addEventListener('click', () => { pause(); show(index + 1); });
+seek.addEventListener('input', () => { pause(); show(Number(seek.value)); });
+frame.addEventListener('change', () => {
+  pause();
+  if (!frame.value || !frame.checkValidity()) return;
+  const selected = frames.find(entry => entry.sample.frame === Number(frame.value));
+  if (selected) show(selected.index);
+});
+time.addEventListener('change', () => {
+  pause();
+  if (!time.value || !time.checkValidity()) return;
+  const target = Number(time.value) * 1e6;
+  let nearest = 0;
+  for (let i = 1; i < samples.length; i++) {
+    if (Math.abs(samples[i].t_ns - target) <= Math.abs(samples[nearest].t_ns - target)) nearest = i;
+  }
+  show(nearest);
+});
+find('pace').addEventListener('change', pause);
+document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+show(0);
+</script>
+</body>
+</html>

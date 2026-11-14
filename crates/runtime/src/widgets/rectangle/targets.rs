@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::graphics::Area;
-use crate::input::{Cursor, Handlers, Target, anchor, clip, nest};
+use crate::input::{Cursor, Target, anchor, clip, nest};
 use crate::ui::{self, Semantics};
 use crate::{Button, Point, Rectangle, Scroll};
 
@@ -154,17 +154,13 @@ pub fn collect_targets(rectangle: &Rectangle, area: Area, targets: &mut Vec<Targ
 
 // the hit areas as if the rectangle were not rotated, scaled or moved
 fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>) {
-    let mut handlers = rectangle.handlers.clone();
-
-    if rectangle.inert {
-        handlers = Handlers {
-            click: Some(Rc::new(|_| {})),
-            ..Handlers::default()
-        };
-    }
+    let handlers = rectangle.handlers.clone();
 
     // added before the child, so the child wins where both react to the same thing
     let mut own_target = Target::new(area, handlers);
+    if rectangle.inert {
+        own_target.make_inert();
+    }
 
     own_target.semantics = rectangle.semantics.clone().map(|mut semantics| {
         semantics.disabled |= rectangle.inert;
@@ -194,7 +190,7 @@ fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>
 
     if rectangle.inert {
         for target in &mut targets[own..] {
-            target.handlers = Handlers::default();
+            target.make_inert();
         }
     }
 }
@@ -266,6 +262,28 @@ mod tests {
         pointer.release(Button::Left);
 
         assert_eq!(pressed.get(), 0);
+    }
+
+    #[test]
+    fn returning_from_inert_requires_a_fresh_press_and_drag() {
+        let (pressed, dragged) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let mut pointer = Pointer::default();
+        pointer.set_targets(frame(false, &pressed, &dragged));
+        pointer.move_to(25.0, 25.0);
+        pointer.press();
+        pointer.move_to(75.0, 25.0);
+        pointer.start_drag();
+        pointer.set_targets(frame(true, &pressed, &dragged));
+        pointer.set_targets(frame(false, &pressed, &dragged));
+        pointer.drag();
+        pointer.move_to(25.0, 25.0);
+        pointer.release(Button::Left);
+        assert_eq!((pressed.get(), dragged.get()), (0, 1));
+        pointer.press();
+        pointer.release(Button::Left);
+        pointer.move_to(75.0, 25.0);
+        pointer.start_drag();
+        assert_eq!((pressed.get(), dragged.get()), (1, 2));
     }
 
     // the Island's own target lies beneath its content: a click on inert content stops there, while hover, motion and the wheel still reach it

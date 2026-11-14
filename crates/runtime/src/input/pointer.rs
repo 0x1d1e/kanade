@@ -53,21 +53,28 @@ impl Pointer {
             .collect();
         self.targets = targets;
 
-        // a target that went away mid-hold lets the hold go
-        if self
-            .held
-            .as_ref()
-            .is_some_and(|(id, _)| self.index(*id).is_none())
-        {
+        if self.pressed.is_some_and(|id| {
+            self.index(id).is_none_or(|index| {
+                let target = &self.targets[index];
+                target.inert || target.handlers.click.is_none()
+            })
+        }) {
+            self.pressed = None;
+        }
+
+        // Losing eligibility cancels a capture permanently, even if the same target returns.
+        if self.held.as_ref().is_some_and(|(id, _)| {
+            self.index(*id)
+                .is_none_or(|index| self.targets[index].handlers.hold.is_none())
+        }) {
             self.stop_hold();
         }
 
-        // a target that went away mid-drag ends the drag, its button still down
-        if self
-            .dragged
-            .as_ref()
-            .is_some_and(|(id, _)| self.index(*id).is_none())
-        {
+        // End an invalidated drag using its captured completion handler, while still pressed.
+        if self.dragged.as_ref().is_some_and(|(id, _)| {
+            self.index(*id)
+                .is_none_or(|index| self.targets[index].handlers.drag.is_none())
+        }) {
             self.stop_drag(false);
         }
 
@@ -111,7 +118,7 @@ impl Pointer {
     // (a slider's bar takes only a drag, and a click on a parent behind it does not cover it)
     pub fn pressed_at(&self, x: f32, y: f32) -> Option<usize> {
         self.find_topmost_at(x, y, |target| {
-            target.handlers.click.is_some() || target.handlers.drag.is_some()
+            target.inert || target.handlers.click.is_some() || target.handlers.drag.is_some()
         })
     }
 
@@ -246,7 +253,8 @@ impl Pointer {
 
     pub fn press(&mut self) {
         self.pressed = self
-            .find_topmost(|target| target.handlers.click.is_some())
+            .find_topmost(|target| target.inert || target.handlers.click.is_some())
+            .filter(|&index| !self.targets[index].inert)
             .map(|index| self.ids[index]);
     }
 
@@ -256,7 +264,7 @@ impl Pointer {
             return false;
         };
 
-        let released = self.find_topmost(|target| target.handlers.click.is_some());
+        let released = self.find_topmost(|target| target.inert || target.handlers.click.is_some());
 
         // a redraw since the press may have removed this target
         let Some(index) = self.index(pressed) else {

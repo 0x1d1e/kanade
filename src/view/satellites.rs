@@ -24,12 +24,6 @@ pub(super) fn satellites(
     shape: Shape,
     now: Instant,
 ) -> Vec<Box<dyn Widget>> {
-    let opacity = geometry::satellite_opacity(shape, hang);
-
-    if opacity == 0.0 {
-        return Vec::new();
-    }
-
     let placed: Vec<_> = satellites
         .shown(now)
         .into_iter()
@@ -38,9 +32,17 @@ pub(super) fn satellites(
                 Mark::Activity(activity) => satellite_mark(activity, output, now),
                 Mark::Overflow(count) => label(format!("+{count}"), theme::island().on_surface),
             };
+            // The surrounding shape keeps its own fade while its mark clears the joining neck.
+            let mark = Box::new(
+                Rectangle::new()
+                    .width(mark.width())
+                    .height(mark.height())
+                    .child(mark)
+                    .opacity((shown.content_opacity / shown.opacity).clamp(0.0, 1.0)),
+            ) as Box<dyn Widget>;
             let at = geometry::satellite(body, hang, canvas, shown.slot, shown.presence);
 
-            (shown.slot, at, mark, opacity * shown.opacity)
+            (shown.slot, at, mark, shown.opacity)
         })
         .collect();
 

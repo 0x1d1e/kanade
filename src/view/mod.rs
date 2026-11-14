@@ -581,11 +581,10 @@ fn form_holder(
         let leaving = content[0].is_some();
         let shown = content.into_iter().flatten().next();
 
-        // a Surface coming in arrives a section at a time, one going out leaves as a whole
+        // Outgoing sections keep the arrival and lift they displayed at the interruption.
         let _entrance = Entrance::take(
-            shown
-                .as_ref()
-                .map_or(1.0, |&(_, opacity)| if leaving { 1.0 } else { opacity }),
+            island.arrival(&monitor.name, now),
+            shown.as_ref().map_or(0.0, |(_, opacity)| *opacity),
         );
 
         if let Some((content, opacity)) = shown

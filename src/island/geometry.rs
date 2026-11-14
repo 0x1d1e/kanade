@@ -691,19 +691,20 @@ impl Rect {
 
 /*
  * a shape a bouncy spring carries past its target kept a body: never so large it leaves the canvas
- * with its padding, never squeezed thinner than three quarters of Rest, its corners never rounder
- * than a pill
+ * with its padding, never squeezed thinner than three quarters of Rest's thickness on either axis,
+ * so a body can morph between horizontal and upright forms; its corners never rounder than a pill
  */
 pub fn bounded(shape: Shape, canvas: Canvas) -> Shape {
     // the least wins on a canvas too small for both, which a tiny output may give
+    let least = REST.height * 0.75;
     let width = shape
         .width
         .min(canvas.width - 2.0 * (TOP + HOVER_PADDING))
-        .max(REST.width * 0.75);
+        .max(least);
     let height = shape
         .height
         .min(canvas.height - 2.0 * (TOP + HOVER_PADDING))
-        .max(REST.height * 0.75);
+        .max(least);
 
     Shape {
         width,
@@ -927,19 +928,6 @@ pub fn satellite(body: Rect, hang: Hang, canvas: Canvas, slot: f32, presence: f3
         width: SATELLITE,
         height: SATELLITE,
     }
-}
-
-/*
- * Satellites belong to the small forms: whole up to a Peek, gone by the smallest Surface, as far
- * as the body reaches off its edge
- */
-pub fn satellite_opacity(shape: Shape, hang: Hang) -> f32 {
-    let (reach, peek, media) = match hang.sideways() {
-        true => (shape.width, PEEK.width, MEDIA.width),
-        false => (shape.height, PEEK.height, MEDIA.height),
-    };
-
-    1.0 - ((reach - peek) / (media - peek)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

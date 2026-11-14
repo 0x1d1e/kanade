@@ -11,6 +11,19 @@ use std::time::{Duration, Instant};
 
 use super::motion::{Mode, Spring};
 
+// Sections rise in order while content arrives; long Surfaces share the last section's start.
+pub fn section_pose(section: usize, arrival: f32, mode: Mode) -> (f32, f32) {
+    let start = section.min(5) as f32 * 0.1;
+    let share = ((arrival - start) / 0.5).clamp(0.0, 1.0);
+    let opacity = 1.0 - (1.0 - share).powi(3);
+    let lift = if mode == Mode::Reduced {
+        0.0
+    } else {
+        10.0 * (1.0 - opacity)
+    };
+    (opacity, lift)
+}
+
 #[derive(Debug, Clone)]
 pub struct Crossfade<T> {
     // what showed when the current leg began, and how strongly
@@ -20,6 +33,10 @@ pub struct Crossfade<T> {
 
     // how strongly `to` already showed when the leg began, nonzero only on a way back
     start: f32,
+
+    // Section arrival is independent of the outer fade: outgoing content keeps its displayed lift.
+    from_arrival: f32,
+    arrival: f32,
 }
 
 // what a Crossfade can show
@@ -37,6 +54,8 @@ impl<T: InPlace> Crossfade<T> {
             from: None,
             to: content,
             start: 1.0,
+            from_arrival: 1.0,
+            arrival: 1.0,
         }
     }
 
@@ -55,12 +74,13 @@ impl<T: InPlace> Crossfade<T> {
         }
 
         let showing = self.shown(progress).into_iter().flatten().next();
+        let arrival = self.arrival(progress);
 
-        (self.from, self.start) = match showing {
-            // back to what still shows, it only has to grow back from here
-            Some((content, opacity)) if content.in_place(&next) => (None, opacity),
-            showing => (showing, 0.0),
+        (self.from, self.start, self.arrival) = match showing {
+            Some((content, opacity)) if content.in_place(&next) => (None, opacity, arrival),
+            showing => (showing, 0.0, 0.0),
         };
+        self.from_arrival = arrival;
 
         self.to = next;
         true
@@ -72,9 +92,12 @@ impl<T: InPlace> Crossfade<T> {
      */
     pub fn rebase(&mut self, progress: f32) {
         let [from, to] = self.shown(progress);
+        let into = (2.0 * progress - 1.0).clamp(0.0, 1.0);
+        let arrival = self.arrival + (1.0 - self.arrival) * into;
 
         self.from = from;
         self.start = to.map_or(0.0, |(_, opacity)| opacity);
+        self.arrival = arrival;
     }
 
     // what shows at `progress` of the current leg, and how strongly; never both at once
@@ -89,6 +112,16 @@ impl<T: InPlace> Crossfade<T> {
         let to = (self.to.clone(), self.start + (1.0 - self.start) * into);
 
         [from, Some(to)].map(|shown| shown.filter(|&(_, opacity)| opacity > 0.0))
+    }
+
+    // The view applies this same arrival to every section, including while it fades out.
+    pub fn arrival(&self, progress: f32) -> f32 {
+        if self.from.is_some() && progress < 0.5 {
+            self.from_arrival
+        } else {
+            let into = (2.0 * progress - 1.0).clamp(0.0, 1.0);
+            self.arrival + (1.0 - self.arrival) * into
+        }
     }
 }
 
@@ -223,5 +256,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn interrupted_content_keeps_its_section_pose() {
+        for progress in [0.6, 0.75, 0.9] {
+            for next in [1, 3] {
+                let mut fade = Crossfade::new(1);
+                fade.to(2, 0.0);
+                let arrival = fade.arrival(progress);
+                let opacity = showing(&fade, progress);
+                fade.to(next, progress);
+                assert_eq!(fade.arrival(0.0), arrival);
+                assert_eq!(showing(&fade, 0.0), opacity);
+                assert_eq!(fade.arrival(0.2), arrival);
+                fade.rebase(0.2);
+                assert_eq!(fade.arrival(0.0), arrival);
+                assert_eq!(fade.arrival(1.0), 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn reaim_during_outgoing_half_keeps_the_incoming_entrance() {
+        let mut fade = Crossfade::new(1);
+        fade.to(2, 0.0);
+        fade.rebase(0.2);
+        assert_eq!(fade.arrival(0.0), 1.0);
+        assert_eq!(fade.arrival(0.5), 0.0);
+        assert!(fade.arrival(0.75) > 0.0 && fade.arrival(0.75) < 1.0);
+
+        fade.to(3, 0.75);
+        let frozen = fade.arrival(0.2);
+        fade.rebase(0.2);
+        assert_eq!(fade.arrival(0.0), frozen);
+        assert_eq!(fade.arrival(0.5), 0.0);
     }
 }
