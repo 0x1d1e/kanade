@@ -436,3 +436,7 @@ timeout = 10
 - Problems are reported on stderr with file and line, an unknown key with the nearest known one when it is close. At start, a key that is unknown or a value out of range is skipped, keeping what the layers below gave it, and a file that is not valid TOML, like one that sets a key twice, is skipped whole.
 - A change while running applies without a restart, except `modules`, which stays as it started and is reported pending restart. A change with any problem applies nothing: the config in effect stays whole, and stderr and `status` report why.
 
+
+Horizontal Compact fits its content up to 220 px, reserving room for privacy dots; a long title elides. Closing has a shallow waist and a quiet settle within one content fade. Opening keeps the selected motion's bounce. Reduced motion uses a single brief fade with no geometry overshoot or content scale. Passive Activity bars ease between readings; Surface sliders follow input directly. Shell corners and shadows follow the current outline continuously, including interrupted transitions and changes of edge.
+
+With the `usage` Module enabled, the Island shows separate five-hour and seven-day utilization rings in Compact and Peek, and concentric rings on its Satellite. `N/A` means that window was unavailable; 0% is an available empty window. Limit and fetch-error notices show their message on the Island. Usage has no Surface.

@@ -73,7 +73,7 @@ pub(super) fn timer(countdown: &Countdown, now: Instant) -> Rectangle {
         clock.push(Box::new(
             Text::new(part)
                 .tabular()
-                .size(theme::text::LABEL)
+                .size(theme::text::BODY_LARGE)
                 .color(timer_tone(countdown))
                 .weight(theme::text::SEMIBOLD),
         ));
@@ -154,12 +154,12 @@ pub(super) fn workspace(workspace: &Workspace) -> Rectangle {
 }
 
 // the icon, a bar rising with the level, then its number
-pub(super) fn level(icon: Icon, percent: u8, tone: Color) -> Rectangle {
+pub(super) fn level(icon: Icon, percent: u8, fraction: f32, tone: Color) -> Rectangle {
     let length = shape(Presentation::Compact).height - 100.0;
 
     stacked(children![
         icon.draw(20.0),
-        rising(length, f32::from(percent) / 100.0, tone),
+        rising(length, fraction, tone),
         Text::new(percent.to_string())
             .tabular()
             .size(theme::text::LABEL_SMALL)
@@ -180,13 +180,12 @@ fn rising(length: f32, fraction: f32, tone: Color) -> Rectangle {
         .fill(theme::island().surface_container_high)
         .align_child(Center, End);
 
-    // shorter than its round ends it would draw as a misshapen dot
-    if filled >= width {
+    if filled > 0.0 {
         track.child(
             Rectangle::new()
                 .width(width)
                 .height(filled)
-                .radius(width / 2.0)
+                .radius((filled / 2.0).min(width / 2.0))
                 .fill(tone),
         )
     } else {

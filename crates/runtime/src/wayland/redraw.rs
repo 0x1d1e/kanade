@@ -11,7 +11,7 @@ use super::surface::{Content, OpenWindow, View};
 
 impl OpenWindow {
     // whether the view drawn says the window is to be shown; a normal window always is
-    fn shown(&self, content: &Content) -> bool {
+    pub(super) fn shown(&self, content: &Content) -> bool {
         let Content::Layer(window) = content else {
             return true;
         };
@@ -151,11 +151,22 @@ impl OpenWindow {
             return;
         }
 
+        /*
+         * a window that wants to hide should do so promptly rather than waiting
+         * for a frame callback on a surface that is about to hide.
+         */
+        let (content, _) =
+            frame::run_view(|| self.view.run(), self.width as f32, self.height as f32);
+        if !self.shown(&content) {
+            self.redraw();
+
+            return;
+        }
+
         // changes that land before the next frame all draw together in it
         if self.frame_requested {
             return;
         }
-
         self.ask_for_frame();
 
         self.role.commit();
@@ -209,11 +220,32 @@ impl OpenWindow {
         self.gpu
             .draw(renderer.finish(), buffer_width, buffer_height)
     }
+
+    // draw a transparent 1x1 frame to keep the layer surface mapped without visual artifacts or unmap races
+    pub fn clear_to_hidden(&mut self) -> bool {
+        let (buffer_width, buffer_height) = match &self.fractional {
+            Some(fractional) => {
+                fractional.viewport.set_destination(1, 1);
+
+                (to_real_pixels(1, self.scale), to_real_pixels(1, self.scale))
+            }
+
+            None => {
+                let whole = self.scale.round().max(1.0) as u32;
+
+                self.role.wl_surface().set_buffer_scale(whole as i32);
+
+                (whole, whole)
+            }
+        };
+
+        self.gpu.draw(Vec::new(), buffer_width, buffer_height)
+    }
 }
 
 // a logical size in real pixels at a fractional scale
-fn to_real_pixels(size: u32, scale: f32) -> u32 {
+pub(super) fn to_real_pixels(size: u32, scale: f32) -> u32 {
     let pixels = size as f32 * scale;
 
-    pixels.round() as u32
+    (pixels.round() as u32).max(1)
 }

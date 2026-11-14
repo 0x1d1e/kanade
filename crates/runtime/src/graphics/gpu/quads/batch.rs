@@ -167,7 +167,10 @@ impl Quads {
             channel(color.b),
             channel(color.a),
         ];
-        let shape_row = [thickness, 0.0, 0.0, kind];
+        let flags = u8::from(radius.continuous)
+            | (u8::from(outer.radius.continuous) << 1)
+            | (u8::from(inner.radius.continuous) << 2);
+        let shape_row = [thickness, f32::from(flags), 0.0, kind];
         let radius_row = radius.to_array();
         let clip_radius_row = outer.radius.to_array();
         let source_row = source;

@@ -1114,6 +1114,7 @@ fn drawn(
         .width(at.width)
         .height(at.height)
         .radius(look.radius)
+        .continuous()
         .clip()
         .align_child(Start, Start)
         .translate(at.x, at.y)

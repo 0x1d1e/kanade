@@ -15,6 +15,7 @@ A user wants Claude's plan usage as two rings on the Island — five hours and s
 - **One notice per window per reset.** At or over 90% of a window, one Transient for that window, not one per refresh. Dropping below clears the mark, so a later window may have its own one notice again.
 - **Backoff.** Failures double from 60 s to 30 min, then one notice after three in a row and silence till `kanade usage` is asked again, never a tight loop.
 - **CLI.** `kanade usage` (refresh) sends `Call::Usage(Request::Refresh)` over IPC; the shell's worker fetches at once and replies "refreshing". `kanade usage key` is answered in this process by `usage::key()`, which reads stdin hidden at a terminal and writes `$XDG_STATE_HOME/kanade/usage-key` at 0600, then exits. No response body is kept.
+- **Forms.** Compact and Peek show the real optional five-hour and seven-day fractions as two labeled rings; Split uses that same Compact. Satellites show concentric rings. A missing window keeps its empty track and says `N/A`, distinct from 0%; limit and fetch-error notices display their actual message in Compact and Peek. These forms read only Activity data and introduce no Surface or credential access (ADR 0150).
 
 ## Consequences
 

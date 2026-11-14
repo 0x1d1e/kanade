@@ -69,6 +69,26 @@ pub(super) fn border(
     transform: Transform,
     color: Color,
 ) {
+    if radius.continuous {
+        let Some(outer) = area.trace(radius) else {
+            return;
+        };
+        let mut path = bezier(&outer);
+        let inner = Area::new(
+            area.x + thickness,
+            area.y + thickness,
+            area.width - 2.0 * thickness,
+            area.height - 2.0 * thickness,
+        );
+        if inner.width > 0.0
+            && inner.height > 0.0
+            && let Some(hole) = inner.trace(radius.map(|r| (r - thickness).max(0.0)))
+        {
+            path.extend(bezier(&hole).elements().iter().copied());
+        }
+        scene.fill(Fill::EvenOdd, affine(transform), paint(color), None, &path);
+        return;
+    }
     /*
      * a line is drawn centered on its path,
      * so pulling the path in by half the thickness keeps the line inside the edge

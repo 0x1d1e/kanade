@@ -101,7 +101,7 @@ pub(super) fn satellite_mark(activity: &Activity, output: &str, now: Instant) ->
         Detail::Recording(Clip::Recording { paused: true, .. }) => {
             Box::new(Icon::Pause.on(14.0, theme::signals().capture))
         }
-        Detail::Recording(_) => label(String::from("Rec"), theme::signals().capture),
+        Detail::Recording(_) => Box::new(Icon::Capture.on(14.0, theme::signals().capture)),
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
         Detail::Dictation(_) => Box::new(Icon::Microphone.draw(14.0)),
         Detail::Media(track) => Box::new(super::media::disc(track, output, 20.0, now)),
@@ -122,6 +122,8 @@ pub(super) fn satellite_mark(activity: &Activity, output: &str, now: Instant) ->
         Detail::Session(Leaving::Failed { .. } | Leaving::Unanswered { .. }) => {
             label(String::from("!"), theme::signals().critical)
         }
+        Detail::Usage(usage) => super::usage::mark(usage),
+        Detail::UsageNotice(_) => Box::new(Icon::Pulse.on(14.0, theme::signals().critical)),
         _ => label(
             abbreviation(activity.kind()).to_owned(),
             theme::island().on_surface,

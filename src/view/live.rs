@@ -69,20 +69,36 @@ pub(super) fn live(
     job: &Job,
     actions: &[Action],
     id: &str,
+    progress: Option<(f32, bool)>,
 ) -> Option<Rectangle> {
     let (icon, ink) = mark(job);
     let percent = percent(job);
 
     if presentation == Presentation::Compact && upright() {
         let mut parts = children![icon.on(18.0, ink)];
-        parts.extend(percent.map(|percent| label(percent, theme::island().on_surface)));
+        if let (None, Some(amount)) = (job.ended, job.progress) {
+            parts.push(Box::new(
+                Column::new(children![
+                    Text::new((amount / 10).to_string())
+                        .tabular()
+                        .size(theme::text::BODY_LARGE)
+                        .color(theme::island().on_surface)
+                        .weight(theme::text::SEMIBOLD),
+                    Text::new("%")
+                        .size(theme::text::LABEL_SMALL)
+                        .color(theme::island().on_surface),
+                ])
+                .gap(1.0)
+                .align(Center),
+            ));
+        }
 
         return Some(noted(stacked(parts), job));
     }
 
     let (side, size, inset, number) = match presentation {
-        Presentation::Compact => (18.0, theme::text::LABEL, 15.0, 40.0),
-        Presentation::Peek => (24.0, theme::text::BODY_LARGE, 20.0, 48.0),
+        Presentation::Compact => (18.0, theme::text::BODY_LARGE, 15.0, 44.0),
+        Presentation::Peek => (24.0, theme::text::TITLE_LARGE, 20.0, 48.0),
         _ => return None,
     };
 
@@ -141,12 +157,11 @@ pub(super) fn live(
             ));
         }
 
-        if let (None, Some(thousandths)) = (job.ended, job.progress) {
-            words.push(Box::new(bar(
-                width,
-                f32::from(thousandths) / 1000.0,
-                theme::island().on_surface,
-            )));
+        if let Some((fraction, moving)) = progress {
+            if moving {
+                kanade_runtime::request_frame();
+            }
+            words.push(Box::new(bar(width, fraction, theme::island().on_surface)));
         }
     }
 

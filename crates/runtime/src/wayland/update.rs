@@ -28,12 +28,17 @@ impl OpenWindow {
         self.update_input_region(window);
 
         // a region in the compositor's logical pixels, so a changed UI scale resends it
-        self.blur.set(
-            &compositor_pixels(&window.blur),
-            self.role.wl_surface(),
-            &self.compositor,
-            &self.qh,
-        );
+        if !window.visible {
+            self.blur
+                .set(&[], self.role.wl_surface(), &self.compositor, &self.qh);
+        } else {
+            self.blur.set(
+                &compositor_pixels(&window.blur),
+                self.role.wl_surface(),
+                &self.compositor,
+                &self.qh,
+            );
+        }
 
         // a normal window has no layer settings
         let Role::Layer {
@@ -54,7 +59,8 @@ impl OpenWindow {
 
         *current = settings;
 
-        // the rest waits until the window shows again, which sends every setting
+        layer::apply(layer_surface, &settings);
+
         if !settings.visible {
             if was_visible {
                 self.hide();
@@ -63,19 +69,16 @@ impl OpenWindow {
             return false;
         }
 
-        /*
-         * a mapped window carries these settings with its next frame. After unmapping,
-         * width and height stay zero until a fresh configure; redraw commits these settings
-         * without a buffer to request it.
-         */
-        layer::apply(layer_surface, &settings);
-
         true
     }
 
     // only a changed region is sent, it takes effect with the next commit like the rest
     pub fn update_input_region(&mut self, window: &LayerWindow) {
-        let region = window.input_region.as_deref().map(compositor_pixels);
+        let region = if !window.visible {
+            Some(Vec::new())
+        } else {
+            window.input_region.as_deref().map(compositor_pixels)
+        };
 
         if region == self.input_region {
             return;
@@ -105,12 +108,18 @@ impl OpenWindow {
     }
 
     fn hide(&mut self) {
-        // taking the buffer away unmaps the window and gives back its reserved space
-        self.role.wl_surface().attach(None, 0, 0);
+        if let Role::Layer { surface, settings } = &mut self.role {
+            layer::apply(surface, settings);
+        }
 
-        self.role.commit();
+        // Present a 1x1 transparent frame to clear visual contents without unmapping.
+        // Keeping the surface mapped with exclusive zone 0, empty input region, and size 1x1
+        // completely avoids Smithay's unmap configure reset race (wrong configure serial).
+        if !self.clear_to_hidden() {
+            self.role.commit();
+        }
 
-        // unmapping resets the compositor's configure state; only a fresh configure permits drawing
+        // 0 dimensions while hidden gate drawing until configured again
         self.width = 0;
         self.height = 0;
 

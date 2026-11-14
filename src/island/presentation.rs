@@ -209,6 +209,11 @@ impl InPlace for Content {
                 shown.id() == next.id()
                     && match (shown.detail(), next.detail()) {
                         (Detail::Media(_), Detail::Media(_)) => true,
+                        (Detail::Live(shown), Detail::Live(next)) => {
+                            shown.serial == next.serial
+                                && shown.ended.is_none()
+                                && next.ended.is_none()
+                        }
                         (shown, next) => shown.is_level() && next.is_level(),
                     }
             }

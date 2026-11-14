@@ -24,6 +24,12 @@ pub fn blob_shader() -> &'static PathBuf {
     PATH.get_or_init(|| write("blob", include_str!("../blob.wgsl")))
 }
 
+pub fn shadow_shader() -> &'static PathBuf {
+    static PATH: std::sync::LazyLock<PathBuf> =
+        std::sync::LazyLock::new(|| write("shadow", include_str!("../shadow.wgsl")));
+    &PATH
+}
+
 // the files this shell holds locked while it runs, so another one starting leaves them be
 static HELD: Mutex<Vec<File>> = Mutex::new(Vec::new());
 
@@ -42,6 +48,7 @@ fn write(kind: &str, source: &str) -> PathBuf {
         let mut file = File::create(&writing)?;
 
         file.lock()?;
+        file.write_all(kanade_runtime::continuous::WGSL.as_bytes())?;
         file.write_all(source.as_bytes())?;
         fs::rename(&writing, &path)?;
         HELD.lock()
@@ -66,12 +73,15 @@ fn sweep(dir: &Path) {
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name();
         let shader = name.to_str().is_some_and(|name| {
-            ["pane-", "blob-"].iter().any(|kind| name.starts_with(kind)) && name.ends_with(".wgsl")
+            ["pane-", "blob-", "shadow-"]
+                .iter()
+                .any(|kind| name.starts_with(kind))
+                && name.ends_with(".wgsl")
         });
 
         // one being written may not be locked yet, while one left behind is long untouched
         let left = name.to_str().is_some_and(|name| {
-            [".pane-", ".blob-"]
+            [".pane-", ".blob-", ".shadow-"]
                 .iter()
                 .any(|kind| name.starts_with(kind))
                 && name.ends_with(".writing")

@@ -131,6 +131,7 @@ pub(super) fn sized(presentation: Presentation) -> Rectangle {
  * places (`swap` above 0) each slides from where the other stands
  */
 pub(super) fn split(
+    island: &IslandService,
     content: &Content,
     track: Option<&Dissolve<Track>>,
     output: &str,
@@ -147,7 +148,7 @@ pub(super) fn split(
         satellite: None,
     };
     let hang = hang();
-    let trailing = geometry::trailing(hang);
+    let trailing = geometry::trailing(hang, super::shape::compact_width());
 
     // how far along the body the trailing segment starts, across the top or down a side edge
     let sideways = hang.sideways();
@@ -162,7 +163,7 @@ pub(super) fn split(
 
     let mut segments: Vec<Box<dyn Widget>> = Vec::new();
 
-    if let Some(form) = small_form(&leading, track, now).or_else(|| placeholder(&leading)) {
+    if let Some(form) = small_form(island, &leading, track, now).or_else(|| placeholder(&leading)) {
         let (x, y) = at(swap * along, 0.0);
 
         segments.push(Box::new(form.translate(x, y)));
@@ -232,11 +233,16 @@ pub(super) fn segment(activity: &Activity, output: &str, at: Rect, now: Instant)
 
 // an Activity's own Compact or Peek, drawn from its Detail; none leaves it to the placeholder
 pub(super) fn small_form(
+    island: &IslandService,
     content: &Content,
     track: Option<&Dissolve<Track>>,
     now: Instant,
 ) -> Option<Rectangle> {
     let detail = content.activity.as_ref().map(Activity::detail);
+    let progress = content
+        .activity
+        .as_ref()
+        .and_then(|activity| island.progress(activity, now));
 
     match (content.presentation, detail) {
         (Presentation::Compact, Some(Detail::Media(shown))) => {
@@ -251,12 +257,14 @@ pub(super) fn small_form(
         (Presentation::Peek, Some(Detail::Notification(toast))) => {
             Some(toast_peek(toast, critical(content)))
         }
-        (presentation, Some(Detail::Volume(volume))) => level(presentation, Level::volume(volume)),
+        (presentation, Some(Detail::Volume(volume))) => {
+            level(presentation, Level::volume(volume), progress)
+        }
         (presentation, Some(&Detail::Brightness(percent))) => {
-            level(presentation, Level::brightness(percent))
+            level(presentation, Level::brightness(percent), progress)
         }
         (presentation, Some(&Detail::Keyboard(percent))) => {
-            level(presentation, Level::keyboard(percent))
+            level(presentation, Level::keyboard(percent), progress)
         }
         (presentation, Some(&Detail::Mode(shown))) => self::mode(presentation, shown),
         (presentation, Some(Detail::Layout(layout))) => self::layout(presentation, layout),
@@ -274,7 +282,8 @@ pub(super) fn small_form(
             let actions = activity.map_or(&[][..], Activity::actions);
             let id = activity.map_or("", |activity| activity.id().key());
 
-            super::live::live(presentation, job, actions, id)
+            let fraction = activity.and_then(|activity| island.progress(activity, now));
+            super::live::live(presentation, job, actions, id, fraction)
         }
         (presentation, Some(Detail::Recording(clip))) => {
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
@@ -306,6 +315,8 @@ pub(super) fn small_form(
 
             reminder(presentation, shown, actions, key)
         }
+        (presentation, Some(Detail::Usage(usage))) => super::usage::form(presentation, usage),
+        (presentation, Some(Detail::UsageNotice(line))) => super::usage::notice(presentation, line),
         _ => None,
     }
 }
@@ -588,7 +599,7 @@ fn titled(
             15.0,
             theme::radius::ART_COMPACT,
             theme::text::LABEL,
-            theme::text::MEDIUM,
+            theme::text::SEMIBOLD,
         ),
         Presentation::Peek => (
             7.0,

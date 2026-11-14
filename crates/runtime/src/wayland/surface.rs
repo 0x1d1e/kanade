@@ -11,7 +11,7 @@ use wayland_client::{
 use crate::changes::Reads;
 use crate::graphics::Gpu;
 use crate::input::{KeyHandler, LostHandler, Pointer, ReadyHandler};
-use crate::{InputArea, LayerWindow, Monitor, Widget, Window};
+use crate::{InputArea, LayerWindow, Monitor, Widget, Window, frame};
 
 use super::{
     WaylandState,
@@ -127,7 +127,32 @@ pub enum Content {
 impl OpenWindow {
     // a size of 0 leaves the choice to the window, which then keeps the size it asked for
     pub fn resize(&mut self, width: u32, height: u32) {
-        let visible = !matches!(&self.role, Role::Layer { settings, .. } if !settings.visible);
+        let visible = match &self.role {
+            Role::Layer { settings, .. } => {
+                let (content, reads) =
+                    frame::run_view(|| self.view.run(), width as f32, height as f32);
+                self.reads = reads;
+                let visible = self.shown(&content);
+                if !visible {
+                    if self.configured.is_none() {
+                        self.configured = Some((1, 1));
+                        self.clear_to_hidden();
+                        self.width = 0;
+                        self.height = 0;
+                        return;
+                    }
+
+                    if settings.visible {
+                        self.update_surface(&content);
+                    }
+                    return;
+                }
+                true
+            }
+
+            Role::Normal { .. } => true,
+        };
+
         let Some((width, height)) = configured_size(visible, self.asked_size(), (width, height))
         else {
             return;

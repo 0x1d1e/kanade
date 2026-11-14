@@ -1172,6 +1172,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .width(strip_at.width)
         .height(strip_at.height)
         .radius(radius::CARD)
+        .continuous()
         .clip()
         .align_child(Start, Start)
         .translate(strip_at.x, strip_at.y)

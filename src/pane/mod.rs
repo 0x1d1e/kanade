@@ -11,7 +11,7 @@ mod shader;
 pub use self::blob::{Dot, blob};
 pub use self::blur::{FILL as BLUR_FILL, behind as blurred, blurs};
 pub use self::body::{Body, Join};
-pub use self::shader::shader;
+pub use self::shader::{shader, shadow_shader};
 
 use kanade_runtime::{Color, Fill, Gradient, Rectangle};
 
@@ -68,6 +68,7 @@ pub fn layer(pane: Pane) -> Rectangle {
             .width(pane.width)
             .height(pane.height)
             .radius(pane.radius)
+            .continuous()
             .fill(Fill::Gradient(Gradient::linear(
                 180.0,
                 [(0.0, lit_color), (0.7, fill_color), (1.0, fill_color)],

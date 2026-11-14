@@ -18,6 +18,7 @@ pub struct Rectangle {
     pub(crate) fill: Fill,
     pub(crate) radius: Option<Radius>,
     pub(crate) corners: Option<[Radius; 4]>,
+    pub(crate) continuous: bool,
     pub(crate) border_thickness: f32,
     pub(crate) border_color: Color,
     pub(crate) opacity: f32,
@@ -66,6 +67,12 @@ impl Rectangle {
 
         self.radius = Some(radius.into());
 
+        self
+    }
+
+    /// Opt into continuous shoulders for a shell; controls remain circular by default.
+    pub fn continuous(mut self) -> Self {
+        self.continuous = true;
         self
     }
 
@@ -187,6 +194,7 @@ impl RectangleNeedsHeight {
             height: height.into(),
             radius: None,
             corners: None,
+            continuous: false,
             fill: Fill::Color(Color::TRANSPARENT),
             border_thickness: 0.0,
             border_color: Color::TRANSPARENT,

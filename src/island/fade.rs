@@ -63,6 +63,13 @@ impl<T: InPlace> Crossfade<T> {
         &self.to
     }
 
+    pub fn outgoing(&self, progress: f32) -> Option<&T> {
+        self.from
+            .as_ref()
+            .filter(|(_, opacity)| *opacity > 0.0 && progress < 0.5)
+            .map(|(content, _)| content)
+    }
+
     /*
      * a new leg toward `next`, begun at `progress` of the current one, and whether it began one:
      * content changed in place takes over the current leg's place as it is

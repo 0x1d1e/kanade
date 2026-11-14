@@ -32,7 +32,7 @@ use crate::sources::{
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, desk, dock, gesture, hooks, idle,
-    ipc, lock, reload, settings, shadow, supervise, surfaces, ui, view,
+    ipc, lock, reload, settings, supervise, surfaces, ui, view,
 };
 
 use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -136,6 +136,7 @@ pub const ALL: &[Module] = &[
             service::watch::<Calendars>(|| view::resize(&mut IslandService::write()));
             service::watch::<WallClock>(|| view::resize(&mut IslandService::write()));
             service::watch::<privacy::Privacy>(|| view::resize(&mut IslandService::write()));
+            service::watch::<IslandService>(|| view::resize(&mut IslandService::write()));
             view::resize(&mut IslandService::write());
             service::watch::<Monitors>(autohide::forget_gone);
             service::watch::<Monitors>(cluster::forget_gone);
@@ -143,7 +144,6 @@ pub const ALL: &[Module] = &[
             crate::surfaces::welcome::start_after_focus();
             reload::spawn();
             clock::spawn();
-            shadow::prepare();
 
             // what Kanade's own niri stream says; the Modules that read it watch it in their own
             // start, and `modules::start` runs the stream once they have

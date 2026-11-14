@@ -77,6 +77,10 @@ impl Timings {
             response
         }
     }
+
+    fn closing_damping(self) -> f32 {
+        1.0 - (1.0 - self.damping) * (0.06 / 0.28)
+    }
 }
 
 /*
@@ -132,6 +136,24 @@ pub struct IslandService {
 
     // Offline inspection uses the same policy and motion without starting runtime Services.
     isolated: bool,
+    progress: HashMap<Id, Vec<Progress>>,
+}
+
+struct Progress {
+    serial: u32,
+    amount: Spring<1>,
+    mode: Mode,
+}
+
+fn progress_target(activity: &Activity) -> Option<(u32, u16)> {
+    match activity.detail() {
+        Detail::Live(job) => job.progress.map(|amount| (job.serial, amount.min(1000))),
+        Detail::Volume(volume) => Some((0, u16::from(volume.percent.min(100)) * 10)),
+        Detail::Brightness(percent) | Detail::Keyboard(percent) => {
+            Some((0, u16::from((*percent).min(100)) * 10))
+        }
+        _ => None,
+    }
 }
 
 // what an `Interrupt::AutoExpand` opened, and what it puts back at `until`
@@ -184,6 +206,8 @@ struct Island {
 
     // when a collapse to Rest has faded the Surface out, so its freed heap can be trimmed
     release_at: Option<Instant>,
+    departure_at: Option<Instant>,
+    compact_from: Option<f32>,
 
     // none until the first morph; each body axis keeps its own position and velocity
     shape: Option<Body>,
@@ -249,6 +273,7 @@ impl Service for IslandService {
             sizes: Sizes::default(),
             auto: None,
             isolated: false,
+            progress: HashMap::new(),
         }
     }
 
@@ -314,6 +339,7 @@ impl IslandService {
     // the config's timings, at start and on each reload; a motion under way keeps its own
     pub fn retime(&mut self, timings: Timings) {
         self.timings = timings;
+        self.follow_progress(Instant::now());
     }
 
     /*
@@ -343,6 +369,32 @@ impl IslandService {
         }
 
         changed
+    }
+
+    pub fn measure_compact(&mut self, widths: HashMap<Id, u16>, now: Instant) -> bool {
+        if self.sizes.compact == widths {
+            return false;
+        }
+        self.sizes.compact = widths;
+        self.retarget(now);
+        true
+    }
+
+    pub fn compact_width(&self, monitor: &str, content: Option<&Content>) -> f32 {
+        let island = self.get(monitor);
+        if let Some(content) = content
+            && island
+                .content
+                .outgoing(0.0)
+                .is_some_and(|outgoing| outgoing == content)
+            && let Some(width) = island.compact_from
+        {
+            return width.min(self.sizes.holds(monitor).largest.width);
+        }
+        self.sizes.compact_width(
+            content.unwrap_or_else(|| self.get(monitor).content.target()),
+            self.sizes.holds(monitor),
+        )
     }
 
     /*
@@ -625,6 +677,85 @@ impl IslandService {
             .map_or([0.0; 3], |body| body.velocity(now))
     }
 
+    pub fn progress(&self, activity: &Activity, now: Instant) -> Option<(f32, bool)> {
+        let (serial, amount) = progress_target(activity)?;
+        let progress = self
+            .progress
+            .get(activity.id())
+            .and_then(|states| states.iter().find(|progress| progress.serial == serial));
+        Some(
+            progress.map_or((f32::from(amount) / 1000.0, false), |progress| {
+                (
+                    (progress.amount.at(now)[0] / 1000.0).clamp(0.0, 1.0),
+                    !progress.amount.settled(now),
+                )
+            }),
+        )
+    }
+
+    fn follow_progress(&mut self, now: Instant) {
+        let visible = |id: &Id, serial| {
+            std::iter::once(&self.untouched)
+                .chain(self.islands.values())
+                .any(|island| {
+                    let phase = island.shape.as_ref().map_or(1.0, |body| body.progress(now));
+                    island.content.outgoing(phase).is_some_and(|content| {
+                        [&content.activity, &content.satellite]
+                            .into_iter()
+                            .flatten()
+                            .any(|activity| {
+                                activity.id() == id
+                                    && progress_target(activity)
+                                        .is_some_and(|(start, _)| start == serial)
+                            })
+                    })
+                })
+        };
+        self.progress.retain(|id, states| {
+            states.retain(|progress| {
+                self.arbiter.activities().any(|activity| {
+                    activity.id() == id
+                        && progress_target(activity)
+                            .is_some_and(|(serial, _)| serial == progress.serial)
+                }) || visible(id, progress.serial)
+            });
+            !states.is_empty()
+        });
+        for activity in self.arbiter.activities() {
+            let Some((serial, amount)) = progress_target(activity) else {
+                continue;
+            };
+            let target = [f32::from(amount)];
+            if !self.progress.contains_key(activity.id()) {
+                self.progress.insert(activity.id().clone(), Vec::new());
+            }
+            let states = self.progress.get_mut(activity.id()).unwrap();
+            let index = states
+                .iter()
+                .position(|progress| progress.serial == serial)
+                .unwrap_or_else(|| {
+                    states.push(Progress {
+                        serial,
+                        amount: Spring::new(target, self.timings.motion),
+                        mode: self.timings.motion,
+                    });
+                    states.len() - 1
+                });
+            let progress = &mut states[index];
+            if progress.amount.target() != target || progress.mode != self.timings.motion {
+                progress.mode = self.timings.motion;
+                let response = if self.timings.motion == Mode::Spring {
+                    self.timings.expand
+                } else {
+                    Duration::ZERO
+                };
+                progress
+                    .amount
+                    .aim(target, response, self.timings.motion, now);
+            }
+        }
+    }
+
     /*
      * the track the content shows dissolving to the current one; the view checks it is the one it
      * draws, since a Crossfade fading a Media Activity out has already moved on from it
@@ -714,6 +845,18 @@ impl IslandService {
                 self.islands
                     .values()
                     .filter_map(|island| island.restore.map(|restore| restore.at)),
+            )
+            .chain(self.untouched.shape.as_ref().and_then(Body::next_due))
+            .chain(self.untouched.departure_at)
+            .chain(
+                self.islands
+                    .values()
+                    .filter_map(|island| island.departure_at),
+            )
+            .chain(
+                self.islands
+                    .values()
+                    .filter_map(|island| island.shape.as_ref().and_then(Body::next_due)),
             )
             .min()
     }
@@ -1348,6 +1491,7 @@ impl IslandService {
                 follow(island, content, marks, self.timings, sizes, now);
             }
         }
+        self.follow_progress(now);
     }
 
     fn get(&self, monitor: &str) -> &Island {
@@ -1437,6 +1581,14 @@ impl IslandService {
 
     // applies every input that fell due by now, and drops the Transients that expired
     pub fn expire(&mut self, now: Instant) {
+        for island in std::iter::once(&mut self.untouched).chain(self.islands.values_mut()) {
+            if let Some(body) = &mut island.shape {
+                body.tick(now);
+            }
+            if island.departure_at.take_if(|at| *at <= now).is_some() {
+                island.compact_from = None;
+            }
+        }
         let due: Vec<(String, Input)> = self
             .islands
             .iter_mut()
@@ -1469,6 +1621,9 @@ impl IslandService {
         }
 
         self.release_faded(now);
+        self.follow_progress(now);
+        let arbiter = &self.arbiter;
+        self.sizes.compact.retain(|id, _| arbiter.contains(id));
     }
 
     // a collapse to Rest whose Surface has faded: one trim, not another island deadline
@@ -1559,20 +1714,39 @@ fn follow(
             motion,
         )
     });
-    spring.configure(timings.damping, motion);
-
     let from = island.content.target().presentation;
+    let closing = rank(presentation) < rank(from);
+    spring.configure(
+        if closing {
+            timings.closing_damping()
+        } else {
+            timings.damping
+        },
+        motion,
+    );
+
     let track = match content.activity.as_ref().map(Activity::detail) {
         Some(Detail::Media(track)) => Some(track.clone()),
         _ => None,
     };
 
+    let phase = spring.progress(now);
+    let outgoing_width = island
+        .content
+        .outgoing(phase)
+        .and(island.compact_from)
+        .unwrap_or_else(|| sizes.compact_width(island.content.target(), holds));
     if island.content.to(content, spring.progress(now)) {
+        island.compact_from = island.content.outgoing(0.0).map(|_| outgoing_width);
         if island.inside && island.under.is_none() && !matches!(from, Presentation::Expanded(_)) {
             island.under = Some(Shape::from(spring.target()));
         }
 
         let duration = timings.for_motion(response(from, presentation, timings));
+        island.departure_at = island.content.outgoing(0.0).map(|_| now + duration);
+        if island.departure_at.is_some() {
+            nudge();
+        }
 
         // the Surface still draws for the first half of the fade; trim once it is gone
         if presentation == Presentation::Rest && from != Presentation::Rest {
@@ -1582,11 +1756,15 @@ fn follow(
             nudge();
         }
 
-        spring.to(
-            sizes.target(presentation, visit, holds).into(),
-            duration,
-            now,
-        );
+        let target = sizes
+            .content_target(island.content.target(), visit, holds)
+            .into();
+        if closing {
+            spring.collapse(target, duration, now);
+        } else {
+            spring.to(target, duration, now);
+        }
+        nudge();
 
         // new content fades in whole, its track with it
         island.track = track.map(|track| Dissolve::new(track, motion));
@@ -1609,7 +1787,7 @@ fn reaim(
     now: Instant,
 ) {
     let target: [f32; 3] = sizes
-        .target(island.content.target().presentation, visit, holds)
+        .content_target(island.content.target(), visit, holds)
         .into();
 
     if let Some(spring) = &mut island.shape
@@ -1622,7 +1800,12 @@ fn reaim(
 
         spring.configure(timings.damping, timings.motion);
         island.content.rebase(spring.progress(now));
+        if island.content.outgoing(0.0).is_none() {
+            island.compact_from = None;
+        }
         spring.to(target, duration, now);
+        island.departure_at = island.content.outgoing(0.0).map(|_| now + duration);
+        nudge();
     }
 }
 
@@ -1631,20 +1814,22 @@ fn reaim(
  * form collapses, anything else expands, a new Activity in the same form included
  */
 fn response(from: Presentation, to: Presentation, timings: Timings) -> Duration {
-    let rank = |presentation| match presentation {
-        Presentation::Rest => 0,
-        Presentation::Compact | Presentation::Tray(_) => 1,
-        Presentation::Split => 2,
-        Presentation::Peek => 3,
-        Presentation::Expanded(_) => 4,
-    };
-
     match (from, to) {
         (Presentation::Expanded(from), Presentation::Expanded(to)) if from != to => {
             timings.surface_change
         }
         _ if rank(to) < rank(from) => timings.collapse,
         _ => timings.expand,
+    }
+}
+
+fn rank(presentation: Presentation) -> u8 {
+    match presentation {
+        Presentation::Rest => 0,
+        Presentation::Compact | Presentation::Tray(_) => 1,
+        Presentation::Split => 2,
+        Presentation::Peek => 3,
+        Presentation::Expanded(_) => 4,
     }
 }
 
@@ -1882,6 +2067,166 @@ mod tests {
     use crate::island::satellites::Mark;
 
     const MONITOR: &str = "eDP-1";
+
+    #[test]
+    fn departing_content_keeps_its_measured_width_and_progress_until_cleanup() {
+        use crate::island::activity::Job;
+        let start = Instant::now();
+        let mut service = IslandService::for_inspection(Timings::default(), Hang::default(), start);
+        let live = |serial, progress| {
+            fixture::persistent(Id::new(Kind::Live, "departing"), Priority::Ongoing).with_detail(
+                Detail::Live(Job {
+                    serial,
+                    title: if serial == 1 {
+                        "Short"
+                    } else {
+                        "A longer replacement job"
+                    }
+                    .into(),
+                    progress: Some(progress),
+                    ..Job::default()
+                }),
+            )
+        };
+        let original = live(1, 0);
+        service.post(original.clone(), start);
+        service.measure_compact(HashMap::from([(original.id().clone(), 137)]), start);
+        let changed = start + Duration::from_secs(2);
+        let moving = live(1, 1000);
+        service.post(moving.clone(), changed);
+        let at = changed + ms(30);
+        let fraction = service.progress(&moving, at).unwrap();
+        assert!(fraction.0 > 0.0 && fraction.0 < 1.0);
+        service.withdraw(original.id(), at);
+        service.measure_compact(HashMap::new(), at);
+        let displayed = service
+            .content("inspection", at)
+            .into_iter()
+            .flatten()
+            .next()
+            .unwrap()
+            .0;
+        assert_eq!(service.compact_width("inspection", Some(&displayed)), 137.0);
+        assert_eq!(service.progress(&moving, at), Some(fraction));
+        service.post(live(2, 500), at);
+        service.measure_compact(HashMap::from([(original.id().clone(), 207)]), at);
+        assert_eq!(service.compact_width("inspection", Some(&displayed)), 137.0);
+        assert_eq!(service.compact_width("inspection", None), 207.0);
+        assert!(
+            service
+                .content("inspection", at)
+                .into_iter()
+                .flatten()
+                .any(|(content, _)| content.activity.as_ref().is_some_and(
+                    |activity| matches!(activity.detail(), Detail::Live(job) if job.serial == 1)
+                ))
+        );
+        assert_eq!(service.progress(&moving, at), Some(fraction));
+        assert_eq!(service.progress(&live(2, 500), at), Some((0.5, false)));
+        service.withdraw(original.id(), at);
+        service.measure_compact(HashMap::new(), at);
+        assert_eq!(service.compact_width("inspection", Some(&displayed)), 137.0);
+        assert_eq!(service.progress(&moving, at), Some(fraction));
+        assert!(service.next_wake().is_some());
+        service.advance_inspection(at + Duration::from_secs(2));
+        assert!(service.sizes.compact.is_empty());
+        assert!(service.progress.is_empty());
+        assert_eq!(service.get("inspection").compact_from, None);
+        assert_eq!(service.next_wake(), None);
+    }
+
+    #[test]
+    fn closing_settle_runs_at_the_same_deadline_in_coarse_and_fine_replays() {
+        let start = Instant::now();
+        let closing = start + Duration::from_secs(2);
+        let setup = || {
+            let mut service =
+                IslandService::for_inspection(Timings::default(), Hang::default(), start);
+            service.open("inspection", Surface::Controls, start);
+            service.input("inspection", Input::Collapse, closing);
+            service
+        };
+        let mut coarse = setup();
+        let mut fine = setup();
+        let due = coarse.spring("inspection").unwrap().next_due().unwrap();
+        assert_eq!(coarse.next_wake(), Some(due));
+        let target = coarse.heading("inspection", closing).unwrap();
+        for elapsed in 0..2000 {
+            let now = closing + ms(elapsed);
+            fine.advance_inspection(now);
+            if now >= due {
+                coarse.advance_inspection(now);
+                assert_eq!(
+                    coarse.shape("inspection", now),
+                    fine.shape("inspection", now)
+                );
+                assert_eq!(
+                    coarse.velocity("inspection", now),
+                    fine.velocity("inspection", now)
+                );
+            }
+        }
+        let end = closing + Duration::from_secs(2);
+        assert_eq!(coarse.shape("inspection", end), target);
+        assert!(coarse.settled("inspection", end));
+        assert_eq!(coarse.next_wake(), None);
+    }
+
+    #[test]
+    fn progress_retargets_then_quiets_and_ends_with_its_identity() {
+        use crate::island::activity::Job;
+        let start = Instant::now();
+        let mut service = IslandService::for_inspection(Timings::default(), Hang::default(), start);
+        let live = |serial, progress| {
+            fixture::persistent(Id::new(Kind::Live, "fraction"), Priority::Ongoing).with_detail(
+                Detail::Live(Job {
+                    serial,
+                    progress,
+                    ..Job::default()
+                }),
+            )
+        };
+        service.post(live(1, Some(0)), start);
+        let moving = live(1, Some(1000));
+        let changed = start + Duration::from_millis(20);
+        service.post(moving.clone(), changed);
+        assert_eq!(service.progress(&moving, changed), Some((0.0, true)));
+        let middle = changed + Duration::from_millis(50);
+        let fraction = service.progress(&moving, middle).unwrap().0;
+        assert!(fraction > 0.0 && fraction < 1.0);
+        let reversed = live(1, Some(0));
+        service.post(reversed.clone(), middle);
+        assert!((service.progress(&reversed, middle).unwrap().0 - fraction).abs() < 1e-6);
+        let end = middle + Duration::from_secs(2);
+        assert_eq!(service.progress(&reversed, end), Some((0.0, false)));
+        let restarted = live(2, Some(500));
+        service.post(restarted.clone(), end);
+        assert_eq!(service.progress(&restarted, end), Some((0.5, false)));
+        service.post(live(2, None), end);
+        service.advance_inspection(end + Duration::from_secs(2));
+        assert!(service.progress.is_empty());
+        let end = end + Duration::from_secs(2);
+        service.post(restarted.clone(), end);
+        service.withdraw(restarted.id(), end);
+        service.advance_inspection(end + Duration::from_secs(2));
+        assert!(service.progress.is_empty());
+        let end = end + Duration::from_secs(2);
+        let level = |percent| {
+            fixture::persistent(Id::new(Kind::Brightness, "display"), Priority::Ongoing)
+                .with_detail(Detail::Brightness(percent))
+        };
+        service.post(level(0), end);
+        service.post(level(100), end);
+        assert_eq!(service.progress(&level(100), end), Some((0.0, true)));
+        service.retime(Timings {
+            motion: Mode::Reduced,
+            ..Timings::default()
+        });
+        assert_eq!(
+            service.progress(&level(100), end + Duration::from_secs(1)),
+            Some((1.0, false))
+        );
+    }
 
     #[test]
     fn collapse_restores_the_toplevel_the_surface_took_unless_the_user_moved_on() {
@@ -3615,6 +3960,7 @@ mod tests {
                 0.0,
                 hang,
                 canvas,
+                COMPACT.width,
             )
         };
 

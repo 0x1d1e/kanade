@@ -163,6 +163,15 @@ pub fn count() -> u8 {
     }
 }
 
+pub fn reserved() -> f32 {
+    let count = f32::from(count());
+    if count > 0.0 {
+        INSET + CLEAR + DOT * count + DOT_GAP * (count - 1.0)
+    } else {
+        0.0
+    }
+}
+
 // an output that left keeps no dots, so one replugged under its name starts out with none showing
 pub fn forget_gone() {
     let monitors = Monitors::read();

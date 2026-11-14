@@ -183,7 +183,7 @@ pub fn frame(title: &'static str, body: impl Widget + 'static) -> Rectangle {
 
     let header = Row::new(children![
         Text::new(title)
-            .size(theme::text::TITLE)
+            .size(theme::text::TITLE_LARGE)
             .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
     ])
@@ -260,7 +260,7 @@ pub fn tile(
             Column::new(children![
                 knob,
                 Text::new(name)
-                    .size(theme::text::LABEL_SMALL)
+                    .size(theme::text::LABEL)
                     .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD)
             ])
@@ -298,7 +298,7 @@ pub fn pill(
         .on_click(super::on_left(press))
         .child(
             Text::new(label)
-                .size(theme::text::LABEL_SMALL)
+                .size(theme::text::LABEL)
                 .color(theme::island().on_surface)
                 .weight(theme::text::SEMIBOLD),
         );

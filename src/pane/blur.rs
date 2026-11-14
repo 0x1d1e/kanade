@@ -105,8 +105,8 @@ impl Band {
 }
 
 /*
- * the runs of pixels along a row at height `y` whose centers lie inside the outline by half a pixel,
- * from `left` to `right`. The distance is a bound, so a step of half of it never crosses the edge
+ * the runs of pixels along a row whose centers lie inside by half a pixel. Inspect each curved
+ * edge pixel; skip only the solid rectangular core that is provably inside the outline.
  */
 fn spans(outline: &Outline, left: i32, right: i32, y: f32) -> Vec<(i32, i32)> {
     let mut spans = Vec::new();
@@ -125,7 +125,7 @@ fn spans(outline: &Outline, left: i32, right: i32, y: f32) -> Vec<(i32, i32)> {
             _ => {}
         }
 
-        x += ((d.abs() * 0.5) as i32).max(1);
+        x = outline.solid_until(x, y).unwrap_or(x + 1).max(x + 1);
     }
 
     if let Some(from) = start {
@@ -139,33 +139,32 @@ fn spans(outline: &Outline, left: i32, right: i32, y: f32) -> Vec<(i32, i32)> {
 struct Outline {
     first: Rect,
     second: Option<(Rect, f32)>,
-
-    // the exponent of the corners' norm: a squircle's where the shader draws one, else a circle's
-    corner: f32,
 }
 
-// center, half size and radius
-type Rect = ((f32, f32), (f32, f32), f32);
-
-// how squarely `pane.wgsl` draws a corner, 2 being a circle's arc
-const SQUIRCLE: f32 = 4.0;
+#[derive(Clone, Copy)]
+struct Rect {
+    center: (f32, f32),
+    half: (f32, f32),
+    corner: kanade_runtime::continuous::ContinuousCorner,
+    shoulder: f32,
+}
 
 impl Outline {
     fn of(body: Body, origin: (f32, f32)) -> Self {
         let rect = |x: f32, y: f32, width: f32, height: f32, radius: f32| -> Rect {
-            (
-                (x - origin.0 + width / 2.0, y - origin.1 + height / 2.0),
-                (width / 2.0, height / 2.0),
-                radius.min(width / 2.0).min(height / 2.0),
-            )
+            Rect {
+                center: (x - origin.0 + width / 2.0, y - origin.1 + height / 2.0),
+                half: (width / 2.0, height / 2.0),
+                corner: kanade_runtime::continuous::ContinuousCorner::new(
+                    radius,
+                    width / 2.0,
+                    height / 2.0,
+                ),
+                shoulder: (radius * 1.72).min(width / 2.0),
+            }
         };
 
         Self {
-            /*
-             * a body alone is clipped to a circle's corners by its window's widget, which cuts the
-             * squircle's fuller ones; two united bodies are drawn, unclipped, as the shader says
-             */
-            corner: if body.join.is_some() { SQUIRCLE } else { 2.0 },
             first: rect(body.x, body.y, body.width, body.height, body.radius),
             second: body.join.map(|join| {
                 (
@@ -178,25 +177,36 @@ impl Outline {
 
     // `pane.wgsl`'s `outline`: negative inside
     fn distance(&self, x: f32, y: f32) -> f32 {
-        let a = rounded(x, y, self.first, self.corner);
+        let a = rounded(x, y, self.first);
 
         match self.second {
-            Some((second, blend)) => united(a, rounded(x, y, second, self.corner), blend),
+            Some((second, blend)) => united(a, rounded(x, y, second), blend),
             None => a,
         }
+    }
+
+    fn solid_until(&self, x: i32, y: f32) -> Option<i32> {
+        std::iter::once(self.first)
+            .chain(self.second.map(|(rect, _)| rect))
+            .filter_map(|rect| {
+                let (cx, cy) = rect.center;
+                let (w, h) = rect.half;
+                let end = cx + w - rect.shoulder - 0.5;
+                (x as f32 + 0.5 >= cx - w + rect.shoulder
+                    && x as f32 + 0.5 <= end
+                    && (y - cy).abs() <= h - 0.5)
+                    .then_some(end.floor() as i32)
+            })
+            .max()
     }
 }
 
 // `pane.wgsl`'s `rounded`
-fn rounded(x: f32, y: f32, ((cx, cy), (half_x, half_y), r): Rect, corner: f32) -> f32 {
-    let (qx, qy) = ((x - cx).abs() - half_x + r, (y - cy).abs() - half_y + r);
-    let (outer_x, outer_y) = (qx.max(0.0), qy.max(0.0));
-
-    let t = ((r / half_x.min(half_y).max(1e-4) - 0.6) / 0.4).clamp(0.0, 1.0);
-    let n = corner + (2.0 - corner) * t * t * (3.0 - 2.0 * t);
-    let norm = (outer_x.powf(n) + outer_y.powf(n)).powf(1.0 / n);
-
-    norm + qx.max(qy).min(0.0) - r
+fn rounded(x: f32, y: f32, rect: Rect) -> f32 {
+    rect.corner.distance(
+        rect.half.0 - (x - rect.center.0).abs(),
+        rect.half.1 - (y - rect.center.1).abs(),
+    )
 }
 
 // `pane.wgsl`'s `united`

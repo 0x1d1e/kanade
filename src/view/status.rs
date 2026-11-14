@@ -32,6 +32,43 @@ pub(super) fn timer_tone(countdown: &Countdown) -> Color {
  * pomodoro's round, and has its pills: Skip for a pomodoro, Pause or Resume, Stop. The clock has a fixed width, so a second ticking by
  * redraws it in place
  */
+pub(super) fn compact_timer_width(countdown: &Countdown, round: Option<&Round>) -> f32 {
+    let (icon, _, inset, clock) =
+        timer_dimensions(Presentation::Compact, countdown.length.as_secs() >= 3600).unwrap();
+    let title = timer_title(countdown, round, Presentation::Compact);
+    let Size::Fixed(words) = Text::new(title)
+        .size(theme::text::LABEL)
+        .weight(theme::text::SEMIBOLD)
+        .width()
+    else {
+        unreachable!("text measures a fixed width")
+    };
+    2.0 * inset + icon + clock + 2.0 * TIMER_GAP + words
+}
+
+fn timer_title(countdown: &Countdown, round: Option<&Round>, presentation: Presentation) -> String {
+    match (countdown.paused, round, presentation) {
+        (Some(_), Some(round), Presentation::Compact) => {
+            format!("{} paused", timer::phase(round.phase))
+        }
+        (Some(_), None, Presentation::Compact) => String::from("Paused"),
+        (_, Some(round), _) => String::from(timer::phase(round.phase)),
+        (_, None, _) => String::from("Timer"),
+    }
+}
+
+const TIMER_GAP: f32 = 6.0;
+
+fn timer_dimensions(presentation: Presentation, hours: bool) -> Option<(f32, f32, f32, f32)> {
+    Some(match (presentation, hours) {
+        (Presentation::Compact, false) => (18.0, theme::text::BODY_LARGE, 15.0, 44.0),
+        (Presentation::Compact, true) => (18.0, theme::text::BODY_LARGE, 15.0, 64.0),
+        (Presentation::Peek, false) => (24.0, theme::text::TITLE_LARGE, 16.0, 52.0),
+        (Presentation::Peek, true) => (24.0, theme::text::TITLE_LARGE, 16.0, 84.0),
+        _ => return None,
+    })
+}
+
 pub(super) fn timer(
     presentation: Presentation,
     countdown: &Countdown,
@@ -46,15 +83,9 @@ pub(super) fn timer(
     // hh:mm:ss once the timer was started for an hour or more, mm:ss below
     let hours = countdown.length.as_secs() >= 3600;
 
-    let (icon, size, inset, clock) = match (presentation, hours) {
-        (Presentation::Compact, false) => (18.0, theme::text::LABEL, 15.0, 40.0),
-        (Presentation::Compact, true) => (18.0, theme::text::LABEL, 15.0, 64.0),
-        (Presentation::Peek, false) => (24.0, theme::text::TITLE_LARGE, 16.0, 52.0),
-        (Presentation::Peek, true) => (24.0, theme::text::TITLE_LARGE, 16.0, 84.0),
-        _ => return None,
-    };
+    let (icon, size, inset, clock) = timer_dimensions(presentation, hours)?;
 
-    let gap = 6.0;
+    let gap = TIMER_GAP;
     let pills: Vec<Rectangle> = match presentation {
         Presentation::Peek => actions
             .iter()
@@ -91,14 +122,7 @@ pub(super) fn timer(
     let width = shape(presentation).width - 2.0 * inset - icon - clock - gaps * gap - taken;
 
     // the Peek says Paused on its second line, where its Resume pill leaves the first no room
-    let title = match (countdown.paused, round, presentation) {
-        (Some(_), Some(round), Presentation::Compact) => {
-            format!("{} paused", timer::phase(round.phase))
-        }
-        (Some(_), None, Presentation::Compact) => String::from("Paused"),
-        (_, Some(round), _) => String::from(timer::phase(round.phase)),
-        (_, None, _) => String::from("Timer"),
-    };
+    let title = timer_title(countdown, round, presentation);
     let mut words = children![
         Text::new(title)
             .size(theme::text::LABEL)
@@ -424,10 +448,14 @@ impl Level {
  * icon, bar, number; Peek names the level above its bar. Every part has a fixed width, so a level
  * that moves slides the bar and nothing else
  */
-pub(super) fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
+pub(super) fn level(
+    presentation: Presentation,
+    level: Level,
+    progress: Option<(f32, bool)>,
+) -> Option<Rectangle> {
     let (icon, number, size, inset) = match presentation {
-        Presentation::Compact => (20.0, 26.0, theme::text::LABEL, 15.0),
-        Presentation::Peek => (24.0, 30.0, theme::text::BODY_LARGE, 20.0),
+        Presentation::Compact => (20.0, 34.0, theme::text::BODY_LARGE, 15.0),
+        Presentation::Peek => (24.0, 34.0, theme::text::TITLE_LARGE, 20.0),
         _ => return None,
     };
 
@@ -439,12 +467,16 @@ pub(super) fn level(presentation: Presentation, level: Level) -> Option<Rectangl
     } else {
         theme::island().on_surface
     };
-
-    if presentation == Presentation::Compact && upright() {
-        return Some(standing::level(level.icon, level.percent, tone));
+    let (fraction, moving) = progress.unwrap_or((f32::from(level.percent) / 100.0, false));
+    if moving {
+        kanade_runtime::request_frame();
     }
 
-    let bar = bar(width, f32::from(level.percent) / 100.0, tone);
+    if presentation == Presentation::Compact && upright() {
+        return Some(standing::level(level.icon, level.percent, fraction, tone));
+    }
+
+    let bar = bar(width, fraction, tone);
 
     let middle: Box<dyn Widget> = match presentation {
         Presentation::Peek => Box::new(
@@ -691,13 +723,13 @@ pub(crate) fn bar_on(width: f32, fraction: f32, tone: Color, roles: &ThemeRoles)
 
     let mut layers = children![track];
 
-    // narrower than its round ends it would draw as a misshapen dot
-    if filled >= height {
+    // Even a small positive fraction has a visible, correctly sized fill.
+    if filled > 0.0 {
         layers.push(Box::new(
             Rectangle::new()
                 .width(filled)
                 .height(height)
-                .radius(height / 2.0)
+                .radius((filled / 2.0).min(height / 2.0))
                 .fill(tone),
         ));
     }

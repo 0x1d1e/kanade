@@ -10,7 +10,7 @@ struct Quad {
     // not premultiplied, 0 to 1
     color: vec4<f32>,
 
-    // border thickness (0 fills it), two unused, and the kind:
+    // border thickness, continuous-profile flags (shape/outer/inner), unused, and kind
     // 0 a shape, 1 a letter, 2 an image
     shape: vec4<f32>,
 
@@ -78,7 +78,7 @@ fn vertex(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u3
 
 // how far point is outside the rounded rectangle, negative inside;
 // radius holds the corners clockwise from the top left
-fn rounded_rectangle(point: vec2<f32>, rect: vec4<f32>, radius: vec4<f32>) -> f32 {
+fn rounded_rectangle(point: vec2<f32>, rect: vec4<f32>, radius: vec4<f32>, continuous: bool) -> f32 {
     let half = rect.zw * 0.5;
     let center = rect.xy + half;
 
@@ -89,6 +89,7 @@ fn rounded_rectangle(point: vec2<f32>, rect: vec4<f32>, radius: vec4<f32>) -> f3
     let corner = select(side.x, side.y, from_center.y > 0.0);
 
     let safe_radius = clamp(corner, 0.0, min(half.x, half.y));
+    if continuous { return continuous_distance(from_center, half, safe_radius); }
 
     let offset = abs(from_center) - half + safe_radius;
 
@@ -110,8 +111,9 @@ fn fragment(corner: Corner) -> @location(0) vec4<f32> {
     // sampled for every quad, since sampling has to happen outside of branches
     let image = textureSample(picture, picture_sampler, corner.source);
 
-    let outer_clip = coverage(rounded_rectangle(corner.point, quad.clip, quad.clip_radius));
-    let inner_clip = coverage(rounded_rectangle(corner.point, quad.inner_clip, quad.inner_radius));
+    let flags = u32(quad.shape.y);
+    let outer_clip = coverage(rounded_rectangle(corner.point, quad.clip, quad.clip_radius, (flags & 2u) != 0u));
+    let inner_clip = coverage(rounded_rectangle(corner.point, quad.inner_clip, quad.inner_radius, (flags & 4u) != 0u));
 
     let clip = outer_clip * inner_clip;
 
@@ -125,7 +127,7 @@ fn fragment(corner: Corner) -> @location(0) vec4<f32> {
     if quad.shape.w == 1.0 {
         amount = textureLoad(atlas, vec2<i32>(floor(corner.source)), 0).r;
     } else {
-        amount = coverage(rounded_rectangle(corner.point, quad.rect, quad.radius));
+        amount = coverage(rounded_rectangle(corner.point, quad.rect, quad.radius, (flags & 1u) != 0u));
 
         let thickness = quad.shape.x;
 
@@ -137,7 +139,7 @@ fn fragment(corner: Corner) -> @location(0) vec4<f32> {
             var hole = 0.0;
 
             if inner.z > 0.0 && inner.w > 0.0 {
-                hole = coverage(rounded_rectangle(corner.point, inner, inner_radius));
+                hole = coverage(rounded_rectangle(corner.point, inner, inner_radius, (flags & 1u) != 0u));
             }
 
             amount = amount * (1.0 - hole);

@@ -52,7 +52,7 @@ pub(super) fn media_compact(change: Change, now: Instant) -> Rectangle {
                 change
                     .line(|track| &track.title, theme::island().on_surface)
                     .size(theme::text::LABEL)
-                    .weight(theme::text::MEDIUM)
+                    .weight(theme::text::SEMIBOLD)
                     .elide(),
                 state(change.to.playing, accent(change.to), now),
             ])
@@ -282,6 +282,18 @@ const TALL: f32 = 14.0;
  * available; initializing or silent cava falls back to synthetic motion. Off draws still bars; paused
  * draws the pause mark.
  */
+pub(super) fn compact_state_width(playing: bool) -> f32 {
+    if !playing {
+        return 8.0;
+    }
+    match config::get().visualizer {
+        Visualizer::Off => 13.0,
+        Visualizer::Bars | Visualizer::Audio => 18.0,
+        Visualizer::Wave => 23.0,
+        Visualizer::Dots => 24.0,
+    }
+}
+
 pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
     let style = config::get().visualizer;
     if !playing || style == Visualizer::Off {

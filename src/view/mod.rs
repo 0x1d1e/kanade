@@ -45,6 +45,7 @@ mod shape;
 mod standing;
 mod status;
 mod toast;
+mod usage;
 
 pub(crate) use self::covered::covered;
 use self::covered::raise;
@@ -81,7 +82,10 @@ pub(crate) fn resize(island: &mut Write<IslandService>) {
         }
     }
 
-    if !island.resize(wanted, holds, hang(), Instant::now()) {
+    let now = Instant::now();
+    let widths = shape::measure_compact(island);
+    let measured = island.measure_compact(widths, now);
+    if !island.resize(wanted, holds, hang(), now) && !measured {
         island.quiet();
     }
 }
@@ -365,6 +369,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .width(body_rect.width)
         .height(body_rect.height)
         .radius(shape.radius)
+        .continuous()
         .clip()
         .align_child(Start, Start)
         .translate(body_rect.x, body_rect.y)
@@ -375,7 +380,8 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         body = body.border(1.0, theme::island().outline);
     }
 
-    let (hover, track) = hover_target(&monitor.name, area, room, hang, canvas, peeks);
+    let compact = island.compact_width(&monitor.name, None);
+    let (hover, track) = hover_target(&monitor.name, area, room, hang, canvas, peeks, compact);
 
     let shadow = shadows(body_rect, shape.radius, plate, origin, out);
 
@@ -580,6 +586,9 @@ fn form_holder(
         // `Crossfade::shown` never shows both, so the first is the one leaving
         let leaving = content[0].is_some();
         let shown = content.into_iter().flatten().next();
+        let _compact = shape::Compact::take(
+            island.compact_width(&monitor.name, shown.as_ref().map(|(content, _)| content)),
+        );
 
         // Outgoing sections keep the arrival and lift they displayed at the interruption.
         let _entrance = Entrance::take(
@@ -589,18 +598,47 @@ fn form_holder(
 
         if let Some((content, opacity)) = shown
             && let Some(form) = split(
+                island,
                 &content,
                 island.track(&monitor.name),
                 &monitor.name,
                 island.swap(&monitor.name, now),
                 now,
             )
-            .or_else(|| small_form(&content, island.track(&monitor.name), now))
+            .or_else(|| small_form(island, &content, island.track(&monitor.name), now))
             .or_else(|| surface(&monitor.name, &content, island, now))
             .or_else(|| surfaces::tray::strip(&monitor.name, content.presentation))
             .or_else(|| rest(&monitor.name, &content))
             .or_else(|| placeholder(&content))
         {
+            let form = if !matches!(content.presentation, Presentation::Expanded(_))
+                && config::get().animation_timings().motion == crate::island::motion::Mode::Spring
+            {
+                let mut target = shape::shape(content.presentation);
+                if cluster::beside(content.presentation) {
+                    if hang.sideways() {
+                        target.height += room;
+                    } else {
+                        target.width += room;
+                    }
+                }
+                let scale = (body.width / target.width)
+                    .min(body.height / target.height)
+                    .clamp(0.94, 1.02);
+                let follow = if hang.sideways() {
+                    ((body.width - target.width) * 0.08).clamp(-3.0, 3.0)
+                } else {
+                    ((body.height - target.height) * 0.08).clamp(-3.0, 3.0)
+                };
+                let (x, y) = if hang.sideways() {
+                    (follow, 0.0)
+                } else {
+                    (0.0, follow)
+                };
+                form.scale(scale).translate(x, y)
+            } else {
+                form
+            };
             holder = holder.child(form.opacity(opacity).inert(leaving || opacity < LIVE));
         }
     }
@@ -695,6 +733,7 @@ fn hover_target(
     hang: geometry::Hang,
     canvas: geometry::Canvas,
     peeks: bool,
+    compact: f32,
 ) -> (Rectangle, Rc<dyn Fn(f32, f32)>) {
     let (clicked, moved, hovered, scrolled) = (
         monitor.to_owned(),
@@ -707,7 +746,7 @@ fn hover_target(
     let track: Rc<dyn Fn(f32, f32)> = Rc::new(move |x, y| {
         set_armed(&moved, true);
 
-        set_segment(&moved, geometry::segment(x, y, room, hang, canvas));
+        set_segment(&moved, geometry::segment(x, y, room, hang, canvas, compact));
         moved_to(&moved, x, y, canvas);
     });
     let tracked = track.clone();

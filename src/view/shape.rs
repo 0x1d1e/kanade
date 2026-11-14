@@ -4,14 +4,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use kanade_runtime::service::Service;
-use kanade_runtime::{Monitor, Monitors};
+use kanade_runtime::{Monitor, Monitors, Size, Text, Widget};
 
 use crate::cluster;
 use crate::config::{self, Rest};
+use crate::island::activity::{Detail, Id};
 use crate::island::geometry::{self, Canvas, Hang, Holds, Shape, TimePeek};
 use crate::island::presentation::Presentation;
 use crate::island::service::IslandService;
 use crate::modules;
+use crate::theme;
 
 use super::rest::{self, Agenda, has_battery};
 
@@ -101,6 +103,67 @@ pub(crate) fn holds() -> ((Shape, TimePeek), HashMap<String, Holds>) {
     ((wanted, any), rooms)
 }
 
+pub(super) fn measure_compact(island: &IslandService) -> HashMap<Id, u16> {
+    let width = |label: &str| match Text::new(label)
+        .size(theme::text::LABEL)
+        .weight(theme::text::SEMIBOLD)
+        .width()
+    {
+        Size::Fixed(width) => width,
+        _ => 0.0,
+    };
+    let privacy = cluster::reserved();
+    island
+        .activities()
+        .map(|activity| {
+            let natural = match activity.detail() {
+                Detail::Media(track) => {
+                    68.0 + super::media::compact_state_width(track.playing) + width(&track.title)
+                }
+                Detail::Notification(toast) => {
+                    55.0 + width(&toast.summary)
+                        + if activity.priority() == crate::island::activity::Priority::Critical {
+                            width("!") + 7.0
+                        } else {
+                            0.0
+                        }
+                }
+                Detail::Live(job) => {
+                    59.0 + width(&job.title) + if job.progress.is_some() { 55.0 } else { 0.0 }
+                }
+                Detail::Timer(countdown, round) => {
+                    super::status::compact_timer_width(countdown, round.as_ref())
+                }
+                Detail::Volume(_) | Detail::Brightness(_) | Detail::Keyboard(_) => 180.0,
+                Detail::Battery(charge) => {
+                    114.0
+                        + width(if charge.critical {
+                            "Battery critical"
+                        } else {
+                            "Low battery"
+                        })
+                }
+                Detail::Usage(_) => 170.0,
+                Detail::UsageNotice(line) | Detail::NightLight(line) | Detail::ScreenTime(line) => {
+                    58.0 + width(line)
+                }
+                Detail::Hardware(shown) => 58.0 + width(&shown.title),
+                Detail::Reminder(shown) => 58.0 + width(&shown.title),
+                Detail::Layout(shown) => 58.0 + width(&shown.short),
+                Detail::Caffeine(_) => 58.0 + width("Caffeine"),
+                Detail::None => 96.0,
+                _ => geometry::COMPACT.width,
+            };
+            (
+                activity.id().clone(),
+                (natural + privacy)
+                    .ceil()
+                    .clamp(96.0, geometry::COMPACT.width) as u16,
+            )
+        })
+        .collect()
+}
+
 /*
  * the Island's canvas on `monitor`: around the largest body, no larger than the output, so it
  * resizes only with them (ADR 0030)
@@ -159,7 +222,12 @@ pub(crate) fn tray_slots(slots: u8) -> usize {
  * the form being drawn makes room for it
  */
 pub(crate) fn shape(presentation: Presentation) -> Shape {
-    let shape = geometry::shape(presentation, largest(), hang(), peek());
+    let shape = geometry::with_compact(
+        geometry::shape(presentation, largest(), hang(), peek()),
+        presentation,
+        hang(),
+        compact_width(),
+    );
     let room = if cluster::beside(presentation) {
         Room::taken()
     } else {
@@ -185,6 +253,7 @@ thread_local! {
 
     // what the cluster takes from the small forms drawn now
     static ROOM: Cell<f32> = const { Cell::new(0.0) };
+    static COMPACT: Cell<f32> = const { Cell::new(geometry::COMPACT.width) };
 }
 
 // the output whose Island is drawn while it is held, which `largest()` and `shape()` follow
@@ -218,6 +287,22 @@ impl Room {
 impl Drop for Room {
     fn drop(&mut self) {
         ROOM.set(self.0);
+    }
+}
+
+pub(super) fn compact_width() -> f32 {
+    COMPACT.get()
+}
+
+pub(super) struct Compact(f32);
+impl Compact {
+    pub(super) fn take(width: f32) -> Self {
+        Self(COMPACT.replace(width))
+    }
+}
+impl Drop for Compact {
+    fn drop(&mut self) {
+        COMPACT.set(self.0);
     }
 }
 

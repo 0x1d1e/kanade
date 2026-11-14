@@ -42,6 +42,50 @@ impl Area {
     }
 
     pub fn trace(self, radius: Corners) -> Option<BezierPath> {
+        if radius.continuous {
+            let mut path = PathBuilder::new();
+            let (w, h) = (self.width / 2.0, self.height / 2.0);
+            path.move_to(self.x + w, self.y);
+            for (r, corner, incoming, outgoing, along, across) in [
+                (
+                    radius.top_right,
+                    [self.x + self.width, self.y],
+                    [-1.0, 0.0],
+                    [0.0, 1.0],
+                    w,
+                    h,
+                ),
+                (
+                    radius.bottom_right,
+                    [self.x + self.width, self.y + self.height],
+                    [0.0, -1.0],
+                    [-1.0, 0.0],
+                    h,
+                    w,
+                ),
+                (
+                    radius.bottom_left,
+                    [self.x, self.y + self.height],
+                    [1.0, 0.0],
+                    [0.0, -1.0],
+                    w,
+                    h,
+                ),
+                (
+                    radius.top_left,
+                    [self.x, self.y],
+                    [0.0, 1.0],
+                    [1.0, 0.0],
+                    h,
+                    w,
+                ),
+            ] {
+                super::continuous::ContinuousCorner::new(r, along, across)
+                    .trace(&mut path, corner, incoming, outgoing);
+            }
+            path.close();
+            return path.finish();
+        }
         // a radius past half a side would make the corners overlap
         let shortest_half = f32::min(self.width, self.height) / 2.0;
 
@@ -50,6 +94,7 @@ impl Area {
             top_right,
             bottom_right,
             bottom_left,
+            continuous: _,
         } = radius.map(|corner| f32::min(corner, shortest_half));
 
         let left = self.x;
@@ -112,6 +157,7 @@ pub struct Corners {
     pub top_right: f32,
     pub bottom_right: f32,
     pub bottom_left: f32,
+    pub continuous: bool,
 }
 
 impl Corners {
@@ -121,6 +167,7 @@ impl Corners {
             top_right: change(self.top_right),
             bottom_right: change(self.bottom_right),
             bottom_left: change(self.bottom_left),
+            continuous: self.continuous,
         }
     }
 
@@ -146,6 +193,7 @@ impl From<f32> for Corners {
             top_right: radius,
             bottom_right: radius,
             bottom_left: radius,
+            continuous: false,
         }
     }
 }

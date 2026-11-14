@@ -291,6 +291,13 @@ pub struct Body {
     axes: [Spring<1>; 3],
     phase: Spring<1>,
     mode: Mode,
+    settle: Option<Settle>,
+}
+
+#[derive(Debug, Clone)]
+struct Settle {
+    at: Instant,
+    axes: [Spring<1>; 3],
 }
 
 impl Body {
@@ -299,6 +306,7 @@ impl Body {
             axes: value.map(|value| Spring::new([value], mode)),
             phase: Spring::new([1.0], mode),
             mode,
+            settle: None,
         }
     }
 
@@ -307,9 +315,16 @@ impl Body {
         for axis in &mut self.axes {
             axis.damp(damping);
         }
+        if let Some(settle) = &mut self.settle {
+            for axis in &mut settle.axes {
+                axis.damp(damping);
+            }
+        }
     }
 
     pub fn to(&mut self, target: [f32; 3], response: Duration, now: Instant) {
+        self.tick(now);
+        self.settle = None;
         // Width makes room first; height reveals the content; corners finish the silhouette.
         for ((axis, target), pace) in self.axes.iter_mut().zip(target).zip([0.85, 1.0, 1.15]) {
             let pace = if self.mode == Mode::Reduced {
@@ -323,16 +338,55 @@ impl Body {
         self.phase.to([1.0], response, now);
     }
 
+    // One content phase, two geometry aims. The settle is prepared at its exact deadline,
+    // so skipped frames and an offline replay sample the same trajectory.
+    pub fn collapse(&mut self, target: [f32; 3], response: Duration, now: Instant) {
+        if self.mode != Mode::Spring || response.is_zero() {
+            self.to(target, response, now);
+            return;
+        }
+        let mut waist = target;
+        let along = usize::from(target[1] > target[0]);
+        waist[along] -= (target[along] * 0.03).min(6.0);
+        self.to(waist, response, now);
+        let at = now + response.mul_f32(0.7);
+        let mut axes = self.axes;
+        for (axis, target) in axes.iter_mut().zip(target) {
+            axis.aim([target], response.mul_f32(0.65), self.mode, at);
+        }
+        self.settle = Some(Settle { at, axes });
+    }
+
+    pub fn next_due(&self) -> Option<Instant> {
+        self.settle.as_ref().map(|settle| settle.at)
+    }
+
+    pub fn tick(&mut self, now: Instant) {
+        if let Some(settle) = self.settle.take_if(|settle| settle.at <= now) {
+            self.axes = settle.axes;
+        }
+    }
+
+    fn axes(&self, now: Instant) -> &[Spring<1>; 3] {
+        self.settle
+            .as_ref()
+            .filter(|settle| settle.at <= now)
+            .map_or(&self.axes, |settle| &settle.axes)
+    }
     pub fn at(&self, now: Instant) -> [f32; 3] {
-        std::array::from_fn(|i| self.axes[i].at(now)[0])
+        std::array::from_fn(|i| self.axes(now)[i].at(now)[0])
     }
 
     pub fn target(&self) -> [f32; 3] {
-        std::array::from_fn(|i| self.axes[i].target()[0])
+        let axes = self
+            .settle
+            .as_ref()
+            .map_or(&self.axes, |settle| &settle.axes);
+        std::array::from_fn(|i| axes[i].target()[0])
     }
 
     pub fn velocity(&self, now: Instant) -> [f32; 3] {
-        std::array::from_fn(|i| self.axes[i].velocity(now)[0])
+        std::array::from_fn(|i| self.axes(now)[i].velocity(now)[0])
     }
 
     pub fn progress(&self, now: Instant) -> f32 {
@@ -340,7 +394,9 @@ impl Body {
     }
 
     pub fn settled(&self, now: Instant) -> bool {
-        self.phase.settled(now) && self.axes.iter().all(|axis| axis.settled(now))
+        self.next_due().is_none_or(|due| due <= now)
+            && self.phase.settled(now)
+            && self.axes(now).iter().all(|axis| axis.settled(now))
     }
 }
 
@@ -396,6 +452,52 @@ mod tests {
         assert!(body.settled(settled));
         assert_eq!(body.at(settled), body.target());
         assert_eq!(body.velocity(settled), [0.0; 3]);
+    }
+
+    #[test]
+    fn collapse_handoff_is_clock_exact_and_interruptible() {
+        let start = Instant::now();
+        let target = [120.0, 38.0, 19.0];
+        let mut body = Body::new([400.0, 250.0, 32.0], Mode::Spring);
+        body.configure(0.94, Mode::Spring);
+        body.collapse(target, ms(200), start);
+        let due = body.next_due().unwrap();
+        assert_eq!(body.target(), target);
+        assert!(!body.settled(start));
+        let mut replay = body.clone();
+        replay.tick(due);
+        for now in [due - ms(1), due, due + ms(1), start + ms(220)] {
+            let mut interrupted = body.clone();
+            let pose = interrupted.at(now);
+            let speed = interrupted.velocity(now);
+            interrupted.configure(0.72, Mode::Spring);
+            interrupted.to([280.0, 52.0, 26.0], ms(180), now);
+            assert_eq!(interrupted.next_due(), None);
+            assert_eq!(interrupted.target(), [280.0, 52.0, 26.0]);
+            for i in 0..3 {
+                assert!((interrupted.at(now)[i] - pose[i]).abs() < 1e-3);
+                assert!((interrupted.velocity(now)[i] - speed[i]).abs() < 1e-2);
+            }
+        }
+        let mut phase = 0.0;
+        for elapsed in 0..1000 {
+            let now = start + ms(elapsed);
+            assert!(body.progress(now) >= phase);
+            phase = body.progress(now);
+            if now >= due {
+                assert_eq!(body.at(now), replay.at(now));
+            }
+        }
+        body.tick(start + ms(1000));
+        assert_eq!(body.next_due(), None);
+        assert!(body.settled(start + ms(1000)));
+        assert_eq!(body.at(start + ms(1000)), target);
+        for (mode, response) in [(Mode::Reduced, ms(200)), (Mode::Spring, Duration::ZERO)] {
+            let mut body = Body::new([400.0, 250.0, 32.0], mode);
+            body.collapse(target, response, start);
+            assert_eq!(body.next_due(), None);
+            assert_eq!(body.at(start), target);
+        }
     }
 
     #[test]

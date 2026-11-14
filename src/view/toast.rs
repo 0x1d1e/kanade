@@ -102,7 +102,7 @@ pub(super) fn toast_compact(toast: &Toast, critical: bool) -> Rectangle {
                     theme::radius::ART_COMPACT,
                     &theme::island(),
                 )),
-                summary(toast, critical, theme::text::LABEL, theme::text::MEDIUM),
+                summary(toast, critical, theme::text::LABEL, theme::text::SEMIBOLD),
             ])
             .width(Parent)
             .gap(9.0)

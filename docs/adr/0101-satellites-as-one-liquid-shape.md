@@ -16,6 +16,7 @@ A Satellite was a round dot with its own fill that slid out from under the body'
 - Shape presence and mark opacity have separate trajectories: the mark disappears before the shape finishes absorption. Opening Expanded withdraws the desired marks and starts their normal tuck-away motion, replacing the previous shape-size-based opacity suppression. A quick collapse or a withdrawn Activity returning reuses its identity and displayed pose until departure settles; presence and slot springs retain velocity. The renderer uses shape opacity for the neck and `min(mark opacity, shape opacity)` for the mark, so it cannot outlive its shape. In reduced motion geometry snaps and both use the configured brief fade.
 - Dock coverage follows pending shape visibility as well as moving geometry. A Reduced dot begins transparent at its final place, so coverage redraws through its finite fade even when the body and dot geometry are already still; no further coverage frames are needed once that fade settles.
 - Degrades to the previous look, each dot with its own fill (`pane::blob` returns None): under Liquid Glass (the screen copy would read the neck, which is no pane, and it cannot be checked off a live session), under reduced motion (a dot is already in its place, so no neck would show) and past 6 dots.
+- ADR 0150 replaces the body's former corner approximation with the shared continuous profile in the fill, clip, blur and union. Dot circles and the exclusion of necks from compositor blur stay as above.
 
 ## Not done
 

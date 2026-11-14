@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 
+use super::activity::Id;
 use super::arbiter::SATELLITES;
-use super::presentation::{Presentation, Segment, Surface};
+use super::presentation::{Content, Presentation, Segment, Surface};
 
 /*
  * the layer window around the largest body: room on both sides for its shadow and for a bouncy
@@ -451,6 +452,7 @@ pub struct Sizes {
     // what the time's Peek holds on an output not in `fits`, which sizes its Tray strip
     pub peek: TimePeek,
     asks: Vec<(Surface, Asks)>,
+    pub compact: HashMap<Id, u16>,
 }
 
 // a list Surface's content height as a new visit opens it, and in the visit open now
@@ -468,6 +470,7 @@ impl Default for Sizes {
             hang: Hang::default(),
             peek: TimePeek::ALL,
             asks: Vec::new(),
+            compact: HashMap::new(),
         }
     }
 }
@@ -483,6 +486,23 @@ pub struct Holds {
 }
 
 impl Sizes {
+    pub fn compact_width(&self, content: &Content, holds: Holds) -> f32 {
+        content
+            .activity
+            .as_ref()
+            .and_then(|activity| self.compact.get(activity.id()))
+            .map_or(COMPACT.width, |width| f32::from(*width))
+            .min(holds.largest.width)
+    }
+
+    pub fn content_target(&self, content: &Content, visit: u64, holds: Holds) -> Shape {
+        with_compact(
+            self.target(content.presentation, visit, holds),
+            content.presentation,
+            self.hang,
+            self.compact_width(content, holds),
+        )
+    }
     // what this output's Island is sized by
     pub fn holds(&self, monitor: &str) -> Holds {
         self.fits.get(monitor).copied().unwrap_or(Holds {
@@ -536,22 +556,6 @@ impl Sizes {
         }
     }
 }
-
-// every shape a body morphs between; a bouncy spring overshoots them, `bounded` keeps it in
-pub const SHAPES: [Shape; 12] = [
-    REST,
-    COMPACT,
-    SPLIT,
-    PEEK,
-    TRAY,
-    UPRIGHT_TRAY,
-    CONTROLS,
-    PAD,
-    AUTH,
-    TRAY_LIST,
-    MEDIA,
-    CALENDAR,
-];
 
 // a Satellite's diameter, and the gap before each one
 pub const SATELLITE: f32 = 28.0;
@@ -620,6 +624,22 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
             | Surface::Files,
         ) => largest,
     }
+}
+
+pub fn with_compact(
+    mut shape: Shape,
+    presentation: Presentation,
+    hang: Hang,
+    compact: f32,
+) -> Shape {
+    if !hang.sideways() {
+        match presentation {
+            Presentation::Compact => shape.width = compact,
+            Presentation::Split => shape.width = compact + SPLIT.width - COMPACT.width,
+            _ => {}
+        }
+    }
+    shape
 }
 
 // the body's size and corner radius, animated as one value so they always move together
@@ -840,11 +860,15 @@ pub fn holding(area: Rect, under: Option<Shape>, hang: Hang, canvas: Canvas) -> 
  * Split under it; any other body is the primary's alone, wherever the pointer is. `room` is what
  * the privacy cluster takes from the trailing end, which moves the segments' boundary back by it
  */
-pub fn segment(x: f32, y: f32, room: f32, hang: Hang, canvas: Canvas) -> Segment {
-    let split = body(split(hang), hang, canvas);
+pub fn segment(x: f32, y: f32, room: f32, hang: Hang, canvas: Canvas, compact: f32) -> Segment {
+    let split = body(
+        with_compact(split(hang), Presentation::Split, hang, compact),
+        hang,
+        canvas,
+    );
     let primary = match hang.sideways() {
         true => y < split.y + compact_length(hang) - room,
-        false => x < split.x + compact_length(hang) - room,
+        false => x < split.x + compact - room,
     };
 
     if primary {
@@ -855,10 +879,14 @@ pub fn segment(x: f32, y: f32, room: f32, hang: Hang, canvas: Canvas) -> Segment
 }
 
 // where the trailing segment of a Split body draws, from the body's own top left corner
-pub fn trailing(hang: Hang) -> Rect {
+pub fn trailing(hang: Hang, compact: f32) -> Rect {
     let thickness = SPLIT.height - 2.0 * SEGMENT_INSET;
     let length = SPLIT.width - SEGMENT_INSET - COMPACT.width;
-    let lead = compact_length(hang);
+    let lead = if hang.sideways() {
+        compact_length(hang)
+    } else {
+        compact
+    };
 
     if hang.sideways() {
         Rect {

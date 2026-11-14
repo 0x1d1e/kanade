@@ -38,6 +38,7 @@ pub use allocator::limit as limit_allocator;
 pub use animation::{Animation, Blend, Easing, request_frame};
 pub use app::App;
 pub use full::Full;
+pub use graphics::continuous;
 pub use graphics::font::{
     install as install_face, installed as installed_face, read_file as font_file_bytes,
 };

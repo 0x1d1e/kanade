@@ -11,17 +11,8 @@
 // It never reads the clock, so dots at rest draw no frames of their own.
 
 const MOST = 6;
-const SQUIRCLE = 4.0;
-
-// as `pane.wgsl`'s: the body's corners, a squircle's
 fn rounded(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
-    let q = abs(p) - half + vec2<f32>(r, r);
-    let out = max(q, vec2<f32>(0.0, 0.0));
-
-    let n = mix(SQUIRCLE, 2.0, smoothstep(0.6, 1.0, r / max(min(half.x, half.y), 1e-4)));
-    let norm = pow(pow(out.x, n) + pow(out.y, n), 1.0 / n);
-
-    return norm + min(max(q.x, q.y), 0.0) - r;
+    return continuous_distance(p, half, r);
 }
 
 fn body(p: vec2<f32>) -> f32 {

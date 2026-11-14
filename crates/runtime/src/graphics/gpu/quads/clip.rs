@@ -8,6 +8,7 @@ pub const NO_CLIP: Clip = Clip {
         top_right: 0.0,
         bottom_right: 0.0,
         bottom_left: 0.0,
+        continuous: false,
     },
 };
 
@@ -40,8 +41,16 @@ impl Clips {
             },
 
             (Some(outer), Some(inner)) => Clips {
-                outer: Some(narrow(outer, inner)),
-                inner: Some(clip),
+                outer: Some(if outer.radius.continuous {
+                    outer
+                } else {
+                    narrow(outer, inner)
+                }),
+                inner: Some(if outer.radius.continuous {
+                    narrow(inner, clip)
+                } else {
+                    clip
+                }),
             },
         }
     }

@@ -64,8 +64,12 @@ fn corners(rectangle: &Rectangle, area: Area) -> Corners {
             top_right: resolve(top_right),
             bottom_right: resolve(bottom_right),
             bottom_left: resolve(bottom_left),
+            continuous: rectangle.continuous,
         },
-        None => Corners::from(resolve(rectangle.radius.unwrap_or(Radius::Fixed(0.0)))),
+        None => Corners {
+            continuous: rectangle.continuous,
+            ..Corners::from(resolve(rectangle.radius.unwrap_or(Radius::Fixed(0.0))))
+        },
     }
 }
 

@@ -25,5 +25,5 @@ ADR 0001 gave each Island one fixed canvas, sized for the largest Presentation, 
 - A Banner waiting while a Surface is open keeps its timer, so a short one may run out unseen; the notification stays in history.
 - The column steps aside of a Dock by its length at rest, so it may move as an app opens or closes.
 - Other Surfaces keep their fixed bodies; one joins by asking `fit`.
-- An upright body's shadow takes corners turned on their diagonal, prepared beside the wide ones; a body morphing through about square overlaps them for a frame or two.
+- Shell shadows sample the current continuous outline directly in a clock-free shader (ADR 0150), retaining the same target slots through orientation changes and small-body undershoot.
 - An upright Compact shows less than a wide one: a title becomes its app's tile, a level its icon and bar.

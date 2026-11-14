@@ -5,8 +5,8 @@ use vello::wgpu::{
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
     BufferBindingType, ColorTargetState, ColorWrites, Device, FilterMode, FragmentState,
     MipmapFilterMode, PipelineLayoutDescriptor, Queue, RenderPipelineDescriptor, Sampler,
-    SamplerBindingType, SamplerDescriptor, ShaderStages, Texture, TextureFormat, TextureSampleType,
-    TextureViewDimension, VertexState, include_wgsl,
+    SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    Texture, TextureFormat, TextureSampleType, TextureViewDimension, VertexState,
 };
 
 use crate::graphics::gpu::atlas::Atlas;
@@ -33,7 +33,16 @@ impl Quads {
             immediate_size: 0,
         });
 
-        let module = device.create_shader_module(include_wgsl!("../quads.wgsl"));
+        let module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("quads"),
+            source: ShaderSource::Wgsl(
+                concat!(
+                    include_str!("../../continuous.wgsl"),
+                    include_str!("../quads.wgsl")
+                )
+                .into(),
+            ),
+        });
 
         // the canvas holds premultiplied colors, so the quads land on it the same way
         let target = ColorTargetState {
