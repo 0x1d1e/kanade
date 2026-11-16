@@ -202,6 +202,8 @@ The first row lists every Surface and opens one; the two rows under it swap `ope
 | `niri-config get <path>` | prints the value niri will use at a dotted path like `layout.gaps` (a flag like `layout.focus-ring.off` is `true` or `false`), with `# from <file>` when an include sets it; exit 1 when it is not set. Works without a shell |
 | `niri-config set <path> <value>` | changes one setting in niri's config, keeping every other byte: comments, `/-`, blank lines and line endings; a missing node is made at the end of its block |
 | `niri-config remove <path>` | removes that node's own line (its trailing `//` comment goes with it, comments on lines of their own stay), by the same checks |
+| `niri-config bindings` | lists the key bindings of niri's own config that Kanade may rename: the chord as the file writes it, a tab, then the action, one a line. An include's bind and a `/-` one are not listed |
+| `niri-config rebind <old> <new>` | renames one bind's chord, keeping its action, properties, comments and the node's form; refused for an include's bind, a `/-` one, a chord KDL cannot write and one another bind already takes ([ADR 0161](../adr/0161-niri-bind-rename.md)) |
 | `niri-config get\|set\|remove 'output["<name>"].<key>'` | the same for a key of niri's `output "<name>"` block, whose name is in double quotes |
 | `niri-config rules [apply <id>\|remove <id>]` | lists the recommended installation rules (`blur-xray`, `screencast-banners`, `overview-backdrop`) and their status (`active`, `missing`, `included <file>`), or applies/removes one by id with `niri validate` check and backup ring |
 | `niri-config undo` | puts back the bytes before Kanade's last change, only while the file is as that change left it. The Settings window's niri page ([Settings](Settings.md)) stages its changes and writes them with Save as one such change, and has this as its Undo |
@@ -216,6 +218,14 @@ The first row lists every Surface and opens one; the two rows under it swap `ope
 - Refused, nothing written, exit 1: a config niri rejects as it is (a v2 syntax too), a symlink or hard link, `/etc/niri/config.kdl`, a node an include sets (the message names the file, `kanade.kdl` among them), a node under `/-`.
 - Also refused: a repeated or block node (`window-rule`, `spawn-at-startup`; `output` only as below), a result niri rejects (niri's first error, with file:line:col), and a file that changed on disk meanwhile.
 - `--config <file>` right after `niri-config` names another file (for tests). It works without a shell, and niri reloads the file by itself.
+
+**niri-config bindings|rebind**:
+
+- A bind is the chord as the node's name; its action is its child and its properties sit on the node before it. Only the name token is written: `Mod+Return allow-when-locked=false { spawn "kitty"; }` renamed to `Mod+B` keeps the action, the property, the comments and the node's one-line form.
+- Both verbs read the config itself. An include's bind is not listed, and `rebind` names the include if that chord is asked for; a `/-` bind is not listed and is refused.
+- A new chord collides when it resolves to the same keys as another bind, with `Mod` read as the file's `input { mod-key }` (Super when it sets none): `Mod+Q` and `Super+Q` collide, `Mod+Q` and `Shift+Q` do not. `Enter` and `Return` are different spellings, as in niri.
+- A new chord must be a bare KDL v1 node name: letters, digits, `-`, `_` and `+`, not starting with a digit (`Mod+B`, `Mod+Shift+q`). A space, a quote or anything else KDL cannot write bare is refused before anything is written. A bind the file writes quoted is listed and renamed by its name's value.
+- `niri-config --config /tmp/config.kdl rebind 'Mod+Return' 'Mod+B'` works on a copy, with the same validation, backup ring and lock as `set`; Undo puts the old bytes back.
 
 **niri-config get|set|remove 'output["<name>"].<key>'**:
 

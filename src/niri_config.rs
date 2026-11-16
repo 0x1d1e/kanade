@@ -102,6 +102,16 @@ pub enum Reading {
     Overridden(String, PathBuf),
 }
 
+/// A key binding in niri's config: its chord as the file writes it, the action it runs, whether a
+/// `/-` turns it off, and the file it is in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Binding {
+    pub chord: String,
+    pub action: String,
+    pub disabled: bool,
+    pub file: PathBuf,
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -567,6 +577,153 @@ impl Editor<'_> {
             .any(|(file, _)| *file == self.file))
     }
 
+    /// The key bindings Kanade may rename: those of the config itself, none an include owns and
+    /// none a `/-` turns off, each with the action it runs as the file writes it.
+    pub fn bindings(&self) -> Result<Vec<Binding>, String> {
+        let text = fs::read_to_string(&self.file)
+            .map_err(|error| format!("{}: {error}", self.file.display()))?;
+        let mut found = self.bindings_in(&text)?;
+
+        found.retain(|bind| !bind.disabled && bind.file == self.file);
+
+        Ok(found)
+    }
+
+    // every bind of the config and the files it includes, the config's own text given
+    fn bindings_in(&self, text: &str) -> Result<Vec<Binding>, String> {
+        let mut found = Vec::new();
+
+        self.walk(
+            &self.file,
+            false,
+            &mut Vec::new(),
+            Some(text),
+            &|text| {
+                Ok(edit::binds(text)?
+                    .into_iter()
+                    .map(|bind| (0, bind))
+                    .collect())
+            },
+            &mut found,
+        )?;
+
+        Ok(found
+            .into_iter()
+            .map(|(file, bind)| Binding {
+                chord: bind.chord,
+                action: bind.action,
+                disabled: bind.disabled,
+                file,
+            })
+            .collect())
+    }
+
+    /// Renames one bind's chord in the config: only the chord token changes, its action,
+    /// properties and comments stay. Refused for a bind an include owns or a `/-` turns off, for
+    /// a chord the KDL cannot write as a node name, and for a new chord another bind already
+    /// takes once `Mod` is resolved through `input { mod-key }` (Super unless the file says).
+    pub fn rebind(&self, old: &str, new: &str) -> Result<String, String> {
+        let old = old.trim();
+        let new = new.trim();
+
+        if old.is_empty() || new.is_empty() {
+            return Err(String::from(
+                "rebind: name the old chord and the new one, like `Mod+Return Mod+B`",
+            ));
+        }
+
+        let text = fs::read_to_string(&self.file)
+            .map_err(|error| format!("{}: {error}", self.file.display()))?;
+        let binds = self.bindings_in(&text)?;
+        let modifier = self.modifier(&text)?;
+        let resolved = |chord: &str| binds::resolved(&binds::keys(chord), &modifier);
+        let target = resolved(old);
+        let at_target = |bind: &Binding| resolved(&bind.chord) == target;
+        let mine: Vec<&Binding> = binds
+            .iter()
+            .filter(|bind| !bind.disabled && bind.file == self.file && at_target(bind))
+            .collect();
+
+        let chord = match mine.as_slice() {
+            [bind] => bind.chord.clone(),
+            [] => {
+                if let Some(owner) = binds
+                    .iter()
+                    .find(|bind| bind.file != self.file && at_target(bind))
+                {
+                    return Err(format!(
+                        "{old}: set by {}, an include; Kanade edits only {}",
+                        owner.file.display(),
+                        self.file.display()
+                    ));
+                }
+
+                if binds.iter().any(|bind| bind.disabled && at_target(bind)) {
+                    return Err(format!(
+                        "{old}: turned off with `/-`, which Kanade does not edit"
+                    ));
+                }
+
+                return Err(format!(
+                    "{old}: no such key binding in {}",
+                    self.file.display()
+                ));
+            }
+            many => {
+                return Err(format!(
+                    "{old}: set {} times ({}); Kanade cannot tell which one to rename",
+                    many.len(),
+                    many.iter()
+                        .map(|bind| bind.chord.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        };
+
+        let wanted = resolved(new);
+
+        // a chord the bind already has writes nothing
+        if wanted == target {
+            return Ok(format!("{chord} is {new} already"));
+        }
+
+        if let Some(collision) = binds.iter().find(|bind| {
+            !bind.disabled
+                && !(bind.file == self.file && bind.chord == chord)
+                && resolved(&bind.chord) == wanted
+        }) {
+            let place = if collision.file == self.file {
+                String::new()
+            } else {
+                format!(" in {}", collision.file.display())
+            };
+
+            return Err(format!(
+                "{new}: {} already binds a key there{place}; rebind that one or pick another chord",
+                collision.chord
+            ));
+        }
+
+        let path = format!("binds.{chord}");
+
+        self.edit(&[(&path, Op::Rename(new.to_owned()))])
+    }
+
+    // `input { mod-key }` as niri reads it, the last of the config and its includes; `Mod` is
+    // Super when nothing sets it
+    fn modifier(&self, text: &str) -> Result<String, String> {
+        let found = self.gather(text, &["input", "mod-key"])?;
+        let set = found
+            .last()
+            .and_then(|(_, hit)| match Value::parse(&hit.shown) {
+                Ok(Value::Str(key)) if !key.is_empty() => Some(key),
+                _ => None,
+            });
+
+        Ok(set.unwrap_or_else(|| String::from("Super")))
+    }
+
     // the blocks of the config and its includes that are the monitor's, in the order niri reads
     // them: it uses the first, whole
     fn matching(&self, text: &str, id: &OutputId) -> Result<Vec<(PathBuf, OutputBlock)>, String> {
@@ -812,6 +969,7 @@ impl Editor<'_> {
                         Op::Set(value) => format!("{path} is {} already", value.shown()),
                         Op::Remove => format!("{path} is not set"),
                         Op::DropEmpty => format!("{path} stays: settings of its own are in it"),
+                        Op::Rename(new) => format!("{path} is {new} already"),
                     }),
                     Some(edited) => {
                         text = edited;
@@ -827,6 +985,7 @@ impl Editor<'_> {
                                 was.as_deref().unwrap_or("unset")
                             ),
                             Op::DropEmpty => format!("{path} removed, nothing was left in it"),
+                            Op::Rename(new) => format!("{path} renamed to {new}"),
                         });
                     }
                 }
@@ -1083,6 +1242,7 @@ impl Editor<'_> {
                     None => said.push(match op {
                         Op::Set(value) => format!("{path} is {} already", value.shown()),
                         Op::Remove | Op::DropEmpty => format!("{path} is not set"),
+                        Op::Rename(new) => format!("{path} is {new} already"),
                     }),
                     Some(edited) => {
                         text = edited;
@@ -1097,6 +1257,7 @@ impl Editor<'_> {
                                 "{path} removed (was {})",
                                 was.as_deref().unwrap_or("unset")
                             ),
+                            Op::Rename(new) => format!("{path} renamed to {new}"),
                         });
                     }
                 }

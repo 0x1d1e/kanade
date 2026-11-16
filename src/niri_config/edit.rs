@@ -310,6 +310,10 @@ pub enum Op {
     /// Of a whole `output` block (`apply_in` with no path below it): remove it when nothing is
     /// left in it, else leave it.
     DropEmpty,
+
+    /// A key binding's chord: only the node's name token changes, its action, properties,
+    /// comments and indentation stay byte for byte.
+    Rename(String),
 }
 
 /// Which `output` block, by its place among the file's own: the block niri uses is found by
@@ -783,6 +787,72 @@ pub fn includes(text: &str) -> Result<Vec<(usize, String, bool)>, String> {
             Some((span!(node.span()).start, file, optional))
         })
         .collect())
+}
+
+/// A bind in a file's own `binds` blocks: the chord as written, the action as written, and whether
+/// a `/-` turns it off (the KDL parser drops those, so they are read from the text between nodes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bind {
+    pub chord: String,
+    pub action: String,
+    pub disabled: bool,
+}
+
+/// The binds of a file's own `binds` blocks, in file order: each block's nodes, then those the
+/// `/-` turns off. An action's text is as written, its blanks collapsed to one space.
+pub fn binds(text: &str) -> Result<Vec<Bind>, String> {
+    let text = unbom(text).1;
+    let document = parse(text)?;
+    let mut found = Vec::new();
+
+    for node in document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "binds")
+    {
+        let scope = span!(node.span());
+        let nodes = node.children().map(KdlDocument::nodes).unwrap_or_default();
+
+        for bind in nodes {
+            let action = bind
+                .children()
+                .map(|children| {
+                    children
+                        .nodes()
+                        .iter()
+                        .map(|action| {
+                            text[span!(action.span())]
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+
+            found.push(Bind {
+                chord: bind.name().value().to_owned(),
+                action,
+                disabled: false,
+            });
+        }
+
+        for (chord, _) in slashdashed(text, nodes, &scope) {
+            found.push(Bind {
+                chord,
+                action: String::new(),
+                disabled: true,
+            });
+        }
+    }
+
+    Ok(found)
+}
+
+// a path a chord is at: `binds.<chord>`, the bind's node name being its chord
+fn is_bind_path(segments: &[&str]) -> bool {
+    matches!(segments, ["binds", _])
 }
 
 // the names of the nodes in the gaps between `nodes` of a scope that a `/-` turns off
@@ -1574,6 +1644,9 @@ fn apply_at(
 
     let splices: Vec<Splice> = match (found.leaves.first(), op) {
         (None, Op::Remove | Op::DropEmpty) => return Ok(None),
+        (None, Op::Rename(_)) => {
+            return Err(format!("{path}: no such key binding"));
+        }
         (None, Op::Set(value)) => {
             if let Some(bad) = segments
                 .iter()
@@ -1679,6 +1752,26 @@ fn apply_at(
                 }
             }
         }
+        (Some(leaf), Op::Rename(new)) => {
+            if !is_bind_path(segments) {
+                return Err(format!(
+                    "{path}: only a key binding is renamed, its chord being the node's name"
+                ));
+            }
+
+            if new.is_empty() || !writable_name(new) {
+                return Err(format!(
+                    "{new}: not a chord Kanade writes; letters, digits, - _ and + only, not \
+                     starting with a digit"
+                ));
+            }
+
+            if segments[1] == new.as_str() || text[leaf.span.start..leaf.name_end] == new.clone() {
+                return Ok(None);
+            }
+
+            vec![(leaf.span.start..leaf.name_end, new.clone())]
+        }
         (Some(_), Op::DropEmpty) => return Ok(None),
     };
 
@@ -1690,8 +1783,24 @@ fn apply_at(
 
     let (first_name, first_index) = parse_segment(segments[0])?;
     let is_repeated_first = REPEATED.contains(&first_name);
+    let rename_to = match op {
+        Op::Rename(new) => Some(new.as_str()),
+        _ => None,
+    };
+    let renamed_from = match (found.leaves.first(), op) {
+        (Some(leaf), Op::Rename(_)) => Some(leaf.clone()),
+        _ => None,
+    };
 
     let (skip_doc, skip_after, gone) = match (op, first_index) {
+        (Op::Rename(_), _) if is_bind_path(segments) => (
+            vec![String::from("binds"), segments[1].to_owned()],
+            vec![
+                String::from("binds"),
+                rename_to.unwrap_or_default().to_owned(),
+            ],
+            None,
+        ),
         (Op::Remove, Some(Index::Nth(n))) if segments.len() == 1 && is_repeated_first => {
             (vec![], vec![], Some((first_name, n)))
         }
@@ -1721,7 +1830,23 @@ fn apply_at(
         ));
     }
 
+    // the old chord is gone from the file, and the new one is there
+    if rename_to.is_some()
+        && is_bind_path(segments)
+        && !find(&edited, &after, &["binds", segments[1]], None)?
+            .leaves
+            .is_empty()
+    {
+        return Err(String::from(
+            "the edit left the chord it renamed in the file; nothing written",
+        ));
+    }
+
     let check_segments: Vec<String> = match (op, first_index) {
+        (Op::Rename(_), _) if is_bind_path(segments) => vec![
+            String::from("binds"),
+            rename_to.unwrap_or_default().to_owned(),
+        ],
         (Op::Set(_), Some(Index::New)) if is_repeated_first => {
             let doc_count = document
                 .nodes()
@@ -1752,6 +1877,15 @@ fn apply_at(
             count_after + 1 == count_before
         }
         Op::Remove | Op::DropEmpty => now.is_empty(),
+        Op::Rename(_) => match (now.as_slice(), renamed_from.as_ref()) {
+            ([leaf], Some(was)) => {
+                // from the name on the node is the one it was: action, properties, comments,
+                // indentation; only the chord before it changed
+                leaf.shown() == was.shown()
+                    && edited[leaf.name_end..leaf.span.end] == text[was.name_end..was.span.end]
+            }
+            _ => false,
+        },
         Op::Set(Value::Props(props)) => matches!(
             now.as_slice(),
             [leaf] if leaf.values.is_empty() && !leaf.block && props_are(&leaf.props, props)
@@ -1877,6 +2011,71 @@ mod tests {
 
     fn unset(text: &str, path: &str) -> Result<Option<String>, String> {
         apply(text, &segments(path).unwrap(), &Op::Remove)
+    }
+
+    fn rename(text: &str, path: &str, new: &str) -> Result<Option<String>, String> {
+        apply(text, &segments(path).unwrap(), &Op::Rename(new.to_owned()))
+    }
+
+    // a bind's chord is its node name: only that token changes, the action, properties, comments
+    // and indentation around it stay byte for byte
+    #[test]
+    fn a_bind_is_renamed_by_its_name_token_only() {
+        let text = "// head\nbinds {\n    // keep me\n    Mod+Return allow-when-locked=false { spawn \"kitty\"; } // why\n    Mod+Q { close-window; }\n}\n// end\n";
+        let edited = rename(text, "binds.Mod+Return", "Mod+B").unwrap().unwrap();
+
+        assert_eq!(edited, text.replace("Mod+Return", "Mod+B"));
+        assert!(hits(&edited, &["binds", "Mod+Return"]).unwrap().is_empty());
+        assert_eq!(hits(&edited, &["binds", "Mod+B"]).unwrap().len(), 1);
+
+        // a one-line binds block keeps its line, its neighbours and its semicolons
+        let one = "binds { Mod+Return { spawn \"kitty\"; }; Mod+Q { close-window; }; }\n";
+        assert_eq!(
+            rename(one, "binds.Mod+Return", "Mod+B").unwrap().unwrap(),
+            "binds { Mod+B { spawn \"kitty\"; }; Mod+Q { close-window; }; }\n"
+        );
+
+        // the same chord is no change at all
+        assert_eq!(rename(text, "binds.Mod+Return", "Mod+Return"), Ok(None));
+    }
+
+    #[test]
+    fn a_rename_refuses_what_it_cannot_write_or_find() {
+        let text = "binds {\n    Mod+Return { spawn \"kitty\"; }\n}\n";
+
+        assert!(rename(text, "binds.Mod+Return", "Mod Return").is_err());
+        assert!(rename(text, "binds.Mod+Return", "1Mod").is_err());
+        assert!(rename(text, "binds.Mod+Return", "Mod+Return.").is_err());
+        assert!(rename(text, "binds.Mod+Missing", "Mod+B").is_err());
+
+        // only a bind's name is a chord; another node is not renamed
+        assert!(rename("layout {\n    gaps 4\n}\n", "layout.gaps", "gutter").is_err());
+
+        // a `/-` bind is not a node the parser gives, so the rename finds nothing
+        let off = "binds {\n    /-Mod+Q { close-window; }\n}\n";
+        assert!(rename(off, "binds.Mod+Q", "Mod+B").is_err());
+    }
+
+    // the binds of a file's own blocks, those a `/-` turns off among them: the parser drops those,
+    // so they are read from the text between the nodes
+    #[test]
+    fn a_files_binds_are_listed_with_those_turned_off() {
+        let text = "binds {\n    Mod+Return allow-when-locked=false { spawn \"kitty\"; }\n    Mod+Q { close-window; }\n    /-Mod+W { close-window; }\n}\nbinds {\n    Mod+E { spawn \"nautilus\"; }\n}\n";
+        let bind = |chord: &str, action: &str, disabled: bool| Bind {
+            chord: chord.to_owned(),
+            action: action.to_owned(),
+            disabled,
+        };
+
+        assert_eq!(
+            binds(text).unwrap(),
+            [
+                bind("Mod+Return", "spawn \"kitty\"", false),
+                bind("Mod+Q", "close-window", false),
+                bind("Mod+W", "", true),
+                bind("Mod+E", "spawn \"nautilus\"", false),
+            ]
+        );
     }
 
     #[test]

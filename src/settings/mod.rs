@@ -532,6 +532,11 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<(), String> {
     file::set_pinned(id, pinned)
 }
 
+// the pinned apps in the order the Dock was dragged into, one write of `dock.pinned`
+pub fn set_pinned_order(ids: Vec<String>) -> Result<(), String> {
+    file::set_pinned_order(ids)
+}
+
 // turns to a page, leaving any search
 pub(crate) fn turn_to(page: &'static str) {
     let page = layout::route_page(page, crate::sources::compositor::active());

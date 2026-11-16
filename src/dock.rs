@@ -122,6 +122,10 @@ const BOUNCE: f32 = 8.0;
 const GROW: Duration = Duration::from_millis(180);
 const SHRINK: Duration = Duration::from_millis(260);
 
+// how far a pinned icon travels before its press counts as a drag, so a click that wobbles still
+// launches or focuses
+const DRAG_THRESHOLD: f32 = 8.0;
+
 // one app the Dock shows
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Item {
@@ -567,6 +571,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let pieces = pieces(&items);
 
     let pointer = pointers.by.get(&monitor.name);
+    let drag = pointers.drag().cloned();
     let autohide = autohides(place);
 
     // our springs, not runtime Animations, so the view asks for frames until those it shows rest
@@ -686,6 +691,11 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut slots = items.iter();
 
+    // the pins the row holds, a slot `pitch` apart at rest, and which of them is reached
+    let pinned = items.iter().filter(|item| item.pinned()).count();
+    let pitch = size.icon + size.gap;
+    let mut pin_index = 0;
+
     for ((piece, span), scale) in pieces.iter().zip(&row.spans).zip(&scales) {
         let x = left + span.x;
 
@@ -708,6 +718,17 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
             }
             Piece::Icon => {
                 let Some(item) = slots.next() else { break };
+                let pins = item.pinned().then(|| {
+                    let from = pin_index;
+                    pin_index += 1;
+
+                    Pins {
+                        from,
+                        pinned,
+                        pitch,
+                        drag: drag.as_ref(),
+                    }
+                });
                 let side = size.icon * scale;
 
                 let at = axes.rect(Rect {
@@ -723,9 +744,12 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
                         side,
                         far,
                         axes,
-                        &roles,
-                        true,
+                        Look {
+                            roles: &roles,
+                            live: true,
+                        },
                         ContextTarget::at(&monitor.name, context_origin, place.anchor.edge, at),
+                        pins,
                     )
                     .translate(at.x, at.y),
                 ));
@@ -815,6 +839,7 @@ pub(crate) fn between(
     let lift = balance(far, size);
 
     let pointer = pointers.by.get(&monitor.name);
+    let drag = pointers.drag().cloned();
 
     if pointer
         .is_some_and(|pointer| moving(&pointer.grow, now) || folds && moving(&pointer.shown, now))
@@ -894,6 +919,11 @@ pub(crate) fn between(
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut slots = items.iter();
     let axes = Axes::of(place.anchor);
+
+    // the pins the row holds, a slot `pitch` apart at rest, and which of them is reached
+    let pinned = items.iter().filter(|item| item.pinned()).count();
+    let pitch = size.icon + size.gap;
+    let mut pin_index = 0;
 
     /*
      * folded, the icons are inside the body at rest, so the apps running show as their dots alone,
@@ -988,6 +1018,17 @@ pub(crate) fn between(
             }
             Piece::Icon => {
                 let Some(item) = slots.next() else { break };
+                let pins = item.pinned().then(|| {
+                    let from = pin_index;
+                    pin_index += 1;
+
+                    Pins {
+                        from,
+                        pinned,
+                        pitch,
+                        drag: drag.as_ref(),
+                    }
+                });
 
                 if alpha <= 0.0 {
                     continue;
@@ -1013,9 +1054,12 @@ pub(crate) fn between(
                         side,
                         far,
                         axes,
-                        &roles,
-                        alpha >= 0.5,
+                        Look {
+                            roles: &roles,
+                            live: alpha >= 0.5,
+                        },
                         ContextTarget::at(&monitor.name, context_origin, place.anchor.edge, at),
+                        pins,
                     )
                     .opacity(alpha)
                     .translate(at.x, at.y),
@@ -1949,16 +1993,38 @@ fn dot(item: &Item, axes: Axes, roles: &ThemeRoles) -> Option<(f32, f32, Color)>
     Some((width, height, color))
 }
 
+// a pinned slot's place in the row, and the drag moving one along it
+#[derive(Clone, Copy)]
+struct Pins<'a> {
+    // where the pin stands among the pins, and how many there are
+    from: usize,
+    pinned: usize,
+
+    // the distance between two pinned slots at rest, which a moved one parts by
+    pitch: f32,
+
+    // the drag in progress, if one is
+    drag: Option<&'a Drag>,
+}
+
+// how a slot draws where the Dock is: its theme, and whether it is out of the Island to take input
+#[derive(Clone, Copy)]
+struct Look<'a> {
+    roles: &'a ThemeRoles,
+    live: bool,
+}
+
 // an item's icon, `side` across, its dot between it and the edge while it runs, and its click
 fn slot(
     item: &Item,
     side: f32,
     far: bool,
     axes: Axes,
-    roles: &ThemeRoles,
-    live: bool,
+    look: Look<'_>,
     target: ContextTarget,
+    pins: Option<Pins<'_>>,
 ) -> Rectangle {
+    let Look { roles, live } = look;
     let mut column: Vec<Box<dyn Widget>> = vec![mark(&item.app, side, roles)];
 
     if let Some((width, height, color)) = dot(item, axes, roles) {
@@ -2020,7 +2086,33 @@ fn slot(
         Box::new(Column::new(column).gap(BELOW).align(Center))
     };
 
-    let slot = slot.padding(padding).child(Stack::new(vec![pieces]));
+    /*
+     * dragged along the row, the icon and its dot move with the pointer while the slot that takes
+     * the press stays where it is, so its hit area never follows the icon and the press is kept
+     */
+    let moved = pins
+        .and_then(|pins| pins.drag.map(|drag| offset(pins.from, drag)))
+        .unwrap_or(0.0);
+    let step = if axes.sideways {
+        (0.0, moved)
+    } else {
+        (moved, 0.0)
+    };
+
+    let visual = Rectangle::new().width(width).height(height);
+    let visual = match (axes.sideways, far) {
+        (false, true) => visual.align_child(Center, Start),
+        (false, false) => visual.align_child(Center, End),
+        (true, true) => visual.align_child(Start, Center),
+        (true, false) => visual.align_child(End, Center),
+    };
+
+    let visual = visual
+        .translate(step.0, step.1)
+        .padding(padding)
+        .child(Stack::new(vec![pieces]));
+
+    let slot = slot.align_child(Start, Start).child(visual);
 
     // one faded into the Island takes no click, which is the Island's
     if !live {
@@ -2030,6 +2122,9 @@ fn slot(
     let context = item.clone();
     let hover_item = context.clone();
     let hover_target = target.clone();
+    let monitor = target.monitor.clone();
+    // a drag that moved ends in a click on the slot it started on, which launches nothing
+    let movable = item.pin.is_some() && pins.is_some();
 
     let slot = slot
         .cursor(Cursor::Pointer)
@@ -2043,16 +2138,24 @@ fn slot(
                 App::Unmatched(None) => app,
             }
         })
-        .on_click(move |button| match button {
-            Button::Left => {
-                if let Some(press) = press.clone() {
-                    carry_out(press);
-                }
+        .on_click(move |button| {
+            if button == Button::Left && movable && took_drag() {
+                return;
             }
-            Button::Right => context_menu::open(&target.monitor, &context, target.at, target.edge),
-            Button::Middle => {
-                if let Some(press) = fresh.clone() {
-                    carry_out(press);
+
+            match button {
+                Button::Left => {
+                    if let Some(press) = press.clone() {
+                        carry_out(press);
+                    }
+                }
+                Button::Right => {
+                    context_menu::open(&target.monitor, &context, target.at, target.edge)
+                }
+                Button::Middle => {
+                    if let Some(press) = fresh.clone() {
+                        carry_out(press);
+                    }
                 }
             }
         })
@@ -2068,6 +2171,31 @@ fn slot(
                 context_menu::leave_icon();
             }
         });
+
+    /*
+     * only a pinned icon drags along the row: a running app that is not pinned stays where it is,
+     * as its place is not in `dock.pinned`
+     */
+    let slot = match (item.pin.clone(), pins) {
+        (Some(pin), Some(pins)) => {
+            let (from, pinned, pitch) = (pins.from, pins.pinned, pins.pitch);
+            let end_monitor = monitor.clone();
+            let end_pin = pin.clone();
+
+            slot.on_drag(move |point| {
+                dragged(
+                    &monitor,
+                    &pin,
+                    from,
+                    pinned,
+                    pitch,
+                    axes.along(point.x, point.y),
+                );
+            })
+            .on_drag_end(move |released| drag_end(&end_monitor, &end_pin, released))
+        }
+        _ => slot,
+    };
 
     // only an app whose `Exec` has a file code takes files, so a drag over any other is turned down
     match desktop(&item.app)
@@ -2424,10 +2552,196 @@ impl Canvas {
     }
 }
 
+/*
+ * how far the pinned slot at `index` stands from its place while `drag` pulls one along the row:
+ * the dragged one with the pointer, the ones between it and its provisional place parting by one
+ * slot. Nothing moves before the drag passes its threshold, so a click never shifts the row
+ */
+fn offset(index: usize, drag: &Drag) -> f32 {
+    if drag.axis.abs() < DRAG_THRESHOLD {
+        return 0.0;
+    }
+
+    if index == drag.from {
+        return drag.axis;
+    }
+
+    let last = drag.pinned.max(1) as isize - 1;
+    let from = drag.from as isize;
+    let destination = (from + (drag.axis / drag.pitch).round() as isize).clamp(0, last);
+    let index = index as isize;
+
+    if from < destination && (from..=destination).contains(&index) {
+        -drag.pitch
+    } else if destination < from && (destination..from).contains(&index) {
+        drag.pitch
+    } else {
+        0.0
+    }
+}
+
+// `pins` with the one at `from` moved `shift` slots along it, kept within the list
+fn reordered(pins: &[String], from: usize, shift: isize) -> Vec<String> {
+    let mut order = pins.to_vec();
+
+    if order.is_empty() {
+        return order;
+    }
+
+    let from = from.min(order.len() - 1);
+    let to = (from as isize + shift).clamp(0, order.len() as isize - 1) as usize;
+    let pin = order.remove(from);
+
+    order.insert(to, pin);
+
+    order
+}
+
+// the pinned icon `pin`, the `from`th of `pinned` a slot `pitch` apart, was dragged to `local`
+// along its row
+fn dragged(monitor: &str, pin: &str, from: usize, pinned: usize, pitch: f32, local: f32) {
+    let mut pointers = Pointers::write();
+
+    pointers.part(&monitor);
+    pointers.start_or_update(pin, from, pinned, pitch, local);
+}
+
+// whether the click now released ended a drag that moved, which launches and focuses nothing; the
+// next press starts afresh
+fn took_drag() -> bool {
+    let mut pointers = Pointers::write();
+    let moved = pointers.moved;
+
+    pointers.moved = false;
+    pointers.quiet();
+
+    moved
+}
+
+/*
+ * ends the drag of `pin`: released past the threshold, the pin moves along `dock.pinned` by whole
+ * slots and is written there in one settings write; let go any other way, nothing moves
+ */
+fn drag_end(monitor: &str, pin: &str, released: bool) {
+    let dragging = Pointers::read().dragging();
+
+    if !dragging {
+        return;
+    }
+
+    let drag = {
+        let mut pointers = Pointers::write();
+
+        pointers.part(&monitor);
+
+        pointers.end()
+    };
+
+    let Some(drag) = drag else {
+        return;
+    };
+
+    let shift = (drag.axis / drag.pitch).round() as isize;
+
+    if !released || drag.axis.abs() < DRAG_THRESHOLD || shift == 0 {
+        return;
+    }
+
+    // the list may have been reloaded since the drag started, so the pin is followed by its id
+    let pins = config::get().pinned.clone();
+    let from = pins
+        .iter()
+        .position(|pinned| pinned == pin)
+        .unwrap_or(drag.from);
+    let order = reordered(&pins, from, shift);
+
+    thread::spawn(move || {
+        if let Err(problem) = crate::settings::set_pinned_order(order) {
+            eprintln!("dock: could not write the pinned order: {problem}");
+        }
+    });
+}
+
+/*
+ * a pinned icon dragged along the Dock's row: which pin it is, where it stood among the pinned
+ * ones and how many there were, where the pointer first was along the row in the slot's own
+ * coordinates, how far it has moved since, and the row's measures
+ */
+#[derive(Debug, Clone, PartialEq)]
+struct Drag {
+    pin: String,
+    from: usize,
+    pinned: usize,
+    anchor: f32,
+    axis: f32,
+    pitch: f32,
+}
+
 // the pointer over each output's Dock, by output name
 #[derive(Default)]
 pub struct Pointers {
     by: HashMap<String, Pointer>,
+
+    // the pinned icon being dragged along its Dock's row, while one is
+    drag: Option<Drag>,
+
+    // a drag moved its icon, so the click that ends it launches and focuses nothing
+    moved: bool,
+}
+
+impl Pointers {
+    // whether a pinned icon is being dragged
+    fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    // the pinned icon being dragged, and how far along the row
+    fn drag(&self) -> Option<&Drag> {
+        self.drag.as_ref()
+    }
+
+    /*
+     * starts dragging `pin`, the `from`th of `pinned` a slot `pitch` apart, at `local` along its
+     * row, or moves the drag already on it there; says how far it has come
+     */
+    fn start_or_update(
+        &mut self,
+        pin: &str,
+        from: usize,
+        pinned: usize,
+        pitch: f32,
+        local: f32,
+    ) -> f32 {
+        if self.drag.as_ref().is_some_and(|drag| drag.pin == pin) {
+            if let Some(drag) = &mut self.drag {
+                drag.axis = local - drag.anchor;
+            }
+        } else {
+            // a new press: what the last drag's release does is not this one's
+            self.moved = false;
+            self.drag = Some(Drag {
+                pin: pin.to_owned(),
+                from,
+                pinned,
+                anchor: local,
+                axis: 0.0,
+                pitch,
+            });
+        }
+
+        let axis = self.drag.as_ref().map_or(0.0, |drag| drag.axis);
+
+        if axis.abs() >= DRAG_THRESHOLD {
+            self.moved = true;
+        }
+
+        axis
+    }
+
+    // the drag is over, unless none was
+    fn end(&mut self) -> Option<Drag> {
+        self.drag.take()
+    }
 }
 
 impl Service for Pointers {
@@ -2808,6 +3122,68 @@ mod tests {
             reach(Along::Center, canvas.width, widest),
             (0.0, canvas.width)
         );
+    }
+
+    // the pins a drag moves keep every id once, staying within their list
+    #[test]
+    fn a_dragged_pin_moves_where_it_was_dropped() {
+        let pins = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+        let order = pins(&["a", "b", "c", "d"]);
+
+        assert_eq!(reordered(&order, 0, 2), pins(&["b", "c", "a", "d"]));
+        assert_eq!(reordered(&order, 2, -2), pins(&["c", "a", "b", "d"]));
+
+        // past either end it stays at that end, whole
+        assert_eq!(reordered(&order, 0, -5), order);
+        assert_eq!(reordered(&order, 3, 5), order);
+
+        // a move of nothing leaves it as it was
+        assert_eq!(reordered(&order, 1, 0), order);
+    }
+
+    fn drag(from: usize, axis: f32, pinned: usize) -> Drag {
+        Drag {
+            pin: format!("{from}.desktop"),
+            from,
+            pinned,
+            anchor: 0.0,
+            axis,
+            pitch: 10.0,
+        }
+    }
+
+    // the icon dragged moves with the pointer, the ones it passes parting by one slot
+    #[test]
+    fn a_dragged_slot_parts_the_ones_it_passes() {
+        let right = drag(1, 20.0, 4);
+
+        assert_eq!(offset(0, &right), 0.0);
+        assert_eq!(offset(1, &right), 20.0);
+        assert_eq!(offset(2, &right), -10.0);
+        assert_eq!(offset(3, &right), -10.0);
+
+        // the same two it passed, going the other way
+        let left = drag(3, -20.0, 4);
+
+        assert_eq!(offset(0, &left), 0.0);
+        assert_eq!(offset(1, &left), 10.0);
+        assert_eq!(offset(2, &left), 10.0);
+        assert_eq!(offset(3, &left), -20.0);
+
+        // past either end the provisional place is the last one, so the rest stay put
+        let past = drag(3, 90.0, 4);
+        assert_eq!(offset(2, &past), 0.0);
+        assert_eq!(offset(3, &past), 90.0);
+    }
+
+    // a press that has not moved far enough to be a drag shifts nothing
+    #[test]
+    fn no_pinned_slot_moves_before_the_drag_threshold() {
+        let press = drag(1, 4.0, 4);
+
+        for index in 0..4 {
+            assert_eq!(offset(index, &press), 0.0, "slot {index}");
+        }
     }
 
     fn running(focused: bool, urgent: bool) -> Item {

@@ -27,6 +27,14 @@ pub(super) fn wheel(monitor: &str, lines: f32) {
     }
 }
 
+/*
+ * a left press swells the island until it comes up or the pointer leaves, feeding the view's
+ * press spring; a click on the island is left to its own target
+ */
+pub(super) fn press(down: bool) {
+    IslandService::write().press(down, Instant::now());
+}
+
 // a write wakes the window even when nothing changed, so only write a real change
 pub(super) fn expand(monitor: &str) {
     let island = IslandService::read();

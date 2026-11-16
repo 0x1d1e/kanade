@@ -12,7 +12,7 @@ use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
 use super::geometry::{self, Canvas, Hang, Holds, Shape, Sizes, TimePeek};
-use super::motion::{Body, Mode, Spring};
+use super::motion::{Body, CRITICAL, Mode, Spring};
 use super::presentation::{
     Content, Input, LauncherStyle, Presentation, Presentations, Prior, Segment, Surface,
 };
@@ -31,6 +31,10 @@ const GRACE: Duration = Duration::from_millis(250);
 
 // a little past the target and back, like macOS's island
 const DAMPING: f32 = 0.72;
+
+// a left press swells the body this much over its resting size, on a short critical spring
+const PRESS_SCALE: f32 = 1.04;
+const PRESS: Duration = Duration::from_millis(90);
 
 // the island's motion and pointer timings; the defaults are the constants above
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,6 +131,12 @@ pub struct IslandService {
 
     // from `retime`, else the defaults
     timings: Timings,
+
+    /*
+     * a left press's swell, from rest at 1.0; one press at a time, since the held island is the
+     * one with the pointer and every island shares the swell
+     */
+    press: Spring<1>,
 
     // from `resize` and `fit`, else the defaults: how large each body grows (ADR 0030)
     sizes: Sizes,
@@ -262,6 +272,8 @@ impl Due {
 
 impl Service for IslandService {
     fn new() -> Self {
+        let timings = Timings::default();
+
         Self {
             islands: HashMap::new(),
             untouched: Island::default(),
@@ -269,7 +281,8 @@ impl Service for IslandService {
             presentations: Presentations::default(),
             focused_output: None,
             confirmed_output: None,
-            timings: Timings::default(),
+            timings,
+            press: Spring::new([1.0], timings.motion),
             sizes: Sizes::default(),
             auto: None,
             isolated: false,
@@ -339,7 +352,51 @@ impl IslandService {
     // the config's timings, at start and on each reload; a motion under way keeps its own
     pub fn retime(&mut self, timings: Timings) {
         self.timings = timings;
-        self.follow_progress(Instant::now());
+        let now = Instant::now();
+
+        // a reload across reduced motion puts the swell at rest rather than carrying a target the
+        // new mode cannot show, so turning motion on or off never jumps
+        if self.press.mode() != timings.motion {
+            self.press
+                .aim([1.0], timings.for_motion(PRESS), timings.motion, now);
+        }
+
+        self.follow_progress(now);
+    }
+
+    /*
+     * a left press swells the island a little and the release settles it back, on a short
+     * critically damped spring. A press already headed where it asks is not written again, since
+     * a write wakes every window. Reduced motion never swells
+     */
+    pub fn press(&mut self, down: bool, now: Instant) {
+        let target = [if down { PRESS_SCALE } else { 1.0 }];
+
+        if self.press.target() == target {
+            return;
+        }
+
+        self.press.damp(CRITICAL);
+        self.press.aim(
+            target,
+            self.timings.for_motion(PRESS),
+            self.timings.motion,
+            now,
+        );
+    }
+
+    // the island's press swell now; exactly 1.0, never moving, under reduced motion
+    pub fn press_scale(&self, now: Instant) -> f32 {
+        if self.timings.motion == Mode::Reduced {
+            return 1.0;
+        }
+
+        self.press.at(now)[0]
+    }
+
+    // false while the press swell still moves, so the view keeps asking for frames
+    pub fn press_settled(&self, now: Instant) -> bool {
+        self.timings.motion == Mode::Reduced || self.press.settled(now)
     }
 
     /*
@@ -4924,5 +4981,67 @@ mod tests {
         // When collapsed, floats is false again
         island.input(MONITOR, Input::Collapse, now);
         assert!(!island.floats(MONITOR, &frame));
+    }
+
+    #[test]
+    fn a_press_swells_on_a_short_spring_and_the_release_returns_it() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+
+        assert_eq!(island.press_scale(now), 1.0);
+        assert!(island.press_settled(now));
+
+        island.press(true, now);
+        assert_eq!(island.press_scale(now), 1.0);
+        assert!(island.press_scale(now + ms(45)) > 1.0);
+        assert!(!island.press_settled(now + ms(45)));
+
+        let held = now + Duration::from_secs(1);
+        assert_eq!(island.press_scale(held), PRESS_SCALE);
+        assert!(island.press_settled(held));
+
+        island.press(false, held);
+        let falling = island.press_scale(held + ms(45));
+        assert!(falling < PRESS_SCALE && falling > 1.0);
+        assert_eq!(island.press_scale(held + Duration::from_secs(1)), 1.0);
+        assert!(island.press_settled(held + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_press_already_held_is_not_written_again() {
+        let now = Instant::now();
+        let (mut once, mut twice) = (IslandService::new(), IslandService::new());
+
+        once.press(true, now);
+        twice.press(true, now);
+        twice.press(true, now + ms(30));
+
+        // a second write would restart the leg, and the two would part after it
+        for at in [10, 30, 45, 60, 90] {
+            assert_eq!(
+                once.press_scale(now + ms(at)),
+                twice.press_scale(now + ms(at))
+            );
+        }
+    }
+
+    #[test]
+    fn reduced_motion_never_swells() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+        island.retime(Timings {
+            motion: Mode::Reduced,
+            ..Timings::default()
+        });
+
+        island.press(true, now);
+        assert_eq!(island.press_scale(now), 1.0);
+        assert_eq!(island.press_scale(now + ms(45)), 1.0);
+        assert_eq!(island.press_scale(now + Duration::from_secs(1)), 1.0);
+        assert!(island.press_settled(now));
+
+        // turning motion back on under the same held press does not jump to the old target
+        island.retime(Timings::default());
+        assert_eq!(island.press_scale(now + Duration::from_secs(1)), 1.0);
     }
 }

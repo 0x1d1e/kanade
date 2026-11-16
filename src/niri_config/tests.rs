@@ -1746,3 +1746,173 @@ fn output_blocks_lists_blocks_and_resets_disconnected_output() {
     assert_eq!(updated_blocks[1].1.name, "");
     assert!(!dir.text().contains("HDMI-A-1"));
 }
+
+// the editable set: the config's own binds, and neither one a `/-` turns off nor one an include
+// sets, which `rebind` would not be the last word on
+#[test]
+fn bindings_lists_the_configs_own_and_not_disabled_or_included_ones() {
+    let dir = Dir::new(
+        "bindings",
+        "binds {\n    Mod+Return { spawn \"kitty\"; }\n    /-Mod+W { close-window; }\n}\ninclude \"more.kdl\"\n",
+    );
+    fs::write(
+        dir.0.join("niri/more.kdl"),
+        "binds {\n    Mod+E { spawn \"nautilus\"; }\n}\n",
+    )
+    .unwrap();
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    assert_eq!(
+        editor.bindings().unwrap(),
+        [Binding {
+            chord: String::from("Mod+Return"),
+            action: String::from("spawn \"kitty\""),
+            disabled: false,
+            file: dir.config(),
+        }]
+    );
+}
+
+// a rebind writes the chord token and nothing else, one backup, and undo gives the bytes back
+#[test]
+fn a_rebind_splices_the_chord_and_undo_restores_it() {
+    let text = "// mine\nbinds {\n    Mod+Return allow-when-locked=false { spawn \"kitty\"; } // keep\n    Mod+Q { close-window; }\n}\n";
+    let dir = Dir::new("rebind", text);
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    let said = editor.rebind("Mod+Return", "Mod+B").unwrap();
+
+    assert!(said.contains("Mod+Return renamed to Mod+B"), "{said}");
+    assert!(said.contains("backup 1"), "{said}");
+    assert_eq!(dir.text(), text.replace("Mod+Return", "Mod+B"));
+    assert_eq!(editor.bindings().unwrap()[0].chord, "Mod+B");
+
+    editor.undo().unwrap();
+    assert_eq!(dir.text(), text);
+}
+
+// the refusals: an include's chord, one a `/-` turns off, a missing one, a chord the KDL cannot
+// write, and a config niri already rejects; none of them writes a byte
+#[test]
+fn a_rebind_refuses_without_writing() {
+    let text = "binds {\n    Mod+Q { close-window; }\n    /-Mod+W { close-window; }\n}\ninclude \"more.kdl\"\n";
+    let dir = Dir::new("rebind-refused", text);
+
+    fs::write(
+        dir.0.join("niri/more.kdl"),
+        "binds {\n    Mod+E { spawn \"nautilus\"; }\n}\n",
+    )
+    .unwrap();
+
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    let why = editor.rebind("Mod+E", "Mod+B").unwrap_err();
+
+    assert!(why.contains("more.kdl"), "{why}");
+    assert!(why.contains("include"), "{why}");
+
+    let why = editor.rebind("Mod+W", "Mod+B").unwrap_err();
+
+    assert!(why.contains("/-"), "{why}");
+
+    let why = editor.rebind("Mod+Missing", "Mod+B").unwrap_err();
+
+    assert!(why.contains("no such key binding"), "{why}");
+
+    let why = editor.rebind("Mod+Q", "Mod+Return.").unwrap_err();
+
+    assert!(why.contains("not a chord Kanade writes"), "{why}");
+
+    assert_eq!(dir.text(), text);
+
+    // a config niri rejects is not rebound, and nothing is staged beside it
+    fs::write(
+        dir.config(),
+        "binds {\n    Mod+Q { spawn \"reject-me\"; }\n}\n",
+    )
+    .unwrap();
+    let why = editor.rebind("Mod+Q", "Mod+B").unwrap_err();
+
+    assert!(why.contains("niri rejects the config as it is"), "{why}");
+    assert_eq!(
+        dir.text(),
+        "binds {\n    Mod+Q { spawn \"reject-me\"; }\n}\n"
+    );
+    assert_eq!(dir.strays(), ["more.kdl"]);
+}
+
+// `Mod` is the file's `input { mod-key }`, Super when it says nothing: a new chord that another
+// bind takes once that is resolved is refused, naming the chord that has it
+#[test]
+fn a_rebind_refuses_a_chord_another_bind_takes_once_mod_is_resolved() {
+    let text = "binds {\n    Mod+Q { close-window; }\n    Super+Shift+Q { quit; }\n}\n";
+    let dir = Dir::new("rebind-collision", text);
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    // `Mod+Shift+Q` is `Super+Shift+Q` with the default mod-key, which the second bind has
+    let why = editor.rebind("Mod+Q", "Mod+Shift+Q").unwrap_err();
+
+    assert!(why.contains("Super+Shift+Q"), "{why}");
+    assert_eq!(dir.text(), text);
+
+    // Shift is not Super: no collision
+    editor.rebind("Mod+Q", "Shift+Q").unwrap();
+    assert_eq!(
+        dir.text(),
+        "binds {\n    Shift+Q { close-window; }\n    Super+Shift+Q { quit; }\n}\n"
+    );
+
+    // `Mod` and `Super` are the same chord with nothing setting mod-key, so this writes nothing
+    let said = editor.rebind("Shift+Q", "Shift+Q").unwrap();
+
+    assert!(said.contains("already"), "{said}");
+    assert_eq!(
+        dir.text(),
+        "binds {\n    Shift+Q { close-window; }\n    Super+Shift+Q { quit; }\n}\n"
+    );
+}
+
+// `input { mod-key "Alt" }` moves what `Mod` means for both the old and the new chord
+#[test]
+fn a_rebind_follows_the_files_mod_key() {
+    let text = "input {\n    mod-key \"Alt\"\n}\nbinds {\n    Mod+Q { close-window; }\n    Alt+Shift+Q { quit; }\n}\n";
+    let dir = Dir::new("rebind-mod-key", text);
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    let why = editor.rebind("Mod+Q", "Mod+Shift+Q").unwrap_err();
+
+    assert!(why.contains("Alt+Shift+Q"), "{why}");
+
+    // the old chord is found through Mod too, and only its name token changes
+    editor.rebind("Alt+Q", "Mod+Shift+W").unwrap();
+
+    assert_eq!(
+        dir.text(),
+        "input {\n    mod-key \"Alt\"\n}\nbinds {\n    Mod+Shift+W { close-window; }\n    Alt+Shift+Q { quit; }\n}\n"
+    );
+}
+
+// the key names `sources::binds` already reads as one are one here too: Return is Enter, so a
+// typed `Mod+Enter` names the `Mod+Return` bind
+#[test]
+fn a_rebind_reads_the_key_names_the_keys_surface_reads() {
+    let text = "binds {\n    Mod+Return { spawn \"kitty\"; }\n}\n";
+    let dir = Dir::new("rebind-enter", text);
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    editor.rebind("Mod+Enter", "Mod+B").unwrap();
+
+    assert_eq!(dir.text(), "binds {\n    Mod+B { spawn \"kitty\"; }\n}\n");
+}

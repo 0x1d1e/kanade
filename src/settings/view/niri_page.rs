@@ -518,6 +518,148 @@ fn number(
     )
 }
 
+// The chords the config itself writes: what each does, and a field that stages a rename of it for
+// Save. The rows come from the file, not from the layout's static list, so the ids they need are
+// interned. A bind an include owns, and a `/-` one, are not in the list: the engine refuses those.
+pub fn bindings(settings: &Settings, roles: &ThemeRoles) -> Column {
+    let niri = &settings.niri;
+    let mut items: Vec<Box<dyn Widget>> = vec![
+        Box::new(
+            Text::new("Key bindings")
+                .size(theme::text::TITLE)
+                .color(roles.on_surface)
+                .weight(theme::text::SEMIBOLD),
+        ),
+        Box::new(wrapped(
+            Text::new(
+                "The chords niri's own config binds. A new chord in a row and Enter stages a \
+                 rename; Save writes every staged one, changing only the chord, never the action, \
+                 its options or the comments around it",
+            )
+            .size(theme::text::LABEL)
+            .color(roles.on_surface_variant)
+            .weight(theme::text::MEDIUM),
+            content(),
+        )),
+    ];
+
+    if niri.bindings().is_empty() {
+        let said = if niri.loaded {
+            "niri's own config binds no keys; a bind in an included file is not renamed here"
+        } else {
+            "Reading niri's config\u{2026}"
+        };
+
+        items.push(Box::new(card_of(
+            vec![readonly(said.to_owned(), roles)],
+            roles,
+        )));
+    } else {
+        let mut card: Vec<Box<dyn Widget>> = Vec::new();
+        for bind in niri.bindings() {
+            if !card.is_empty() {
+                card.push(Box::new(hairline(inner(), roles)));
+            }
+            card.push(bind_row(bind, settings, roles));
+        }
+        items.push(Box::new(card_of(card, roles)));
+    }
+
+    Column::new(items).width(content()).gap(HEADING)
+}
+
+// one bind: its chord and what it does, and the field that stages a new chord
+fn bind_row(
+    bind: &crate::niri_config::Binding,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    const WIDE: f32 = 240.0;
+
+    let chord = bind.chord.clone();
+    let pending = settings.niri.rebind_pending(&bind.chord).map(str::to_owned);
+    let mut marks: Vec<Box<dyn Widget>> = Vec::new();
+
+    if pending.is_some() {
+        marks.push(Box::new(
+            Text::new("Not saved")
+                .size(theme::text::LABEL_SMALL)
+                .color(roles.primary)
+                .weight(theme::text::SEMIBOLD),
+        ));
+    }
+
+    let control: Box<dyn Widget> = if settings.niri.editable() {
+        let id = row_id("rebind", &chord);
+        let old = chord.clone();
+
+        show_staged(id, pending.as_deref());
+
+        Box::new(
+            Column::new(children![
+                text_field(id, WIDE, "New chord, like Mod+B", roles, move |text| {
+                    niri::rebind(old.clone(), text);
+                }),
+                Text::new("Enter stages the chord; Save writes it")
+                    .size(theme::text::LABEL_SMALL)
+                    .color(roles.on_surface_variant)
+                    .weight(theme::text::MEDIUM),
+            ])
+            .width(WIDE)
+            .gap(4.0),
+        )
+    } else {
+        readonly(String::from("Read-only here"), roles)
+    };
+
+    let label = Label {
+        node: row_id("bind", &chord),
+        hover_id: format!("niri bind {chord}"),
+        title: chord.clone(),
+        help: bind.action.clone(),
+        marks,
+        detail: pending.map(|new| format!("Save renames it to {new}")),
+        keys: None,
+        value: None,
+        off: None,
+        hint: None,
+        direct_nav: None,
+    };
+
+    labeled(label, control, true, settings, roles)
+}
+
+thread_local! {
+    // a row built from the file needs a stable id; interning it keeps a redraw from leaking another
+    static ROWS: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
+
+    // what each rebind field was last given: a staged chord is set once, so a chord typed by hand
+    // is not undone by the next draw
+    static FIELDS: RefCell<HashMap<&'static str, Option<String>>> = RefCell::new(HashMap::new());
+}
+
+// a staged chord is the field's value, not only its placeholder
+fn show_staged(id: &'static str, pending: Option<&str>) {
+    FIELDS.with_borrow_mut(|fields| {
+        let wanted = pending.map(str::to_owned);
+
+        if fields.get(id) != Some(&wanted) {
+            TextInput::set_text(id, wanted.as_deref().unwrap_or(""));
+            fields.insert(id, wanted);
+        }
+    });
+}
+
+fn row_id(kind: &str, chord: &str) -> &'static str {
+    let text = format!("niri {kind} {chord}");
+
+    ROWS.with_borrow_mut(|rows| {
+        *rows
+            .entry(text.clone())
+            .or_insert_with(|| Box::leak(text.into_boxed_str()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::mentions;

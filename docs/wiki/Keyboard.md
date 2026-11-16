@@ -19,7 +19,7 @@ Mod+Alt+P hotkey-overlay-title="Island: Session" { spawn "kanade" "session" "men
 Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island" "collapse"; }
 ```
 
-`peek down` / `peek up` and `dictate down` / `up` are for niri's press and release binds. Kanade grabs no key. Tap Super opening the Launcher stays a niri bind to `kanade launcher toggle`.
+`peek down` / `peek up` and `dictate down` / `up` are for niri's press and release binds. Kanade grabs no key. Tap Super opening the Launcher stays a niri bind to `kanade launcher toggle`. A bound chord can be renamed without touching its action: the Settings niri page's Key bindings section, or `kanade niri-config rebind` ([Settings](Settings.md), [CLI](CLI.md), [ADR 0161](../adr/0161-niri-bind-rename.md)).
 
 ## Screenshots, recording and caffeine
 

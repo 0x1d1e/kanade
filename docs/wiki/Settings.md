@@ -18,13 +18,13 @@ Sections: Layout (gaps, centering, struts), Focus ring and border (switches, wid
 
 - A row shows the value in the file. When the file does not set it, the row shows the one niri uses, with a `default` mark. Reset removes the option from the file, so niri's default applies again.
 - A change is kept in the page until you press **Save**. The row says `Not saved` and shows the value it would write. The file stays byte for byte as it was, and no backup is taken.
-- Save writes every change staged since the last Save or Discard. That is one validated change, with one backup and one Undo. The footer says what it wrote.
+- Save writes every change staged since the last Save or Discard, each validated and backed up on its own. A staged key binding rename is written after them, as its own change. The footer says what it wrote.
 - If it is refused, the reason shows in the footer. niri may reject the value, the file may have changed on disk meanwhile, or an include may own the option. Nothing on disk changes, and every change stays staged.
 - **Discard**, beside Save, drops every staged change and reads the file again. The rows then show what it holds.
 - A file that changes while changes are staged (in your editor) is read again. A staged row keeps showing what Save would write until you save or discard it.
 - The page reads the file again after each write. It also reads it when it sees the file, or any include it reads, change. So an edit in your editor shows within a second while the page is open.
 - The switches write the flags niri reads. A ring or shadow is on or off by `on`/`off` nodes and, when neither is there, niri's default. The border is the one exception: niri reads a `border { ... }` block in your own config with neither flag as on. So turning it off writes an explicit `off`, and a block with no flag shows as on. Reset on it writes `off` too.
-- Undo in the footer undoes the last change made since the window opened. It does so while the file is still as that change left it; otherwise it says why not. After Save it takes the whole batch back, since that was one change with one backup.
+- Undo in the footer undoes the last change made since the window opened. It does so while the file is still as that change left it; otherwise it says why not. After a Save of settings it takes the whole batch back, since those were one change with one backup; after a rename it takes that rename back.
 - It is not offered while changes are staged: Discard is. A second press does not go further back. `kanade niri-config backups` and `restore` reach the older bytes and the first ones Kanade saw (`orig`).
 - niri picks up the change itself within about half a second. It keeps its old config if it rejects the file.
 - The page does not wait for it. Once a Save has written, the footer says whether niri reloaded the config, rejected it, or has not yet. A change to `spawn-at-startup` or `environment` says it applies after a restart.
@@ -33,7 +33,15 @@ Sections: Layout (gaps, centering, struts), Focus ring and border (switches, wid
 
 The recommended installation rules (`blur-xray`, `screencast-banners`, `overview-backdrop`) have switches on the page too. They are not one of its options. A press writes that rule at once, as one validated change of its own, rather than waiting for Save.
 
-Not on the page: key bindings, window rules, `spawn-at-startup` and `environment` (see [Limitations](Limitations.md)).
+### Key bindings
+
+The last section lists the key bindings of niri's own config: each chord as the file writes it, what it runs beside it, and a field for a new chord. Type a chord and press Enter: the row says `Not saved` and names the chord Save will write. An empty field, or the chord it has, takes the staging back. Save renames every staged chord with the same validation and backup as an option, and Undo puts the old bytes back.
+
+Only the chord's token in the file changes. The action, its properties (`allow-when-locked`, `repeat`, `cooldown-ms`), the comments around it, the indentation and its one-line form stay byte for byte. A chord another bind already takes, once `Mod` is read through `input { mod-key }` (Super when the file sets none), is refused, and so is one KDL cannot write as a node name, an include's bind and a `/-` one; the footer says why and nothing is written. `Mod+Q` and `Super+Q` collide, `Mod+Q` and `Shift+Q` do not, and `Enter` and `Return` are different chords.
+
+An include's bind and a `/-` one are not listed at all. A Save that writes one rename and then refuses another keeps the refused one staged for a fix, and Undo takes the written one back. Adding or removing a bind, or editing its action or properties, is still a hand edit (see [Limitations](Limitations.md)). The same rename is `kanade niri-config rebind` ([CLI](CLI.md), [ADR 0161](../adr/0161-niri-bind-rename.md)).
+
+Not on the page: window rules, `spawn-at-startup` and `environment` (see [Limitations](Limitations.md)).
 
 ### Outputs
 

@@ -911,12 +911,12 @@ const MODIFIERS: &[(&[&str], &str)] = &[
 ];
 
 // a bind's keys, compared as niri does: modifiers in any order or case, the key in any case
-fn same(combination: &str) -> String {
+pub(crate) fn same(combination: &str) -> String {
     keys(combination).join("+").to_lowercase()
 }
 
 // the keycaps of a bind like `Mod+Shift+Left`: its modifiers in one order, then its key
-fn keys(combination: &str) -> Vec<String> {
+pub(crate) fn keys(combination: &str) -> Vec<String> {
     let mut parts: Vec<&str> = combination.split('+').collect();
     let key = parts.pop().unwrap_or_default();
 
@@ -936,7 +936,7 @@ fn keys(combination: &str) -> Vec<String> {
 }
 
 // `keys` with `Mod` as the modifier niri takes it for, the modifiers again in one order, each once
-fn resolved(keys: &[String], modifier: &str) -> Vec<String> {
+pub(crate) fn resolved(keys: &[String], modifier: &str) -> Vec<String> {
     let Some((key, modifiers)) = keys.split_last() else {
         return Vec::new();
     };

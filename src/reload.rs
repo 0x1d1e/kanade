@@ -25,7 +25,7 @@ use crate::atomic::{self, Mode};
 use crate::config::{self, Config, Place};
 use crate::hooks::{self, Event};
 use crate::island::service::IslandService;
-use crate::{appearance, modules, settings, sources, supervise, view};
+use crate::{appearance, dock, modules, settings, sources, supervise, view};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -159,6 +159,11 @@ pub fn reload() -> Outcome {
             // only when a module was turned on or off; a reload that changed nothing else is a no-op
             if rereads(&running, &next) {
                 modules::reread();
+            } else if next.pinned != running.pinned && modules::on("dock") {
+                // `rereads` leaves out a change only to `dock.pinned`, which the Dock's own hook
+                // publishes: after the install above, its views draw the order the config names
+                // (ADR 0160). When `rereads` runs, that hook does it already
+                dock::pin();
             }
 
             state.generation += 1;

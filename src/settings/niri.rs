@@ -655,6 +655,12 @@ struct Staged {
     changes: Vec<(&'static str, Option<String>)>,
 }
 
+// everything a Save writes: the staged settings, and the staged chord renames
+struct Flushed {
+    changes: Vec<(&'static str, Option<String>)>,
+    rebinds: Vec<(String, String)>,
+}
+
 /// What the page knows of the config, kept in the `Settings` Service.
 #[derive(Default)]
 pub struct State {
@@ -678,6 +684,16 @@ pub struct State {
 
     // the changes staged since the last Save or Discard, in the order their rows were changed
     staged: Vec<Staged>,
+
+    // the key bindings of the config itself, as the worker last read them
+    bindings: Vec<niri_config::Binding>,
+
+    // the chord renames staged since the last Save or Discard: the chord as the file writes it,
+    // and the one asked for
+    staged_rebinds: Vec<(String, String)>,
+
+    // the rebind rows a Save has posted, which its success takes out of `staged_rebinds`
+    in_flight_rebinds: Vec<(String, String)>,
 
     // what those changes would leave in the file, which the rows show in its place
     staged_values: HashMap<&'static str, Reading>,
@@ -786,7 +802,20 @@ impl State {
 
     /// Whether any row has a change waiting for Save.
     pub fn has_staged(&self) -> bool {
-        !self.staged.is_empty()
+        !self.staged.is_empty() || !self.staged_rebinds.is_empty()
+    }
+
+    /// The key bindings the page can rename, as the worker last read them.
+    pub fn bindings(&self) -> &[niri_config::Binding] {
+        &self.bindings
+    }
+
+    /// The chord a staged rebind of this one asks for, if one waits for Save.
+    pub fn rebind_pending(&self, chord: &str) -> Option<&str> {
+        self.staged_rebinds
+            .iter()
+            .find(|(old, _)| old == chord)
+            .map(|(_, new)| new.as_str())
     }
 
     /// Whether a Save waits for the worker.
@@ -900,8 +929,8 @@ impl State {
             return Some((String::from("Saving\u{2026}"), false));
         }
 
-        if !self.staged.is_empty() {
-            let count = self.staged.len();
+        if self.has_staged() {
+            let count = self.staged.len() + self.staged_rebinds.len();
             let changes = if count == 1 { "change" } else { "changes" };
 
             return Some((format!("{count} unsaved {changes}"), true));
@@ -948,6 +977,34 @@ impl State {
                 self.refused.remove(row);
             }
             None => self.undoing = true,
+        }
+    }
+
+    // a rebind is kept until Save, as a row's change is
+    pub(crate) fn stage_rebind(&mut self, old: String, new: String) {
+        self.footer = None;
+        self.reload = None;
+        self.saved = None;
+        self.generation += 1;
+
+        let at = self
+            .staged_rebinds
+            .iter()
+            .position(|(chord, _)| *chord == old);
+        let new = new.trim().to_owned();
+
+        // nothing new asked, or the chord it has: the row goes back to what the file holds
+        if new.is_empty() || new == old {
+            if let Some(at) = at {
+                self.staged_rebinds.remove(at);
+            }
+
+            return;
+        }
+
+        match at {
+            Some(at) => self.staged_rebinds[at].1 = new,
+            None => self.staged_rebinds.push((old, new)),
         }
     }
 
@@ -1012,8 +1069,8 @@ impl State {
 
     // the changes every staged row holds, for the Save that writes them as one; none if nothing is
     // staged or a Save is already on its way, and the rows say Saving... until the result comes back
-    fn flush(&mut self) -> Option<Vec<(&'static str, Option<String>)>> {
-        if self.staged.is_empty() || self.saving {
+    fn flush(&mut self) -> Option<Flushed> {
+        if !self.has_staged() || self.saving {
             return None;
         }
 
@@ -1022,19 +1079,23 @@ impl State {
         self.saved = None;
         self.saving = true;
         self.in_flight = self.staged.clone();
+        self.in_flight_rebinds = self.staged_rebinds.clone();
         self.generation += 1;
 
-        Some(
-            self.staged
+        Some(Flushed {
+            changes: self
+                .staged
                 .iter()
                 .flat_map(|staged| staged.changes.iter().cloned())
                 .collect(),
-        )
+            rebinds: self.staged_rebinds.clone(),
+        })
     }
 
     // drops every staged change, and sets the rows' inputs back to what the file holds
     pub(crate) fn discard(&mut self) {
         self.in_flight.clear();
+        self.in_flight_rebinds.clear();
         self.take_staged();
         self.footer = None;
         self.reload = None;
@@ -1047,6 +1108,7 @@ impl State {
             *self.resets.entry(staged.row).or_default() += 1;
         }
 
+        self.staged_rebinds.clear();
         self.staged_values.clear();
     }
 
@@ -1059,11 +1121,13 @@ impl State {
         self.unreadable = done.read.unreadable;
         self.bare = done.read.bare;
         self.restart = done.read.restart;
+        self.bindings = done.read.bindings;
         self.generation += 1;
 
         if done.save {
             self.saving = false;
             let flushed = std::mem::take(&mut self.in_flight);
+            let rebound = std::mem::take(&mut self.in_flight_rebinds);
 
             match done.outcome {
                 Some(Ok(said)) => {
@@ -1074,6 +1138,15 @@ impl State {
                         {
                             self.staged.remove(at);
                             *self.resets.entry(staged.row).or_default() += 1;
+                        }
+                    }
+                    for rebind in rebound {
+                        if let Some(at) = self
+                            .staged_rebinds
+                            .iter()
+                            .position(|waiting| *waiting == rebind)
+                        {
+                            self.staged_rebinds.remove(at);
                         }
                     }
                     self.restage();
@@ -1092,8 +1165,23 @@ impl State {
                         self.undo_stamp = Some(done.stamp);
                     }
                 }
-                // a Save that failed keeps every staged change, and the file is as it was
-                Some(Err(why)) => self.footer = Some(why),
+                // a Save that failed keeps every staged change, and the file is as it was, unless
+                // an earlier change of the same Save was already written. A rename that was
+                // written lost its old chord from the file's bindings, so it is no longer staged;
+                // the one that failed, and the ones after it, keep theirs and can be tried again
+                Some(Err(why)) => {
+                    self.footer = Some(why);
+
+                    let bindings = &self.bindings;
+                    self.staged_rebinds
+                        .retain(|(old, _)| bindings.iter().any(|bind| &bind.chord == old));
+
+                    if done.written {
+                        self.undoable = true;
+                        self.undo_after = done.after;
+                        self.undo_stamp = Some(done.stamp);
+                    }
+                }
                 None => {}
             }
 
@@ -1365,17 +1453,27 @@ pub fn change(row: &'static str, changes: Vec<(&'static str, Option<String>)>) {
     Settings::write().niri.stage(row, changes);
 }
 
-/// Writes every staged change as one change: one validation, one backup, one Undo.
+/// Stages a rename of one key binding's chord: nothing is written, and no backup is taken, until
+/// `save`. An empty chord, or the one it has, takes the staging back. From a rebind row's Enter.
+pub fn rebind(old: String, new: String) {
+    Settings::write().niri.stage_rebind(old, new);
+}
+
+/// Writes every staged change, then every staged chord rename, through the engine: each write is
+/// validated and backed up on its own, and the footer's Undo is the last one.
 pub fn save() {
-    let changes = {
+    let flush = {
         let mut settings = Settings::write();
         settings.niri.flush()
     };
-    let Some(changes) = changes else {
+    let Some(flush) = flush else {
         return;
     };
 
-    post(Job::Save { changes });
+    post(Job::Save {
+        changes: flush.changes,
+        rebinds: flush.rebinds,
+    });
 }
 
 /// Drops every staged change and reads the file again, so the rows show what it holds.
@@ -1416,6 +1514,7 @@ enum Job {
     Read,
     Save {
         changes: Vec<(&'static str, Option<String>)>,
+        rebinds: Vec<(String, String)>,
     },
     ApplyRule {
         id: &'static str,
@@ -1449,6 +1548,9 @@ struct Read {
 
     // the options a bare block in the config itself turns on
     bare: HashSet<&'static str>,
+
+    // the key bindings the config itself writes, which the page can rename
+    bindings: Vec<niri_config::Binding>,
 }
 
 // a job's result
@@ -1744,13 +1846,39 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
     let before = Stamp::of(&file);
     let outcome = match &job {
         Job::Read => None,
-        Job::Save { changes } => {
-            let changes: Vec<(&str, Option<&str>)> = changes
+        Job::Save { changes, rebinds } => {
+            let wanted: Vec<(&str, Option<&str>)> = changes
                 .iter()
                 .map(|(path, value)| (*path, value.as_deref()))
                 .collect();
+            let mut said = Vec::new();
+            let mut failed = None;
 
-            Some(editor.apply(&changes))
+            if !wanted.is_empty() {
+                match editor.apply(&wanted) {
+                    Ok(say) => said.push(say),
+                    Err(why) => failed = Some(why),
+                }
+            }
+
+            if failed.is_none() {
+                for (old, new) in rebinds {
+                    match editor.rebind(old, new) {
+                        Ok(say) => said.push(say),
+                        Err(why) => {
+                            failed = Some(why);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            Some(match failed {
+                // a failure after an earlier change of the same Save was written says both
+                Some(why) if said.is_empty() => Err(why),
+                Some(why) => Err(format!("{}; {why}", said.join("; "))),
+                None => Ok(said.join("; ")),
+            })
         }
         Job::ApplyRule { id } => Some(editor.apply_rule(id)),
         Job::RemoveRule { id } => Some(editor.remove_rule(id)),
@@ -1839,6 +1967,7 @@ fn read_all(editor: &Editor) -> Read {
     }
 
     read.rules = editor.rules().unwrap_or_default();
+    read.bindings = editor.bindings().unwrap_or_default();
 
     read
 }
@@ -2443,25 +2572,35 @@ mod tests {
             }
         }
         state.rules = editor.rules().unwrap_or_default();
+        state.bindings = editor.bindings().unwrap_or_default();
 
         state
     }
 
     // the worker's side of a Save: what `flush` posted, applied and read back
     fn save(state: &mut State, editor: &Editor) {
-        let changes = state.flush().unwrap();
-        let changes: Vec<(&str, Option<&str>)> = changes
+        let Flushed { changes, rebinds } = state.flush().unwrap();
+        let wanted: Vec<(&str, Option<&str>)> = changes
             .iter()
             .map(|(path, value)| (*path, value.as_deref()))
             .collect();
-        let said = editor.apply(&changes).unwrap();
+        let mut said = Vec::new();
+
+        if !wanted.is_empty() {
+            said.push(editor.apply(&wanted).unwrap());
+        }
+
+        for (old, new) in rebinds {
+            said.push(editor.rebind(&old, &new).unwrap());
+        }
+
         let stamp = Stamp::of(&editor.file);
 
         state.done(Done {
             row: None,
             undo: false,
             save: true,
-            outcome: Some(Ok(said)),
+            outcome: Some(Ok(said.join("; "))),
             written: true,
             after: editor.last_change_hash().ok(),
             stamp,
@@ -2656,6 +2795,7 @@ mod tests {
         );
 
         let changes: Vec<(&str, Option<&str>)> = posted
+            .changes
             .iter()
             .map(|(path, value)| (*path, value.as_deref()))
             .collect();
@@ -2714,6 +2854,7 @@ mod tests {
         assert!(state.shown(item("layout.gaps").unwrap()).pending);
 
         let changes: Vec<(&str, Option<&str>)> = posted
+            .changes
             .iter()
             .map(|(path, value)| (*path, value.as_deref()))
             .collect();
@@ -2780,7 +2921,7 @@ mod tests {
         );
         assert!(!state.has_staged());
         assert!(!state.shown(item("layout.gaps").unwrap()).pending);
-        assert_eq!(state.flush(), None);
+        assert!(state.flush().is_none());
         assert_eq!(state.status(), None);
     }
 
@@ -2805,7 +2946,7 @@ mod tests {
             state.shown(item("layout.gaps").unwrap()).current,
             Current::Number(32.0)
         );
-        assert_eq!(state.flush().unwrap().len(), 1);
+        assert_eq!(state.flush().unwrap().changes.len(), 1);
     }
 
     // closing the window does not keep a change it never wrote
@@ -2837,5 +2978,96 @@ mod tests {
         assert_eq!(format_number(-0.04, 1), "0");
         assert_eq!(format_number(-0.5, 1), "-0.5");
         assert_eq!(format_number(0.75, 2), "0.75");
+    }
+
+    // the page's own rebind: staged like a row, written by Save, given back by Undo
+    #[test]
+    fn a_staged_rebind_is_written_as_one_rename_and_undo_restores_the_file() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new("binds {\n    Mod+Return { spawn \"kitty\"; }\n}\n");
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let before = fs::read(&file).unwrap();
+        let mut state = loaded_state(&editor);
+
+        let chords: Vec<&str> = state
+            .bindings()
+            .iter()
+            .map(|bind| bind.chord.as_str())
+            .collect();
+        assert_eq!(chords, ["Mod+Return"]);
+
+        state.stage_rebind(String::from("Mod+Return"), String::from("Mod+B"));
+        assert_eq!(state.rebind_pending("Mod+Return"), Some("Mod+B"));
+        assert!(state.has_staged(), "nothing is written before Save");
+        assert_eq!(fs::read(&file).unwrap(), before);
+
+        // typing the chord it has takes the staging back
+        state.stage_rebind(String::from("Mod+Return"), String::from("Mod+Return"));
+        assert!(!state.has_staged());
+        state.stage_rebind(String::from("Mod+Return"), String::from("Mod+B"));
+
+        save(&mut state, &editor);
+        assert!(!state.has_staged(), "a written rename is no longer staged");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "binds {\n    Mod+B { spawn \"kitty\"; }\n}\n"
+        );
+
+        editor.undo_only(None).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), before, "byte for byte");
+    }
+
+    // a Save writes its renames in turn: the ones it wrote are no longer staged, the one it
+    // refused is, so a second Save does not rename a chord that is already gone
+    #[test]
+    fn a_failed_save_keeps_only_the_rebinds_it_did_not_write() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new(
+            "binds {\n    Mod+Return { spawn \"kitty\"; }\n    Mod+Q { close-window; }\n}\n",
+        );
+        let editor = dir.editor(&ok);
+        let file = dir.0.join("config.kdl");
+        let before = fs::read(&file).unwrap();
+        let mut state = loaded_state(&editor);
+
+        state.stage_rebind(String::from("Mod+Return"), String::from("Mod+B"));
+        state.stage_rebind(String::from("Mod+Q"), String::from("Mod+B"));
+
+        let Flushed { rebinds, .. } = state.flush().unwrap();
+        assert_eq!(rebinds.len(), 2);
+
+        // the worker writes the first, then refuses the second, which the file now binds
+        let said = editor.rebind(&rebinds[0].0, &rebinds[0].1).unwrap();
+        let why = editor.rebind(&rebinds[1].0, &rebinds[1].1).unwrap_err();
+        assert!(why.contains("Mod+B"), "{why}");
+        let stamp = Stamp::of(&file);
+
+        state.done(Done {
+            row: None,
+            undo: false,
+            save: true,
+            outcome: Some(Err(format!("{said}; {why}"))),
+            written: true,
+            after: editor.last_change_hash().ok(),
+            stamp,
+            read: read_all(&editor),
+        });
+
+        assert_eq!(
+            state.staged_rebinds,
+            [(String::from("Mod+Q"), String::from("Mod+B"))],
+            "the written rename is gone, the refused one waits to be fixed"
+        );
+        assert!(state.footer.is_some());
+        assert!(state.undoable, "the written rename can be undone");
+
+        // and Undo takes that written rename back, leaving the refused one staged
+        editor.undo_only(state.undo_after.as_deref()).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), before);
+        assert_eq!(
+            state.staged_rebinds,
+            [(String::from("Mod+Q"), String::from("Mod+B"))]
+        );
     }
 }

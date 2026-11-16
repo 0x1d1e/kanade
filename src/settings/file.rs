@@ -52,6 +52,17 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<(), String> {
     set_pinned_in(&file, &below, id, pinned).map_err(|refusal| refusal.why)
 }
 
+// `dock.pinned` in the order a drag left it, one write; the same list leaves the file as it is
+pub fn set_pinned_order(ids: Vec<String>) -> Result<(), String> {
+    let file = config::settings_file()
+        .ok_or_else(|| String::from("no home directory to keep settings in"))?;
+    let (below, _) = config::layers(false);
+
+    set_pinned_order_in(&file, &below, ids)
+        .map(drop)
+        .map_err(|refusal| refusal.why)
+}
+
 // why a write was refused; `stale` if the file holds other than the write expected, which no retry mends
 pub struct Refusal {
     pub why: String,
@@ -122,6 +133,17 @@ fn set_pinned_in(file: &Path, below: &Config, id: &str, pinned: bool) -> Result<
         )],
     )
     .map(drop)
+}
+
+fn set_pinned_order_in(
+    file: &Path,
+    below: &Config,
+    ids: Vec<String>,
+) -> Result<Vec<Replaced>, Refusal> {
+    let path = vec![String::from("dock"), String::from("pinned")];
+    let value = Value::Array(ids.into_iter().map(Value::String).collect());
+
+    set_in(file, below, vec![(path, Some(value))], &[])
 }
 
 fn read(file: &Path) -> Result<String, Refusal> {
@@ -699,6 +721,45 @@ mod tests {
         let table = config::settings_table(&fs::read_to_string(&file).unwrap()).unwrap();
         assert!(config::apply_table(&mut current, &table).is_empty());
         assert_eq!(current.pinned, ["two.desktop", "three.desktop"]);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // a drag's order is one write of `dock.pinned` alone; writing the order the file holds changes
+    // nothing
+    #[test]
+    fn a_pinned_order_is_one_write_of_that_key() {
+        let dir = std::env::temp_dir().join(format!("kanade-drag-{}", std::process::id()));
+        let file = dir.join("settings.toml");
+        let below = Config::default();
+        let ids = |list: &[&str]| list.iter().map(|id| (*id).to_owned()).collect();
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &file,
+            "clock = \"12h\"\n[dock]\npinned = [\"one.desktop\", \"two.desktop\"]\n",
+        )
+        .unwrap();
+
+        let replaced = set_pinned_order_in(&file, &below, ids(&["two.desktop", "one.desktop"]))
+            .unwrap_or_else(|refusal| panic!("{}", refusal.why));
+        assert_eq!(
+            replaced[0].was,
+            Some(body("pinned = [\"one.desktop\", \"two.desktop\"]")["pinned"].clone())
+        );
+        assert_ne!(replaced[0].was, replaced[0].now);
+
+        let text = fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            body(&text)["dock"]["pinned"],
+            body("pinned = [\"two.desktop\", \"one.desktop\"]")["pinned"]
+        );
+        assert_eq!(body(&text)["clock"], Value::String(String::from("12h")));
+
+        // the same order again writes nothing, and the write still says what it held
+        let replaced = set_pinned_order_in(&file, &below, ids(&["two.desktop", "one.desktop"]))
+            .unwrap_or_else(|refusal| panic!("{}", refusal.why));
+        assert_eq!(replaced[0].was, replaced[0].now);
 
         fs::remove_dir_all(dir).unwrap();
     }

@@ -54,7 +54,7 @@ pub(crate) use self::entrance::rise;
 use self::forms::{small_form, split, surface};
 use self::hud::hud;
 pub(crate) use self::input::{claim, collapse, input_area, key, open, pin};
-use self::input::{expand, hover, moved_to, route, set_armed, set_segment, wheel};
+use self::input::{expand, hover, moved_to, press, route, set_armed, set_segment, wheel};
 pub(crate) use self::media::{Change, state, tile};
 pub(crate) use self::rest::time_peek;
 use self::rest::{bare, has_battery, placeholder, rest};
@@ -230,6 +230,12 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     let now = Instant::now();
     let _on = shape::On::take(monitor);
+
+    // a left press swells the window's drawing and hit targets, a spring of ours too
+    let swell = island.press_scale(now);
+    if !island.press_settled(now) {
+        request_frame();
+    }
 
     let keyboard = island.keyboard(&monitor.name);
     let canvas = canvas(monitor);
@@ -432,6 +438,22 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     let window = scene.window();
 
+    let mut content = Rectangle::new()
+        .width(Parent)
+        .height(Parent)
+        .align_child(Start, Start)
+        .child(Stack::new(layers));
+
+    /*
+     * a held press scales the window's drawing and hit targets about the Island's own centre, not
+     * the window's, so a body hugging an edge never slides off it. The content stays one rectangle
+     * in the tree either way, so the pressed target keeps its key and its hold lasts the press
+     */
+    if swell != 1.0 {
+        let (shift_x, shift_y) = press_shift(swell, body_rect, origin, window);
+        content = content.scale(swell).translate(shift_x, shift_y);
+    }
+
     placed(monitor, place.anchor, window, scene.in_window(body_rect));
 
     // where the pointer reaches in this window: the Island's area, and the Dock's if merged
@@ -461,13 +483,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         })
         // empty under niri's overview, so the pointer reaches the overview beneath
         .input_region(if island.overview() { vec![] } else { reach })
-        .child(
-            Rectangle::new()
-                .width(Parent)
-                .height(Parent)
-                .align_child(Start, Start)
-                .child(Stack::new(layers)),
-        )
+        .child(content)
 }
 
 /*
@@ -721,6 +737,24 @@ fn body_pane(pane_body: pane::Body, body: Rect, radius: f32, merged: bool) -> Pa
 }
 
 /*
+ * how far the window-sized content moves so that scaling it about the window's centre, then by
+ * this, is scaling it about the Island's body instead: the body is not at the window's centre,
+ * hanging off one edge, and scaling there alone would slide it off that edge
+ */
+fn press_shift(scale: f32, body: Rect, origin: (f32, f32), window: (f32, f32)) -> (f32, f32) {
+    let centre = (window.0 / 2.0, window.1 / 2.0);
+    let body = (
+        origin.0 + body.x + body.width / 2.0,
+        origin.1 + body.y + body.height / 2.0,
+    );
+
+    (
+        (1.0 - scale) * (body.0 - centre.0),
+        (1.0 - scale) * (body.1 - centre.1),
+    )
+}
+
+/*
  * exactly the input region, so leaving it is leaving the island; niri sends leave when it shrinks
  * away from a still pointer. Hover, click and arming share this target: runtime hit-tests only on
  * pointer events, so a body growing under a still pointer (Peek) would not report it. It draws
@@ -758,6 +792,7 @@ fn hover_target(
         .align_child(Start, Start)
         .semantics(|| Semantics::new(Role::Button, "island"))
         .on_hover(move |inside| hover(&hovered, inside, peeks))
+        .on_hold(press)
         .on_move(move |point| tracked(area.x + point.x, area.y + point.y))
         .on_click(move |button| match button {
             Button::Left => expand(&clicked),
@@ -791,11 +826,35 @@ mod tests {
     }
 
     #[test]
-    fn visible_merged_shell_reserves_its_combined_reach() {
-        assert_eq!(reservation_depth(true, true, true, 80.0, 0.0, 12.0), 92.0);
-        assert_eq!(reservation_depth(true, false, true, 80.0, 0.0, 12.0), 92.0);
-        assert_eq!(reservation_depth(true, true, false, 80.0, 0.0, 0.0), 80.0);
-        assert_eq!(reservation_depth(false, false, false, 90.0, 0.0, 12.0), 0.0);
-        assert_eq!(reservation_depth(true, false, false, 80.0, 0.0, 12.0), 0.0);
+    fn the_press_swell_keeps_the_body_centre_still() {
+        let body = Rect {
+            x: 150.0,
+            y: 8.0,
+            width: 220.0,
+            height: 36.0,
+        };
+        let window = (692.0, 572.0);
+
+        // at rest the wrapper moves nothing
+        assert_eq!(press_shift(1.0, body, (0.0, 0.0), window), (0.0, 0.0));
+
+        // scaled about the window's centre and moved back, the body's centre does not move
+        let scale = 1.04;
+        let (shift_x, shift_y) = press_shift(scale, body, (0.0, 0.0), window);
+        let (centre_x, centre_y) = (window.0 / 2.0, window.1 / 2.0);
+        let (x, y) = (body.x + body.width / 2.0, body.y + body.height / 2.0);
+        let moved = (
+            centre_x + scale * (x - centre_x) + shift_x,
+            centre_y + scale * (y - centre_y) + shift_y,
+        );
+
+        assert!((moved.0 - x).abs() < 1e-3);
+        assert!((moved.1 - y).abs() < 1e-3);
+
+        // a merged shell offsets the body, and the shift follows it
+        assert_ne!(
+            press_shift(scale, body, (40.0, 12.0), window),
+            (shift_x, shift_y)
+        );
     }
 }

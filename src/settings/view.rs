@@ -265,6 +265,11 @@ fn page_body(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Co
         )));
     }
 
+    // the binds are a list the file gives, not the layout's static rows, so the page adds them
+    if page.name == niri::PAGE {
+        items.push(Box::new(niri_page::bindings(settings, roles)));
+    }
+
     items.push(Box::new(space(PAD)));
 
     Column::new(items).width(content()).gap(SECTIONS)

@@ -207,6 +207,8 @@ niri-config get <path>
 niri-config set <path> <value>
 niri-config remove <path>
 niri-config get|set|remove 'output[\"<name>\"].<key>'
+niri-config bindings
+niri-config rebind <old> <new>
 niri-config restore <n>|orig
 niri-config rules
 niri-config rules apply|remove <id>
@@ -216,10 +218,13 @@ niri-config rules apply|remove <id>
     mode, variable-refresh-rate), the name in double quotes (\\\" and \\\\ inside); position and
     variable-refresh-rate take properties, `x=1 y=2`, `on-demand=true`, or nothing for the bare node;
     `remove output[\"<name>\"]` removes the keys above and the block if nothing else is in it
+  bindings: the key bindings of the config itself Kanade may rename, one chord and its action a line
+  rebind: rename a bind's chord, keeping its action and properties; refuses a chord an include sets,
+    one a `/-` turns off, and one another bind already takes once Mod is resolved (`input { mod-key }`)
   rules: list recommended layer rules (blur-xray, screencast-banners, overview-backdrop) and status
   rules apply|remove <id>: apply or remove a recommended layer rule by its id
   --config <file>: right after niri-config, another file than niri's own (NIRI_CONFIG is read too)
-  set, remove: splice the one node into the file, ask `niri validate` first, keep a backup
+  set, remove, rebind: splice the one node into the file, ask `niri validate` first, keep a backup
   undo: puts back the last change while the file is as it left it
   restore: <n> from `backups`, 1 the newest, or orig, the first bytes Kanade saw",
     ),
@@ -685,6 +690,57 @@ fn keyed(said: Result<String, String>) -> ExitCode {
     }
 }
 
+// what `niri-config` is asked once its words are known; none is no form of it
+enum Wanted<'a> {
+    Validate,
+    Get(&'a str),
+    Set(&'a str, &'a str),
+    Remove(&'a str),
+    Bindings,
+    Rebind(&'a str, &'a str),
+    Undo,
+    Backups,
+    Restore(&'a str),
+    Rules,
+    RuleApply(&'a str),
+    RuleRemove(&'a str),
+}
+
+impl Wanted<'_> {
+    // whether it reads or writes the state directory the backup ring lives in
+    fn needs_state(&self) -> bool {
+        match self {
+            Wanted::Validate | Wanted::Get(_) | Wanted::Bindings | Wanted::Rules => false,
+            Wanted::Set(..)
+            | Wanted::Remove(_)
+            | Wanted::Rebind(..)
+            | Wanted::Undo
+            | Wanted::Backups
+            | Wanted::Restore(_)
+            | Wanted::RuleApply(_)
+            | Wanted::RuleRemove(_) => true,
+        }
+    }
+}
+
+fn niri_wanted<'a>(words: &[&'a str]) -> Option<Wanted<'a>> {
+    Some(match words {
+        ["validate"] => Wanted::Validate,
+        ["get", path] => Wanted::Get(path),
+        ["set", path, value] => Wanted::Set(path, value),
+        ["remove", path] => Wanted::Remove(path),
+        ["bindings"] => Wanted::Bindings,
+        ["rebind", old, new] => Wanted::Rebind(old, new),
+        ["undo"] => Wanted::Undo,
+        ["backups"] => Wanted::Backups,
+        ["restore", which] => Wanted::Restore(which),
+        ["rules"] => Wanted::Rules,
+        ["rules", "apply", id] => Wanted::RuleApply(id),
+        ["rules", "remove", id] => Wanted::RuleRemove(id),
+        _ => return None,
+    })
+}
+
 // `niri-config`: niri's own config file, changed in this process like `config`; 2 for words that
 // are no form of it
 fn niri_config(words: &[&str]) -> ExitCode {
@@ -703,37 +759,43 @@ fn niri_config(words: &[&str]) -> ExitCode {
         validate: &crate::niri_config::niri_validate,
         now_ms: crate::niri_config::now_ms,
     };
-
-    let writes = matches!(
-        words,
-        ["set", ..]
-            | ["remove", ..]
-            | ["undo"]
-            | ["restore", ..]
-            | ["backups"]
-            | ["rules", "apply", ..]
-            | ["rules", "remove", ..]
-    );
-
-    if writes && let Err(why) = state {
-        return keyed(Err(why));
-    }
-
-    let said = match words {
-        ["validate"] => editor.check(),
-        ["get", path] => editor.get(path),
-        ["set", path, value] => editor.set(path, value),
-        ["remove", path] => editor.remove(path),
-        ["undo"] => editor.undo(),
-        ["backups"] => Ok(editor.backups()),
-        ["restore", which] => editor.restore(which),
-        ["rules"] => print_rules(&editor),
-        ["rules", "apply", id] => editor.apply_rule(id),
-        ["rules", "remove", id] => editor.remove_rule(id),
-        _ => {
+    let wanted = match niri_wanted(words) {
+        Some(wanted) => wanted,
+        None => {
             complain(&mistake(&["niri-config"], Style::of(&io::stderr())));
             return ExitCode::from(2);
         }
+    };
+
+    if wanted.needs_state()
+        && let Err(why) = state
+    {
+        return keyed(Err(why));
+    }
+
+    let said = match wanted {
+        Wanted::Validate => editor.check(),
+        Wanted::Get(path) => editor.get(path),
+        Wanted::Set(path, value) => editor.set(path, value),
+        Wanted::Remove(path) => editor.remove(path),
+        Wanted::Bindings => editor.bindings().map(|binds| {
+            if binds.is_empty() {
+                format!("no key bindings in {}", editor.file.display())
+            } else {
+                binds
+                    .iter()
+                    .map(|bind| format!("{}\t{}", bind.chord, bind.action))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }),
+        Wanted::Rebind(old, new) => editor.rebind(old, new),
+        Wanted::Undo => editor.undo(),
+        Wanted::Backups => Ok(editor.backups()),
+        Wanted::Restore(which) => editor.restore(which),
+        Wanted::Rules => print_rules(&editor),
+        Wanted::RuleApply(id) => editor.apply_rule(id),
+        Wanted::RuleRemove(id) => editor.remove_rule(id),
     };
 
     keyed(said.map(|said| format!("{said}\n")))
@@ -1445,5 +1507,31 @@ mod tests {
                  still have done it"
             )))
         );
+    }
+
+    // `niri-config bindings` and `rebind`, and no form of either missing or with a word too many
+    #[test]
+    fn niri_config_bindings_and_rebind_have_their_words() {
+        assert!(matches!(niri_wanted(&["bindings"]), Some(Wanted::Bindings)));
+        assert!(matches!(
+            niri_wanted(&["rebind", "Mod+Return", "Mod+B"]),
+            Some(Wanted::Rebind("Mod+Return", "Mod+B"))
+        ));
+
+        assert!(niri_wanted(&["bindings", "Mod+B"]).is_none());
+        assert!(niri_wanted(&["rebind"]).is_none());
+        assert!(niri_wanted(&["rebind", "Mod+Return"]).is_none());
+        assert!(niri_wanted(&["rebind", "Mod+Return", "Mod+B", "Mod+C"]).is_none());
+
+        // the usage lists both, which is what `kanade help niri-config` prints
+        let usage = commands()
+            .into_iter()
+            .find(|command| command.name == "niri-config")
+            .expect("niri-config is in the commands")
+            .usage
+            .join("\n");
+
+        assert!(usage.contains("niri-config bindings"), "{usage}");
+        assert!(usage.contains("niri-config rebind <old> <new>"), "{usage}");
     }
 }
