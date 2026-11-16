@@ -48,11 +48,11 @@ align = "center"
 [appearance]
 # selects light or dark for Settings and apps; the Island, Dock and Banners follow the finish. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets
 tone = "dark"
-# what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: "tinted-solid", dark with light text, "paper", light with dark ink, or "blur", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is "light" (needs niri 26.04)
+# what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: "tinted-solid", dark with light text, "paper", light with dark ink, or "blur", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is "light". Blur needs niri 26.04 with ext_background_effect, or Umbriel with the blur-kanade layer rule; without either it draws the opaque tinted solid
 finish = "tinted-solid"
 # sets the desktop color preference and paired GTK theme; writes the wallpaper colors for GTK, qt5ct/qt6ct, KDE apps, niri, kitty and Pywalfox. Kvantum gives way to Darkly or Fusion; GTK and Qt apps need restart. Other apps are unchanged
 sync = false
-# follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; turning it on takes a restart
+# follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; the desktop is followed live while the shell runs, and turning this on or off applies at the next reload, which Settings makes, without a restart
 accessibility = true
 # how the Island and Dock settle: "bouncy" like macOS, "smooth" with no overshoot, "snappy", or "playful"
 motion = "bouncy"
@@ -422,7 +422,7 @@ The keys, grouped by what they affect. The block above gives each key's default.
 - `animation.speed`: scales transition durations from 25% (slower) to 400% (faster); 100% leaves them unchanged. Hover, leave, OSD and countdown durations are not scaled.
 - `appearance.accessibility`: follows what the desktop's settings portal (`org.freedesktop.portal.Settings`, namespace `org.freedesktop.appearance`) says. `reduced-motion` = 1 acts as `reduced_motion = true`; `contrast` = 1 turns `blur` into the solid finish of `appearance.tone` (`paper` for light, `tinted-solid` for dark), since a translucent pane cannot promise its ink's contrast, and leaves the two solid finishes as they are.
   - Precedence for motion, highest first: `KANADE_REDUCED_MOTION`, `reduced_motion = true`, the portal, off. A file's `reduced_motion = false` does not override a desktop that asks; set `appearance.accessibility = false` for that.
-  - Nothing is written to your files, Settings shows the values your files give, and a change in the desktop applies live. Kanade follows the portal only if this is on at start, so turning it on takes a restart; turning it off applies at the next reload, and without a portal nothing changes. See [ADR 0080](../adr/0080-desktop-accessibility-from-the-settings-portal.md).
+  - Nothing is written to your files, Settings shows the values your files give, and a change in the desktop applies live: the portal is followed for as long as the shell runs. Turning this on or off applies at the next config reload without restarting the shell (Settings makes one), and without a portal nothing changes. See [ADR 0080](../adr/0080-desktop-accessibility-from-the-settings-portal.md).
 - `osd.layout`: a switch between two or more keyboard layouts in niri shows as an OSD: a lamp with the layout's short label, like `US`, read from XKB's `evdev.lst` (else the name's first letters), and its full name, like `English (US)`. Starting Kanade or changing niri's layouts in its config shows nothing. A touchpad niri toggles (`TouchpadToggled`) shows as an OSD too, on or off; the hardware switch does not.
 
 ### Shell layout
@@ -588,7 +588,6 @@ The keys, grouped by what they affect. The block above gives each key's default.
   - `weather-surface`: the weather now and the next days; requires `weather`.
   - `wallpaper-surface`: the wallpaper folder as a grid of pictures, one pressed to set it; requires `wallpaper`.
   - `timer-surface`: tiles to start a countdown or a pomodoro, then its time left with Pause or Resume, Skip and Cancel; requires `timer`.
-  - `usage`: Claude's plan usage as two rings on the island, off unless turned on; `kanade usage` refreshes and `kanade usage key` reads the API key from stdin, hidden, into `$XDG_STATE_HOME/kanade/usage-key` at 0600; see [ADR 0145](../adr/0145-usage-rings-on-the-island.md).
   - `capture-surface`: tiles for a screenshot of an area, a window or the screen, and the screen recording with Stop while it runs; requires `capture`.
   - `screen-time`: today's focused time per app, off unless turned on; `screen-time.limit` is minutes before one notice that day, 0 for none, and `screen-time.titles` keeps window titles in the private file, off so only the app id is kept.
   - `emoji-surface`: every emoji as a grid with the ones used lately above it, pressed to copy; needs `wl-copy`.
@@ -634,9 +633,3 @@ How the Island moves in Compact, and what reduced motion leaves of it.
 
 - Horizontal Compact fits its content up to 220 px, reserving room for privacy dots; a long title elides. Closing has a shallow waist and a quiet settle within one content fade. Opening keeps the selected motion's bounce.
 - Reduced motion uses a single brief fade with no geometry overshoot or content scale. Passive Activity bars ease between readings; Surface sliders follow input directly. Shell corners and shadows follow the current outline continuously, including interrupted transitions and changes of edge.
-
-### Usage rings
-
-The `usage` Module draws Claude plan utilization as rings on the Island.
-
-With it on, the Island shows separate five-hour and seven-day utilization rings in Compact and Peek, and concentric rings on its Satellite. `N/A` means that window was unavailable; 0% is an available empty window. Limit and fetch-error notices show their message on the Island. Usage has no Surface.

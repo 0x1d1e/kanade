@@ -36,6 +36,11 @@ Runtime work, done when wanted.
       `done`'s preedit, commit and surrounding deletion are applied together, the preedit drawn
       inline. Not done: `input_method` (Kanade being an input method), a scrolling field's caret,
       and a check against a live fcitx5 or ibus.
+- [x] Text shaping: each bidi run is itemized by fallback face and shaped with rustybuzz, then
+      reordered with unicode-bidi and wrapped at UAX #14 opportunities (unicode-linebreak) on
+      grapheme boundaries; shaped runs and lines are cached (ADR 0155). CJK wraps without spaces,
+      and Arabic and Indic take their contextual forms. Not done: vertical writing, and a caret
+      placed by bidi run order in a mixed-direction text input.
 - [x] UI scale: `appearance.scale` is one multiplier at the runtime's scale seam (ADR 0091), virtual space
       in, compositor pixels out. Not done: a scale per window or output, resizing an open normal window.
 - [x] Per-corner radius as a type (`Corners`, `graphics/geometry.rs`), used by the gpu clip and

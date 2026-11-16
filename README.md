@@ -77,7 +77,7 @@ Kanade also covers the desktop around the Island:
 ## Integrations and scripting
 
 - **`kanade <verb>` CLI**: an IPC client for every Surface, switch and session action, usable from shell scripts and niri keybindings.
-- **`kanade activity`**: external processes post their own Live Activities to the Island, for long compiles, downloads or AI agent sessions such as Claude Code hooks, with action buttons on Peek.
+- **`kanade activity`**: external processes post their own Live Activities to the Island, for long compiles, downloads or scripted work, with action buttons on Peek.
 - **`kanade ui`**: inspect the shell's semantic control tree by name, then press or type on it without screen coordinates.
 - **`kanade doctor`**: verify the runtime environment, GPU render nodes, audio helpers, video encoders, notification bus state and required niri layer rules.
 
@@ -168,7 +168,6 @@ Kanade runs without these packages, but individual features require them:
 | [Settings](docs/wiki/Settings.md) | Built-in graphical settings editor and niri/Umbriel configuration support. |
 | [Keyboard](docs/wiki/Keyboard.md) | Keyboard shortcuts for every Surface and recommended niri keybindings. |
 | [Limitations](docs/wiki/Limitations.md) | Documented design boundaries, trade-offs, and known gaps. |
-| [Agent hooks](docs/wiki/Agent-hooks.md) | Recipe for connecting Claude Code sessions as Live Activities. |
 | [Dictation](docs/wiki/Dictation.md) | Voice dictation setup with the Gemini API and privacy disclosures. |
 | [Google Calendar](docs/wiki/Google-Calendar.md) | OAuth client creation and synchronization setup. |
 | [SDDM](docs/wiki/SDDM.md) | Matching SDDM login theme generation via `kanade sddm`. |

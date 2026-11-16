@@ -1,6 +1,6 @@
 # 57. Blur, a fourth finish, by the compositor
 
-Status: accepted; its "Kanade never edits niri's config" is superseded by [ADR 0119](0119-kanade-edits-nieris-config-on-request.md) for an explicit editor. Amends ADR 0049 (`ext-background-effect` comes back, for this finish only, as the compositor's own blur, with no capture), ADR 0051 (a fourth `Finish`) and ADR 0052 (its "no blur" stands for Liquid Glass; this finish is the blur). The tinted solid stays the default (ADR 0050).
+Status: accepted; its "Kanade never edits niri's config" is superseded by [ADR 0119](0119-kanade-edits-nieris-config-on-request.md) for an explicit editor, and amended by [ADR 0153](0153-blur-translucency-without-the-protocol.md), which separates translucency from the protocol's region request. Amends ADR 0049 (`ext-background-effect` comes back, for this finish only, as the compositor's own blur, with no capture), ADR 0051 (a fourth `Finish`) and ADR 0052 (its "no blur" stands for Liquid Glass; this finish is the blur). The tinted solid stays the default (ADR 0050).
 
 ## Context
 

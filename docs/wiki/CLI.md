@@ -123,13 +123,11 @@ The first row lists every Surface and opens one; the two rows under it swap `ope
 | `volume up [<step>]\|down [<step>]\|set <percent>\|mute [toggle\|on\|off]\|mic-mute [toggle\|on\|off]\|status` | sets speaker volume (1-100 or stepped by `<step>`, default 5), toggles or sets speaker mute, toggles or sets microphone mute, or queries status (`speaker: X% [muted\|unmuted]\nmicrophone: Y% [muted\|unmuted]`); triggers visual feedback on the Island when at Rest, suppressed over open surfaces or active banners. Part of the `audio` Module |
 | `battery limit on\|off\|status` | asks UPower (1.90 or later) to stop charging the battery short of full, at the threshold UPower or the firmware sets, or to charge it full again; returns once UPower answered, printing the state or why it refused. `status` says whether it is on and where charging stops, or why it is unavailable |
 
-## Media and usage
+## Media
 
 | Verb | Does |
 |---|---|
 | `media play-pause\|next\|previous` | asks the player the island follows, the one playing or else the one shown last, to play or pause, or to skip; refused when none is open or it says it cannot |
-| `usage` | refreshes Claude plan utilization when the `usage` Module is enabled. The Island shows five-hour and seven-day rings; a missing window says `N/A`, and limit or fetch-error notices show their message. It opens no Surface |
-| `usage key` | reads the API key from stdin, hidden at a terminal, and stores it at `$XDG_STATE_HOME/kanade/usage-key` with mode 0600; run in the terminal, never sent through shell IPC |
 
 ## Wallpaper
 
@@ -168,8 +166,6 @@ The first row lists every Surface and opens one; the two rows under it swap `ope
 | `activity pressed <id>` | takes the oldest press waiting, prints its key and exits 0; exits 1 with no output when there is none. At most 4 wait, the oldest dropped. A pressed button shows `...` until your next `detail`, `progress`, `end`, `fail` or `actions` for the id, or 10 s |
 | `activity wait <id> [--timeout <seconds>]` | asks `pressed` every 250 ms until there is a press, prints its key and exits 0; exits 1 after the timeout (up to 86400) or when the shell refuses. Kanade holds no call while it waits, but the client asks about four times a second, each ask a short call to the shell; one that fails for now (a timeout) is asked again |
 | `activity run <id> <title> [--action <key>=<label>]... -- <command>...` | runs the command with a live Activity for it, ended as done on exit status 0 and failed otherwise, and exits as the command did |
-| `activity hook claude` | reads one Claude Code hook event as JSON on stdin and shows the session as a live Activity, see [Agent hooks](Agent-hooks.md). Exits 0 when told, when the event needs nothing shown, and with no shell or `live` off; 1 with a line on stderr for anything else; never 2, which Claude Code takes as a block |
-| `activity hook claude decide` | the opt-in permission decider, a replacement for the `PermissionRequest` entry only. Allow exits 0; Deny, no answer, or a prompt that was not shown exits 2. The default hook is unchanged |
 
 **activity run**:
 

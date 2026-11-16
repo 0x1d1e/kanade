@@ -99,7 +99,7 @@ Starting early also keeps D-Bus from activating another notification daemon for 
 
 ## Compositor layer rules
 
-Each rule goes in your niri config, which Kanade changes only when you ask it to: `kanade niri-config rules apply <id>`, or through Settings under niri.
+Each niri rule goes in your niri config, which Kanade changes only when you ask it to: `kanade niri-config rules apply <id>`, or through Settings under niri. Umbriel's own layer rule is under [Umbriel](#umbriel).
 
 ### Overview backdrop
 
@@ -116,15 +116,17 @@ layer-rule {
 
 `kanade doctor` warns while the `wallpaper` Module is on and no rule places `awww-daemon` there. It reads `$NIRI_CONFIG`, else `config.kdl` in niri's config directory, and the files it includes; a pattern it cannot read as plain text counts as matching, so it never warns wrongly.
 
-### Blur xray
+### Blur
 
-The `blur` finish (`appearance.finish`) asks niri to blur what lies behind the Island, Dock and Banners, which needs niri 26.04 or later. niri blurs a layer's request as xray, the wallpaper only, so windows behind a pane would show through sharp. A layer rule turns xray off for Kanade's layers: `kanade niri-config rules apply blur-xray`, or Settings under niri. The default config from the installer has it.
+The `blur` finish (`appearance.finish`) is translucent: the compositor blurs what lies behind the Island, Dock and its menus, Banners and Launcher. It needs niri 26.04 or later with `ext_background_effect_manager_v1`, or Umbriel with the `blur-kanade` layer rule. Without either, the finish draws the opaque tinted solid.
+
+Under niri, Kanade asks `ext-background-effect` to blur behind its panes. niri blurs a layer's request as xray, the wallpaper only, so windows behind a pane would show through sharp. A layer rule turns xray off for Kanade's layers: `kanade niri-config rules apply blur-xray`, or Settings under niri. The default config from the installer has it.
 
 niri marks non-xray effects experimental and recomputes them whenever what lies behind changes, so they cost more GPU than xray.
 
 ```kdl
 layer-rule {
-    match namespace="^kanade(-dock|-banners)?$"
+    match namespace="^kanade(-dock(-menu)?|-banners|-launcher)?$"
 
     background-effect {
         xray false
@@ -132,7 +134,9 @@ layer-rule {
 }
 ```
 
-`kanade doctor` warns while the finish is `blur` and no rule sets `xray false` on `kanade`, `kanade-dock` and `kanade-banners`, and when the compositor has no `ext_background_effect_manager_v1`; it reads the config as it does for the wallpaper rule. niri's own `blur { off }` turns all blur off, this one included.
+`kanade doctor` warns while the finish is `blur` and no rule sets `xray false` on `kanade`, `kanade-dock`, `kanade-dock-menu`, `kanade-banners` and `kanade-launcher`, and when niri has no `ext_background_effect_manager_v1`; it reads the config as it does for the wallpaper rule. niri's own `blur { off }` turns all blur off, this one included.
+
+Under Umbriel there is no such protocol: the pane is translucent and Umbriel's own `blur-kanade` layer rule blurs the layer surface where its alpha passes `blur_ignore_alpha`, without a region Kanade supplies. Add the rule with `kanade umbriel-config rules apply blur-kanade`, or through Settings under Compositor. The supplied Umbriel config has it. `kanade doctor` warns while the finish is `blur` and the rule is absent, because panes then draw the opaque tinted solid; when the rule is active, it says the compositor blurs behind Kanade's layers. See [Umbriel](#umbriel).
 
 ### Screencast banners
 
@@ -168,7 +172,7 @@ Kanade's Auth Surface supports Umbriel through the selected compositor's focused
 
 Kanade retries registration automatically, up to 30 s between attempts, and logs `kanade: polkit agent registered for this session` after success. If you previously disabled the Module, enable it with `kanade module enable polkit` and restart through Umbriel. To keep an external agent instead, leave Kanade's `polkit` Module off.
 
-The default config includes the `blur-kanade` layer rule. For an existing Umbriel config, Settings under Compositor offers the rule, or `kanade umbriel-config rules apply blur-kanade` writes it on request. The KDL layer rules above apply only to niri.
+The default config includes the `blur-kanade` layer rule, and with it the Blur finish is translucent: Umbriel's rule blurs behind the Island, Dock and its menus, Banners and Launcher, where the fill's alpha passes `blur_ignore_alpha`, and Kanade requests no blur region. Without the rule the pane draws the opaque tinted solid, and `kanade doctor` warns while the finish is `blur`. For an existing Umbriel config, Settings under Compositor offers the rule, or `kanade umbriel-config rules apply blur-kanade` writes it on request. The KDL layer rules above apply only to niri.
 
 Umbriel area screenshots need `slurp` and `grim`, output screenshots need `grim`, and copying the saved PNG needs `wl-copy`; a copy failure does not discard the saved screenshot. Window screenshots, the color picker and niri's cast controls remain unavailable under Umbriel. See [Settings](Settings.md), [Limitations](Limitations.md) and [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md).
 

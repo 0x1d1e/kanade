@@ -1,6 +1,6 @@
 # 58. Agent hooks, and reposts of a Live Activity coalesced
 
-Status: accepted. Builds on ADR 0042, whose "nothing throttles it yet" it answers.
+Status: superseded by ADR 0151. Its repost coalescing below still stands, ADR 0151 removing only the agent-hook reader and its permission decider. Builds on ADR 0042, whose "nothing throttles it yet" it answers.
 
 ## Context
 

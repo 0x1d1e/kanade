@@ -8,7 +8,6 @@ Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri) and Umbrie
 | [CLI](CLI.md) | every `kanade <verb>`, and exit statuses |
 | [Configuration](Configuration.md) | config layers, every key and its default, Modules |
 | [Settings](Settings.md) | the Settings window, compositor config editing for niri and Umbriel, and Outputs trials |
-| [Agent hooks](Agent-hooks.md) | showing a Claude Code session as a live Activity, and adapting another agent |
 | [Dictation](Dictation.md) | speaking to text with the Gemini API, what is sent to Google, setting up the key and consent |
 | [Google Calendar](Google-Calendar.md) | signing in with your own OAuth client |
 | [SDDM login screen](SDDM.md) | `kanade sddm`: Kanade's login screen theme, other themes, the overlay and the two root steps |

@@ -1,6 +1,6 @@
 # 80. Desktop accessibility from the settings portal
 
-Status: accepted. Builds on [ADR 0051](0051-paper-finish.md) and [ADR 0057](0057-blur-finish.md) (the finishes) and [ADR 0004](0004-wake-sources-on-announcements.md) (wake sources).
+Status: accepted; amended in place: the portal follower now starts with every shell, and the switch decides only whether its answer is used. Builds on [ADR 0051](0051-paper-finish.md) and [ADR 0057](0057-blur-finish.md) (the finishes) and [ADR 0004](0004-wake-sources-on-announcements.md) (wake sources).
 
 ## Context
 
@@ -15,7 +15,7 @@ No portal reader existed: the `color-scheme` code in `appearance/adapters.rs` re
   - `reduced-motion` = 1 sets the island's motion to reduced, as `reduced_motion = true`.
   - `contrast` = 1 turns the translucent finishes (liquid glass, blur) into the solid one of `appearance.tone` (`Finish::solid`): paper for light, the tinted solid for dark. The two solid finishes already hold their ink at 7:1 and 4.5:1 (ADRs 0050, 0051), so they stay as the user chose. The saved `appearance.finish` is untouched.
 - One switch, `appearance.accessibility`, default on, decides whether the portal is followed. It is a switch, not a tri-state `reduced_motion`, so existing files with `reduced_motion = true|false` keep reading as before and no `Kind` is added. The cost: a file's `reduced_motion = false` cannot override a desktop that asks; `appearance.accessibility = false` does. Precedence for motion: `KANADE_REDUCED_MOTION`, then `reduced_motion = true`, then the portal, then off. A desktop with no portal, or no preference, behaves as before.
-- The thread starts after the Modules, only if the switch is on at start. Turning it on later takes a restart; turning it off applies at once, as the overlay checks it on every read.
+- The thread starts after the Modules whatever the switch says, so the portal is followed for the whole run; `appearance.accessibility` decides only whether `config::read_applied` uses its answer. Turning it on or off applies at the next config reload (Settings makes one), with no restart; off, every read ignores the answer at once.
 - It is a setting of the core, not a Module: it has no window, verb or Service, and the Module list stays the user-facing features.
 
 ## Consequences

@@ -1,6 +1,6 @@
 # 7. Banners and OSD leave the Island
 
-Status: accepted (design, roadmap 8); its OSD part superseded by ADR 0021, which returns the OSD to the Island, and its top-right placement by ADR 0023, where Banners come out of the Island. Supersedes the "one physical surface, no detached popovers" goal of `docs/archived/plan.md` §2 for notification toasts and level changes.
+Status: accepted (design, roadmap 8); its OSD part superseded by ADR 0021, which returns the OSD to the Island, and its top-right placement by ADR 0023, where Banners come out of the Island. Its Banner timers are amended by ADR 0157: they wait while the user is away, and the column counts the Banners waiting. Supersedes the "one physical surface, no detached popovers" goal of `docs/archived/plan.md` §2 for notification toasts and level changes.
 
 ## Context
 

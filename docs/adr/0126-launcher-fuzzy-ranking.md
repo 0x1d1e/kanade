@@ -1,6 +1,6 @@
 # 126. Launcher matches characters within its existing fit tiers
 
-Status: accepted.
+Status: accepted. Amended by [ADR 0152](0152-launcher-separator-skip-and-typo-tier.md), which skips a query separator the name does not spell, counts the shortened query in the threshold, classifies a joined name from the separator-free query, and adds `Fit::Typo` after `Anywhere`.
 
 ## Context
 

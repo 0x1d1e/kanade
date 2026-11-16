@@ -1,6 +1,6 @@
 # 145. Usage rings on the Island
 
-Status: accepted. Builds on the withheld-Surface rule and `Activity::new` policy in `CONTEXT.md`.
+Status: superseded by ADR 0151. Builds on the withheld-Surface rule and `Activity::new` policy in `CONTEXT.md`.
 
 ## Context
 
