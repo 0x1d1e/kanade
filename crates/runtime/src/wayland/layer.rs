@@ -216,16 +216,29 @@ fn to_exclusive_zone(settings: &Settings) -> i32 {
     }
 }
 
-// a bar on the left or right edge is as thick as its width, any other bar as its height
+/*
+ * a bar on the left or right edge is as thick as its width, any other bar as its height;
+ * the margin outside the edge facing the windows is reserved with it, or windows overlap it
+ */
 fn measure_thickness(settings: &Settings) -> i32 {
-    let size = match (settings.horizontal, settings.width) {
-        (Horizontal::Left | Horizontal::Right, WindowSize::Fixed(_)) => settings.width,
-        _ => settings.height,
+    let margin = settings.margin;
+
+    let (size, outside) = match (settings.horizontal, settings.width) {
+        (Horizontal::Left, WindowSize::Fixed(_)) => (settings.width, margin.left),
+        (Horizontal::Right, WindowSize::Fixed(_)) => (settings.width, margin.right),
+        _ => (
+            settings.height,
+            match settings.vertical {
+                Vertical::Top => margin.top,
+                Vertical::Bottom => margin.bottom,
+                Vertical::Middle => 0,
+            },
+        ),
     };
 
     let reserved = to_pixels(size);
 
-    i32::try_from(reserved).expect("failed to convert reserved space")
+    i32::try_from(reserved).expect("failed to convert reserved space") + outside
 }
 
 #[cfg(test)]
@@ -239,6 +252,82 @@ mod tests {
     use smithay_client_toolkit::registry_handlers;
     use wayland_client::globals::registry_queue_init;
     use wayland_client::protocol::wl_output;
+
+    fn reserved(window: &LayerWindow) -> i32 {
+        to_exclusive_zone(&Settings::new(window, 1.0))
+    }
+
+    fn bar(horizontal: Horizontal, vertical: Vertical, margin: Margin) -> LayerWindow {
+        let size = match horizontal {
+            Horizontal::Left | Horizontal::Right => (48.0, 600.0),
+            Horizontal::Middle => (200.0, 30.0),
+        };
+
+        LayerWindow::new()
+            .width(size.0)
+            .height(size.1)
+            .anchor_horizontal(horizontal)
+            .anchor_vertical(vertical)
+            .margin(margin)
+            .space(Zone::Reserve)
+    }
+
+    #[test]
+    fn reserved_top_bar_includes_the_margin_above_it() {
+        let margin = Margin {
+            top: 10,
+            ..Margin::default()
+        };
+
+        let top = bar(Horizontal::Middle, Vertical::Top, margin);
+
+        assert_eq!(reserved(&top), 40);
+    }
+
+    #[test]
+    fn reserved_bottom_bar_includes_the_margin_below_it() {
+        let margin = Margin {
+            bottom: 8,
+            ..Margin::default()
+        };
+
+        let bottom = bar(Horizontal::Middle, Vertical::Bottom, margin);
+
+        assert_eq!(reserved(&bottom), 38);
+    }
+
+    #[test]
+    fn reserved_left_bar_includes_the_margin_beside_it() {
+        let margin = Margin {
+            left: 6,
+            ..Margin::default()
+        };
+
+        let left = bar(Horizontal::Left, Vertical::Middle, margin);
+
+        assert_eq!(reserved(&left), 54);
+    }
+
+    #[test]
+    fn reserved_right_bar_includes_the_margin_beside_it() {
+        let margin = Margin {
+            right: 4,
+            ..Margin::default()
+        };
+
+        let right = bar(Horizontal::Right, Vertical::Middle, margin);
+
+        assert_eq!(reserved(&right), 52);
+    }
+
+    #[test]
+    fn reserved_thickness_is_unchanged_without_a_margin() {
+        let top = bar(Horizontal::Middle, Vertical::Top, Margin::default());
+        let left = bar(Horizontal::Left, Vertical::Middle, Margin::default());
+
+        assert_eq!(reserved(&top), 30);
+        assert_eq!(reserved(&left), 48);
+    }
 
     struct TestState {
         registry: RegistryState,

@@ -94,9 +94,9 @@ impl Text {
     }
 
     /*
-     * Digits take equal room, a clock or a level that counts does not jitter. Open Sauce One has
-     * `tnum` but the runtime shapes letter by letter, so the cells are laid here; for short,
-     * one-line numerals, not wrapped or elided text
+     * Digits take equal room, a clock or a level that counts does not jitter. The shaper draws
+     * each digit as it is; the cell is laid here, so a family whose digits differ in width still
+     * lines up. For short, one-line numerals, not wrapped or elided text
      */
     pub fn tabular(mut self) -> Self {
         debug_assert!(

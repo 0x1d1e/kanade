@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ttf_parser::{Face, GlyphId};
 
 use crate::graphics::emoji::{self, Picture};
-use crate::graphics::{Area, BezierPath, Color, Corners, Outline, Renderer, Transform, font};
+use crate::graphics::{Area, BezierPath, Color, Corners, Outline, Renderer, Transform, shape};
 
 use super::Command;
 
@@ -49,27 +49,22 @@ impl Renderer {
         color: Color,
         area: Area,
     ) {
-        let units = pixel_size / f32::from(font.units_per_em());
+        let shaped = shape::line(content, font, pixel_size, false);
 
         let start = self.transform.map(area.x, area.y);
 
         let line_x = start.0.round();
-        let baseline = (start.1 + f32::from(font.ascender()) * units).round();
+        let baseline = (start.1 + shaped.baseline).round();
 
-        let mut pen = 0.0;
+        for glyph in &shaped.glyphs {
+            let letter_x = line_x + glyph.x.round();
+            let letter_y = baseline + glyph.y.round();
 
-        for letter in content.chars() {
-            let measured = font::measure_letter(font, letter, pixel_size);
-
-            let letter_x = line_x + f32::round(pen);
-
-            pen += measured.advance;
-
-            if let Some(picture) = emoji::picture(measured.face, measured.id) {
+            if let Some(picture) = emoji::picture(glyph.face, GlyphId(glyph.id)) {
                 self.picture(
                     &picture,
                     letter_x,
-                    baseline,
+                    letter_y,
                     pixel_size,
                     Transform::IDENTITY,
                 );
@@ -78,47 +73,48 @@ impl Renderer {
             }
 
             self.commands.push(Command::Glyph {
-                face: measured.face,
-                id: measured.id.0,
+                face: glyph.face,
+                id: glyph.id,
                 size: pixel_size,
                 color,
                 x: letter_x,
-                y: baseline,
+                y: letter_y,
             });
         }
     }
 
-    fn text_outlines(&mut self, content: &str, font: &Face, size: f32, color: Color, area: Area) {
-        // fonts measure in their own units, this turns them into pixels
-        let units = size / f32::from(font.units_per_em());
+    fn text_outlines(
+        &mut self,
+        content: &str,
+        font: &'static Face<'static>,
+        size: f32,
+        color: Color,
+        area: Area,
+    ) {
+        let shaped = shape::line(content, font, size, false);
 
-        let baseline = area.y + f32::from(font.ascender()) * units;
+        let baseline = area.y + shaped.baseline;
 
-        let mut pen_x = area.x;
+        for glyph in &shaped.glyphs {
+            let letter_x = area.x + glyph.x;
+            let letter_y = baseline + glyph.y;
 
-        for letter in content.chars() {
-            let measured = font::measure_letter(font, letter, size);
-
-            let letter_x = pen_x;
-
-            pen_x += measured.advance;
-
-            if let Some(picture) = emoji::picture(measured.face, measured.id) {
-                self.picture(&picture, letter_x, baseline, size, self.transform);
+            if let Some(picture) = emoji::picture(glyph.face, GlyphId(glyph.id)) {
+                self.picture(&picture, letter_x, letter_y, size, self.transform);
 
                 continue;
             }
 
             // a space has no outline but still moves the pen
-            let Some(path) = outline(measured.face, measured.id) else {
+            let Some(path) = outline(glyph.face, GlyphId(glyph.id)) else {
                 continue;
             };
 
-            let face_units = measured.units;
+            // fonts measure in their own units, this turns them into pixels
+            let units = size / f32::from(glyph.face.units_per_em());
 
             // fonts point y upward, the screen points it downward
-            let letter_transform =
-                Transform::from_row(face_units, 0.0, 0.0, -face_units, letter_x, baseline);
+            let letter_transform = Transform::from_row(units, 0.0, 0.0, -units, letter_x, letter_y);
             let transform = letter_transform.post_concat(self.transform);
 
             self.commands.push(Command::Fill {

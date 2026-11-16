@@ -28,6 +28,7 @@ mod wayland;
 mod widgets;
 mod window;
 
+pub mod clock;
 pub mod idle;
 pub mod queue;
 pub mod service;
@@ -35,7 +36,7 @@ pub mod ui;
 pub mod worker;
 
 pub use allocator::limit as limit_allocator;
-pub use animation::{Animation, Blend, Easing, request_frame};
+pub use animation::request_frame;
 pub use app::App;
 pub use full::Full;
 pub use graphics::continuous;

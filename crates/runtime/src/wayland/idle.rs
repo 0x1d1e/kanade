@@ -12,16 +12,21 @@ use super::WaylandState;
 
 impl WaylandState {
     /*
-     * a notification for each timeout `idle::watch` asks for, on the first seat: the ones no
-     * longer asked for destroyed, the new ones made. Through `get_idle_notification`, so the
-     * Wayland idle inhibitors apps hold keep it from going idle
+     * a notification for each timeout `idle::watch` asks for, plus `idle::PRESENCE` whatever that
+     * is, on the first seat: the ones no longer asked for destroyed, the new ones made. Through
+     * `get_idle_notification`, so the Wayland idle inhibitors apps hold keep it from going idle
      */
     pub(super) fn follow_idle(&mut self) {
         let Some(notifier) = &self.idle_notifier else {
             return;
         };
 
-        let wanted = idle::wanted();
+        let mut wanted = idle::wanted();
+
+        if !wanted.contains(&idle::PRESENCE) {
+            wanted.push(idle::PRESENCE);
+            wanted.sort();
+        }
 
         self.idle_notifications.retain(|(timeout, notification)| {
             let keep = wanted.contains(timeout);

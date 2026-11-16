@@ -6,9 +6,9 @@ pub use field::single_line;
 
 use std::rc::Rc;
 
-use crate::graphics::{Area, Renderer};
+use crate::graphics::{Area, Renderer, font, shape};
 use crate::input::{Target, focus};
-use crate::{Color, Size, Text};
+use crate::{Color, Size, Text, Weight};
 
 use super::Widget;
 
@@ -181,12 +181,12 @@ impl TextInput {
     }
 
     // how far from the input's left edge the first `index` letters of the composed text reach
-    fn offset(&self, text: &str, index: usize, area: Area) -> f32 {
+    fn offset(&self, text: &str, index: usize) -> f32 {
         let before: String = text.chars().take(index).collect();
 
-        let before = self.label(self.shown(&before), self.color);
+        let face = font::load_weighted(None, Weight::Regular);
 
-        before.width().resolve(area.width)
+        shape::width(&self.shown(&before), face, self.size)
     }
 
     // the letters of the composed text the preedit takes, and where its cursor sits among them
@@ -215,7 +215,7 @@ impl TextInput {
     }
 
     fn draw_cursor(&self, renderer: &mut Renderer, text: &str, at: usize, area: Area) {
-        let offset = self.offset(text, at, area);
+        let offset = self.offset(text, at);
 
         let cursor = Area::new(area.x + offset, area.y, CURSOR_WIDTH, area.height);
 
@@ -230,8 +230,8 @@ impl TextInput {
         range: (usize, usize),
         area: Area,
     ) {
-        let from = self.offset(text, range.0, area);
-        let to = self.offset(text, range.1, area);
+        let from = self.offset(text, range.0);
+        let to = self.offset(text, range.1);
 
         let tint = Color::rgba(self.color.r, self.color.g, self.color.b, self.color.a / 3);
 
@@ -252,8 +252,8 @@ impl TextInput {
             self.draw_selection(renderer, text, (from + begin, from + end), area);
         }
 
-        let left = self.offset(text, from, area);
-        let right = self.offset(text, to, area);
+        let left = self.offset(text, from);
+        let right = self.offset(text, to);
 
         let underline = Area::new(area.x + left, area.y + area.height - 1.0, right - left, 1.0);
 
@@ -271,7 +271,7 @@ impl TextInput {
         // a password's caret would tell its length to the input method, so it stays at the start
         let offset = match self.password {
             true => 0.0,
-            false => self.offset(&text, at, area).min(area.width),
+            false => self.offset(&text, at).min(area.width),
         };
 
         Area::new(area.x + offset, area.y, 1.0, area.height)

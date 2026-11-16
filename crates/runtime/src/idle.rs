@@ -5,6 +5,11 @@ use crate::changes;
 use crate::service::Service;
 use crate::unpoisoned::MutexExt;
 
+/// How long without input the shell counts the user as away: a Banner stops its time then, so one
+/// does not run out unseen under the lock or while nobody is at the desk. Followed whatever
+/// `watch` asked for, as the `idle` Module is off by default.
+pub const PRESENCE: Duration = Duration::from_secs(60);
+
 /// Whether the user has been idle for each timeout `watch` asked for, as the
 /// compositor says through `ext-idle-notify-v1`. Its idle notifications honor
 /// the Wayland idle inhibitors apps hold, as a playing video's, so a timeout

@@ -11,6 +11,7 @@ pub mod letter;
 mod outline;
 mod path;
 mod renderer;
+pub(crate) mod shape;
 mod transform;
 mod weight;
 

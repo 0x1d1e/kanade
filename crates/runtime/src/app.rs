@@ -52,6 +52,18 @@ impl App {
         self
     }
 
+    /*
+     * one window on every monitor, opened before every window registered with
+     * `window_per_monitor` so far: a compositor stacks layer surfaces of one layer by when they
+     * mapped, so this one sits under the rest of the shell in the same layer and above normal
+     * windows. For a full-output picture behind the Island
+     */
+    pub fn window_per_monitor_under(mut self, view: fn(&Monitor) -> LayerWindow) -> Self {
+        self.per_monitor.insert(0, view);
+
+        self
+    }
+
     // lets `kanade <name> [arguments...]` run the handler while the shell runs; it answers through
     // the reply, at once or later. `draws` is read from the call's words before it runs, and a call
     // that only writes Services draws no frame of its own.
@@ -116,5 +128,38 @@ impl App {
         );
 
         backend.run();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn under(_: &Monitor) -> LayerWindow {
+        LayerWindow::new().width(1.0).height(1.0).visible(false)
+    }
+
+    fn island(_: &Monitor) -> LayerWindow {
+        LayerWindow::new().width(1.0).height(1.0).visible(false)
+    }
+
+    // a window registered under the others opens first, so a compositor that stacks one layer by
+    // map order draws it beneath the Island and the rest of the shell
+    #[test]
+    fn under_is_opened_before_the_windows_registered_before_it() {
+        let app = App::new()
+            .window_per_monitor(island)
+            .window_per_monitor_under(under)
+            .window_per_monitor(island);
+
+        assert_eq!(app.per_monitor.len(), 3);
+        assert!(std::ptr::fn_addr_eq(
+            app.per_monitor[0],
+            under as fn(&Monitor) -> LayerWindow
+        ));
+        assert!(std::ptr::fn_addr_eq(
+            app.per_monitor[1],
+            island as fn(&Monitor) -> LayerWindow
+        ));
     }
 }

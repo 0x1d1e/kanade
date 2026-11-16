@@ -20,6 +20,11 @@ wayland-backend = { version = "0.3.17", features = ["client_system"] }
 rustix = { version = "1", default-features = false, features = ["std", "pipe", "event"] }
 fontconfig = "0.11"
 ttf-parser = "0.25.1"
+# text is shaped through the font's own GSUB/GPOS, then reordered and wrapped as Unicode says
+rustybuzz = "0.20"
+unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
+unicode-segmentation = "1"
 zune-jpeg = "0.5.15"
 png = "0.18.1"
 # turns svg icons into pixels once, so they draw like any other image

@@ -43,6 +43,11 @@ impl Renderer {
     }
 
     pub fn blend(&mut self, group: Renderer, opacity: f32) {
+        // a transparent or empty group draws nothing, so it gets no command, not even a group one
+        if opacity <= 0.0 || group.commands.is_empty() {
+            return;
+        }
+
         let cuts = group
             .commands
             .iter()
@@ -85,5 +90,46 @@ impl Renderer {
         draw(self);
 
         self.transform = outer;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graphics::Color;
+
+    fn drawn_group(renderer: &Renderer) -> Renderer {
+        let mut group = renderer.group();
+
+        group.rectangle(
+            Area::new(0.0, 0.0, 10.0, 10.0),
+            Color::rgb(255, 255, 255),
+            0.0,
+        );
+
+        group
+    }
+
+    #[test]
+    fn transparent_and_empty_groups_add_no_command() {
+        let mut renderer = Renderer::new(1.0);
+        let transparent = drawn_group(&renderer);
+        let empty = renderer.group();
+
+        renderer.blend(transparent, 0.0);
+        renderer.blend(empty, 1.0);
+        renderer.blend(renderer.group(), 0.5);
+
+        assert!(renderer.finish().is_empty());
+    }
+
+    #[test]
+    fn opaque_group_adds_its_commands_inline() {
+        let mut renderer = Renderer::new(1.0);
+        let group = drawn_group(&renderer);
+
+        renderer.blend(group, 1.0);
+
+        assert_eq!(renderer.finish().len(), 1);
     }
 }

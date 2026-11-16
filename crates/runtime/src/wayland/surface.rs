@@ -9,6 +9,7 @@ use wayland_client::{
 };
 
 use crate::changes::Reads;
+use crate::clock::FrameClock;
 use crate::graphics::Gpu;
 use crate::input::{KeyHandler, LostHandler, Pointer, ReadyHandler};
 use crate::{InputArea, LayerWindow, Monitor, Widget, Window, frame};
@@ -44,6 +45,9 @@ pub struct OpenWindow {
 
     // when the last frame started drawing, for KANADE_FRAMES
     pub last_frame: Option<Instant>,
+
+    // when this window's next frame is likely to present, so views sample one instant per frame
+    pub frame_clock: FrameClock,
 
     // the services the last view read, a change to any of them draws the window again
     pub reads: Reads,

@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use smithay_client_toolkit::compositor::FrameCallbackData;
 
+use crate::clock;
 use crate::frame;
 use crate::graphics::Renderer;
 use crate::timing::{self, Timing};
@@ -34,6 +35,22 @@ impl OpenWindow {
         };
         let (width, height) = (w as f32 / ui, h as f32 / ui);
 
+        /*
+         * one instant for the whole frame, moved to where this frame is likely to present:
+         * the views sample it rather than the frame callback's own arrival. A window that is
+         * hidden or unconfigured resets the clock, so no gap across that period teaches it
+         */
+        let unconfigured = self.width == 0 || self.height == 0;
+        let target = if unconfigured {
+            self.frame_clock.reset();
+
+            started
+        } else {
+            self.frame_clock.next(started)
+        };
+
+        clock::set(target);
+
         let (content, reads) = frame::run_view(|| self.view.run(), width, height);
 
         // a later change to one of these services draws this window again
@@ -56,6 +73,8 @@ impl OpenWindow {
 
         // 0 until the compositor configures the window, and again while it is hidden
         if self.width == 0 || self.height == 0 {
+            clock::clear();
+
             if changed {
                 self.role.commit();
             }
@@ -68,6 +87,9 @@ impl OpenWindow {
          * it is unmapped; presenting a buffer then shows it again, so its view says first
          */
         if !self.shown(&content) {
+            self.frame_clock.reset();
+            clock::clear();
+
             return;
         }
 
@@ -76,6 +98,9 @@ impl OpenWindow {
         // a window without a child has nothing to show, which is a mistake but not a crash
         let Some(root) = parts.root else {
             eprintln!("kanade: {name} has no child to draw, see child()");
+
+            self.frame_clock.reset();
+            clock::clear();
 
             if changed {
                 self.role.commit();
@@ -108,6 +133,9 @@ impl OpenWindow {
         let drawn = Instant::now();
 
         let presented = self.present(frame.renderer);
+
+        // the frame's predicted instant is done; what follows measures real time
+        clock::clear();
 
         self.keyboard_ready
             .drawn(self.on_key.as_ref().and(parts.on_keyboard_ready));
@@ -155,8 +183,14 @@ impl OpenWindow {
          * a window that wants to hide should do so promptly rather than waiting
          * for a frame callback on a surface that is about to hide.
          */
+        let now = Instant::now();
+        clock::set(now);
+
         let (content, _) =
             frame::run_view(|| self.view.run(), self.width as f32, self.height as f32);
+
+        clock::clear();
+
         if !self.shown(&content) {
             self.redraw();
 

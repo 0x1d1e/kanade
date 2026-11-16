@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use fontconfig::{CharSet, Fontconfig, Pattern, UnicodeCoverage};
-use ttf_parser::{Face, GlyphId};
+use ttf_parser::Face;
 
 use crate::Weight;
 use crate::unpoisoned::MutexExt;
@@ -172,48 +172,50 @@ pub fn read_file(path: &Path) -> std::io::Result<&'static [u8]> {
     Ok(bytes)
 }
 
-// the font that has this letter: the text's own font first, then a fallback
-pub fn with_letter<'a>(font: &'a Face<'a>, letter: char) -> (&'a Face<'a>, GlyphId) {
-    if let Some(id) = font.glyph_index(letter) {
-        return (font, id);
+/*
+ * the face that can draw this whole cluster: the text's own font when it has every letter, else
+ * the fallback that has the first letter it lacks. A cluster is never split across faces, so a
+ * combining mark or a joined emoji stays with the face that shapes it.
+ */
+pub fn face_for(font: &'static Face<'static>, cluster: &str) -> &'static Face<'static> {
+    let mut missing = None;
+
+    for letter in cluster.chars() {
+        // joiners, variation selectors and controls ask no coverage of their own
+        if letter.is_control() || letter.is_whitespace() || ignorable(letter) {
+            continue;
+        }
+
+        if font.glyph_index(letter).is_none() {
+            missing = Some(letter);
+
+            break;
+        }
     }
 
-    // a letter no font has draws as the text's own placeholder box
-    let Some(fallback) = fallback(letter) else {
-        return (font, GlyphId(0));
+    let Some(letter) = missing else {
+        return font;
     };
 
-    let id = fallback.glyph_index(letter).unwrap_or_default();
-
-    (fallback, id)
+    // a letter no font has stays with the text's own face, which draws its placeholder box
+    fallback(letter).unwrap_or(font)
 }
 
-// one letter at a text size: the face that has it, its glyph, and how it measures in pixels
-pub struct MeasuredLetter<'a> {
-    pub face: &'a Face<'a>,
-    pub id: GlyphId,
-
-    // font units to pixels; a fallback font can measure in other units than the text's own
-    pub units: f32,
-
-    // how far the letter moves the pen
-    pub advance: f32,
-}
-
-pub fn measure_letter<'a>(font: &'a Face<'a>, letter: char, size: f32) -> MeasuredLetter<'a> {
-    let (face, id) = with_letter(font, letter);
-
-    // a font without the metric moves the pen nowhere, not the shell down
-    let advance = face.glyph_hor_advance(id).unwrap_or(0);
-
-    let units = size / f32::from(face.units_per_em());
-
-    MeasuredLetter {
-        face,
-        id,
-        units,
-        advance: f32::from(advance) * units,
-    }
+// a letter that shapes the cluster around it without drawing anything of its own
+fn ignorable(letter: char) -> bool {
+    matches!(
+        letter,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{061C}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+    )
 }
 
 fn fallback(letter: char) -> Option<&'static Face<'static>> {

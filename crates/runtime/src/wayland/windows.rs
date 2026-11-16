@@ -84,6 +84,7 @@ impl WaylandState {
 
             frame_requested: false,
             last_frame: None,
+            frame_clock: crate::clock::FrameClock::new(),
             reads: Reads::default(),
 
             pointer: Pointer::default(),
