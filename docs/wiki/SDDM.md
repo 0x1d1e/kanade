@@ -12,9 +12,13 @@ kanade sddm enable    # writes the theme and picture, then prints the root comma
 kanade sddm status    # what is written, what SDDM reads, anything still missing
 ```
 
-`enable` prints the root setup needed, then refreshes the mutable picture data. The root command creates `/usr/local/share/kanade-sddm/themes/` as a root-owned tree, creates `/usr/local/share/kanade-sddm-data/` for the picture, and runs `kanade sddm setup` to stage and install the built-in theme. Then `kanade sddm sync` writes only the backdrop data. Last, a command writes `/etc/sddm.conf.d/zz-kanade.conf`, setting `[Theme]` `ThemeDir` and `Current`, and does nothing unless the installed theme exists. Settings has a Login screen page with the same status and a Copy button on each command.
+`enable` prints the root setup needed, then refreshes the mutable picture data. The root command creates `/usr/local/share/kanade-sddm/themes/` as a root-owned tree, and creates `/usr/local/share/kanade-sddm-data/` for the picture. It then runs `kanade sddm setup`, which stages and installs the built-in theme. After that, `kanade sddm sync` writes only the backdrop data.
+
+Last, a command writes `/etc/sddm.conf.d/zz-kanade.conf`, setting `[Theme]` `ThemeDir` and `Current`. It does nothing unless the installed theme exists.
 
 The file is named `zz-` so SDDM, which reads a directory's files in name order, reads it after any other there. A file read later still (`/etc/sddm.conf`, or a `zzz-` name) wins; `status` and `kanade doctor` name it, and only editing that file helps.
+
+Settings has a Login screen page with the same status and a Copy button on each command.
 
 ## Commands
 
@@ -40,15 +44,19 @@ The file is named `zz-` so SDDM, which reads a directory's files in name order, 
 | C | has no picture setting, or a plain color | links the theme, writes no picture |
 | D | plays a video | links the theme, writes no picture |
 
-Kanade's theme code and `theme.conf.user` are installed as root-owned, non-user-writable files. `kanade sddm setup` stages the full directory and atomically exchanges it, retaining `QtVersion` and existing user settings. Other installed themes remain best effort: their files may be linked into a user-owned tree and are not enabled by this secure setup path.
+Kanade's theme code and `theme.conf.user` are installed as root-owned, non-user-writable files. `kanade sddm setup` stages the full directory and atomically exchanges it, retaining `QtVersion` and existing user settings. Other installed themes remain best effort: their files may be linked into a user-owned tree, and they are not enabled by this secure setup path.
 
 ## The picture
 
-`sddm.background` says what shows behind the clock: the wallpaper (`wallpaper`, a symbolic link to it is followed, as it is only read), an image (`path`, from `sddm.background_path`), the solid color `sddm.surface`, or `none`. If wallpaper is selected but none is available, sync succeeds without a picture and the built-in theme shows its solid surface. An explicit `path` with no configured or readable image is an error. The picture is blurred (`sddm.blur`) and darkened (`sddm.dim`) as the lock screen does, sized to the largest output, and re-encoded so it holds none of the original's metadata.
+`sddm.background` says what shows behind the clock: the wallpaper (`wallpaper`, a symbolic link to it is followed, as it is only read), an image (`path`, from `sddm.background_path`), the solid color `sddm.surface`, or `none`.
+
+If wallpaper is selected but none is available, sync succeeds without a picture and the built-in theme shows its solid surface. An explicit `path` with no configured or readable image is an error.
+
+The picture is blurred (`sddm.blur`) and darkened (`sddm.dim`) as the lock screen does, and it is sized to the largest output. It is re-encoded so it holds none of the original's metadata.
 
 The picture is readable by the `sddm` user and by anyone who can read `/usr/local/share/kanade-sddm-data/`, so it holds a picture of your desktop. That is why `sddm.sync` is off by default. Turned on, with `sddm.background = "wallpaper"`, the shell writes the picture again whenever the wallpaper changes (changes close together make one write, and nothing polls). `kanade sddm sync` does the same by hand.
 
-The picture Kanade writes is kept under 16 MiB (it shrinks the picture until it is). A picture you set by hand in the overlay's `theme.conf.user` is not checked by Kanade, and a Qt 5 greeter decodes it whatever its size, which can stall or crash the greeter: keep it small, or use `sddm.background_path`, which Kanade re-encodes.
+The picture Kanade writes is kept under 16 MiB (it shrinks the picture until it is). A picture you set by hand in the overlay's `theme.conf.user` is not checked by Kanade. A Qt 5 greeter decodes it whatever its size, which can stall or crash the greeter: keep it small, or use `sddm.background_path`, which Kanade re-encodes.
 
 ## Security model
 
@@ -63,7 +71,11 @@ The built-in executable theme is root-owned so a desktop process cannot replace 
 
 ## After a theme package changes
 
-A third-party theme's overlay is links to that theme's installed files, which `kanade sddm setup` does not build: it installs only the built-in `kanade` theme root-owned, and `kanade sddm theme use` refuses any other theme (`only the root-installed kanade theme can be selected safely`). An overlay a third-party theme left in place can still go stale: when its package is upgraded or removed, the links can lead nowhere and the login screen falls back to SDDM's default or shows no theme. `kanade sddm status` and the Login screen page say when the overlay's theme is not current, and the shell says once at start, on stderr, when SDDM reads the overlay and its theme is not current.
+A third-party theme's overlay is links to that theme's installed files, which `kanade sddm setup` does not build. It installs only the built-in `kanade` theme root-owned, and `kanade sddm theme use` refuses any other theme (`only the root-installed kanade theme can be selected safely`).
+
+An overlay a third-party theme left in place can still go stale: when its package is upgraded or removed, the links can lead nowhere and the login screen falls back to SDDM's default or shows no theme.
+
+`kanade sddm status` and the Login screen page say when the overlay's theme is not current, and the shell says once at start, on stderr, when SDDM reads the overlay and its theme is not current.
 
 If the login screen is already broken, from a text console (Ctrl+Alt+F3) log in and run:
 

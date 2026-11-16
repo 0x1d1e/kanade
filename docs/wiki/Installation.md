@@ -6,37 +6,57 @@
 curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 ```
 
-The curl URL fetches the script from `main`. On Arch Linux and derivatives it installs build dependencies, clones `main` into `~/.local/share/kanade/src`, and runs `cargo install --locked --root "$HOME/.cargo" --path .`. Installation builds against your system libraries. `--ref REF` selects another branch or tag. From a checkout, `scripts/install` builds that checkout. Run it again to update.
+The curl URL fetches the script from `main`. On Arch Linux and derivatives it installs build dependencies, clones `main` into `~/.local/share/kanade/src`, and runs `cargo install --locked --root "$HOME/.cargo" --path .`.
 
-Packages are not installed with `pacman -S`. The script uses `paru` if it is on PATH, otherwise `yay` if that is already on PATH, as the user, with `--needed --noconfirm`. If neither is on PATH, it runs `sudo pacman -S --needed paru` and then uses that paru. If pacman cannot install paru, it stops. It does not build paru with makepkg, and it does not publish an AUR package. The script prints `helper: paru`, `helper: yay`, or `helper: none` for what they found.
+Installation builds against your system libraries. Run it again to update. From a checkout, `scripts/install` builds that checkout.
 
-A fresh TTY install still adds niri with its portal, the GPU's Vulkan driver, audio, fonts, kitty, qt6ct and awww for Kanade's default random wallpaper, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Kanade provides the session's polkit authentication agent under niri and Umbriel (ADRs 0146, 0147); the installer does not add polkit-gnome. Live Umbriel registration, prompt placement, Cancel/Escape and overview deferral passed on the candidate recorded in ADR 0147; password/PAM authentication remains unverified. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY. Run it again to update. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
+Packages are not installed with `pacman -S`. The script uses `paru` if it is on PATH, otherwise `yay` if that is already on PATH, as the user, with `--needed --noconfirm`.
 
-- `--shell-only` installs Kanade without the desktop packages, for a niri or Umbriel desktop you already have. It does not install a niri config unless you also choose Niri (`--niri`) or SDDM (`--sddm`); those install the default config only when yours is missing. Explicit Niri or SDDM installs also include awww; pure shell-only without either omits it.
-- `--no-niri` skips automatic niri package selection and does not write a niri config, even on a desktop install. Explicit `--niri` or `--sddm` still installs the package; only `--sddm` also overrides the config skip.
-- `--niri` explicitly selects the niri package; it does not disable the default desktop package set. Use `--shell-only --niri` to omit that set while installing niri, awww and the default niri config when yours is missing (unless `--no-niri` also skips that config).
-- `--sddm` installs `sddm`, `qt6-declarative` and `qt6-5compat` with the helper, and `niri` if that package is not already being installed. After `~/.cargo/bin/kanade` is in place, the script creates the root-owned overlay and the user-owned data directory, runs `kanade sddm setup` as root and `kanade sddm sync` as you, and writes `/etc/sddm.conf.d/zz-kanade.conf` only when `metadata.desktop` is there and the file differs. That file sets `[Theme]` only. It does not turn `sddm.sync` on. A login screen of niri writes `/etc/sddm.conf.d/zy-kanade-greeter.conf` and a root-owned `/usr/local/share/kanade-sddm/niri-greeter.kdl`, separate from the theme file. keep writes neither and deletes nothing. If `sddm.service` is not already enabled, the script removes a `display-manager.service` symlink that points elsewhere, disables an enabled `gdm`, `lightdm`, `lxdm`, `greetd` or `plasmalogin`, and runs `systemctl enable sddm` with no `--now`. It does not start SDDM. If `sddm` is already enabled, other display managers are left alone and the theme is still refreshed. A failed step stops, and SDDM is not pointed at a theme that was not installed.
-- `--sddm-greeter keep|niri` chooses that login screen with `--sddm`. Without it, `--sddm` uses niri on a hybrid NVIDIA machine and keep otherwise.
+If neither is on PATH, it runs `sudo pacman -S --needed paru` and then uses that paru. If pacman cannot install paru, it stops. It does not build paru with makepkg, and it does not publish an AUR package.
+
+The script prints `helper: paru`, `helper: yay`, or `helper: none` for what they found.
+
+## Installer options
+
+Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
+
+- `--shell-only` installs Kanade without the desktop packages, for a niri or Umbriel desktop you already have.
+  - It does not install a niri config unless you also choose Niri (`--niri`) or SDDM (`--sddm`); those install the default config only when yours is missing.
+  - Explicit Niri or SDDM installs also include awww; pure shell-only without either omits it.
+- `--no-niri` skips automatic niri package selection and does not write a niri config, even on a desktop install.
+  - Explicit `--niri` or `--sddm` still installs the package; only `--sddm` also overrides the config skip.
+- `--niri` explicitly selects the niri package; it does not disable the default desktop package set.
+  - Use `--shell-only --niri` to omit that set while installing niri, awww and the default niri config when yours is missing (unless `--no-niri` also skips that config).
+- `--sddm` installs `sddm`, `qt6-declarative` and `qt6-5compat` with the helper, and `niri` if that package is not already being installed.
+  - After `~/.cargo/bin/kanade` is in place, the script creates the root-owned overlay and the user-owned data directory, runs `kanade sddm setup` as root and `kanade sddm sync` as you, and writes `/etc/sddm.conf.d/zz-kanade.conf` only when `metadata.desktop` is there and the file differs. That file sets `[Theme]` only. It does not turn `sddm.sync` on.
+  - A login screen of niri writes `/etc/sddm.conf.d/zy-kanade-greeter.conf` and a root-owned `/usr/local/share/kanade-sddm/niri-greeter.kdl`, separate from the theme file. keep writes neither and deletes nothing.
+  - If `sddm.service` is not already enabled, the script removes a `display-manager.service` symlink that points elsewhere, disables an enabled `gdm`, `lightdm`, `lxdm`, `greetd` or `plasmalogin`, and runs `systemctl enable sddm` with no `--now`. It does not start SDDM.
+  - If `sddm` is already enabled, other display managers are left alone and the theme is still refreshed. A failed step stops, and SDDM is not pointed at a theme that was not installed.
+- `--sddm-greeter keep|niri` chooses that login screen with `--sddm`.
+  - Without it, `--sddm` uses niri on a hybrid NVIDIA machine and keep otherwise.
 - `--yes` is accepted for compatibility.
-- `--ref REF` compiles that branch or tag, including `--ref main`. Refused from a checkout, which builds that tree.
-- `--optional` adds the optional packages and enables bluetooth, upower and power-profiles-daemon; NetworkManager is installed but left for you to enable.
-- `--uninstall` removes Kanade's binary, shell completions, unit, icon and the build checkout, after asking if niri's config still runs `kanade` (its binds, locking included, would stop working). It keeps the `kanade.service.bak.DATE` copies an update left, so a hand-edited unit is not lost. It also removes the root-owned files `--sddm` wrote, with `sudo`, and only those: `/etc/sddm.conf.d/zz-kanade.conf`, `/etc/sddm.conf.d/zy-kanade-greeter.conf`, `/usr/local/share/kanade-sddm/niri-greeter.kdl`, `/usr/local/share/kanade-sddm/themes/kanade` and `/usr/local/share/kanade-sddm-data/backdrop.png` (a manual `kanade sddm setup` writes the same ones); the three directories are removed only when empty, so another theme's overlay stays. `/etc/sddm.conf` and every other drop-in are left alone, and so is SDDM itself (enabled or not as it was). Anything `sudo` could not remove is printed with the `sudo rm` that removes it. Your configs and the packages stay.
+- `--ref REF` compiles that branch or tag, including `--ref main`.
+  - Refused from a checkout, which builds that tree.
+- `--optional` adds the optional packages and enables bluetooth, upower and power-profiles-daemon.
+  - NetworkManager is installed but left for you to enable.
+- `--uninstall` removes Kanade's binary, shell completions, unit, icon and the build checkout, after asking if niri's config still runs `kanade` (its binds, locking included, would stop working).
+  - It keeps the `kanade.service.bak.DATE` copies an update left, so a hand-edited unit is not lost.
+  - It also removes the root-owned files `--sddm` wrote, with `sudo`, and only those: `/etc/sddm.conf.d/zz-kanade.conf`, `/etc/sddm.conf.d/zy-kanade-greeter.conf`, `/usr/local/share/kanade-sddm/niri-greeter.kdl`, `/usr/local/share/kanade-sddm/themes/kanade` and `/usr/local/share/kanade-sddm-data/backdrop.png` (a manual `kanade sddm setup` writes the same ones).
+  - The three directories go only when empty, so another theme's overlay stays. `/etc/sddm.conf` and every other drop-in are left alone, and so is SDDM itself (enabled or not as it was). Anything `sudo` could not remove is printed with the `sudo rm` that removes it. Your configs and the packages stay.
 
-The binary goes to `~/.cargo/bin`, where the unit expects it, and the shell completions to `~/.local/share/bash-completion/completions/kanade`, `~/.config/fish/completions/kanade.fish` and `~/.local/share/zsh/site-functions/_kanade` (under `XDG_DATA_HOME` and `XDG_CONFIG_HOME` when set); zsh needs that directory in its `fpath` before `compinit`. A run replaces the unit and keeps the old one as `kanade.service.bak.DATE`; customize it with `systemctl --user edit kanade.service`, whose drop-in an update leaves alone, and `--uninstall` keeps those copies too. A failed build leaves the installed binary as it was. The steps below are what a manual build runs.
+## What it installs
 
-Kanade needs:
+A fresh TTY install still adds niri with its portal, the GPU's Vulkan driver, audio, fonts, kitty, qt6ct and awww for Kanade's default random wallpaper, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY.
 
-- niri or Umbriel. Kanade selects a reachable Umbriel IPC socket (`$UMBRIEL_SOCKET`, else `$XDG_RUNTIME_DIR/umbriel-$WAYLAND_DISPLAY.sock`) first, then niri over `$NIRI_SOCKET`. See the Umbriel setup below; the installer still installs niri by default.
-- A Rust toolchain and these system libraries with their headers: a C compiler, pkg-config, wayland, libxkbcommon, fontconfig, freetype, expat, vulkan-loader, libpulseaudio and linux-pam.
-- Optional, see [Limitations](Limitations.md): `pactl`, `udevadm`, `dbus-monitor`, `setpriv` (util-linux) and `pw-dump` (pipewire).
-- For the clipboard history: `wl-copy` (wl-clipboard), required for restoring entries.
-- For screen recording: `wf-recorder`, and an encoder that works: a VA-API driver for an Intel or AMD GPU (`intel-media-driver`, `mesa`), NVENC on an NVIDIA GPU (`nvidia-utils`), or neither, when it encodes on the CPU with libx264 (`ffmpeg` built with it, which Arch's is). `recording.encoder` is `auto`, which takes the first that works in that order and never wakes an NVIDIA GPU while VA-API works; `kanade doctor` says which it chose, on which render node (`recording.device`), why, and what is missing. `recording.quality` sets the size against the picture. Optional: `ffmpeg` to pause a recording and to test the encoders. For recording a window: `gst-launch-1.0` with the PipeWire plugin and the plugin of the encoder (`gst-plugin-pipewire`, `gst-plugins-bad` and `gst-plugin-va` for VA-API, `gst-plugins-ugly` for libx264) and `ffmpeg`. NVENC and libx264 take niri's DMA-BUF cast through the VA-API post-processor (a working VA-API driver, `gst-plugin-va`; it tries the Intel and AMD nodes, the boot GPU first, and a node that fails on the live cast gives way to the OpenGL path), else through GStreamer's OpenGL plugin (`gst-plugins-base`, with EGL), which cannot import Intel's compressed tiled buffers and is not verified on NVIDIA-only machines.
-- For the wallpaper: [awww](https://codeberg.org/LGFae/awww) (`awww` and `awww-daemon`), which draws it; standard desktop and explicit Niri/SDDM installs include it. Kanade picks the image and runs `awww-daemon` unless one runs already, only through `setpriv` (util-linux), so it never outlives Kanade. Without awww the Wallpapers Surface and random wallpaper seed are unavailable; Kanade starts normally.
-- For wallpaper-derived shell colors and configured app themes: Matugen 4.x (optional; without it, Kanade uses built-in colors). With `appearance.sync`: qt5ct/qt6ct for Qt apps, Darkly for a Qt6 style that draws the palette, and the Pywalfox browser extension for Firefox and Zen (all optional).
-- For caffeine, locking before sleep and the `idle` Module's inhibitors: `systemd-inhibit` (systemd) and `setpriv` (util-linux), which ties the inhibitor to Kanade so it never outlives it.
-- For notification sounds (`notifications.sound`, off by default; its sound files and volume are keys beside it): `pw-play` (PipeWire) or `canberra-gtk-play`, and `setpriv` so a sound never outlives Kanade. `kanade doctor` says whether a player is found.
-- For the night light: [wlsunset](https://git.sr.ht/~kennylevinsen/wlsunset) and `setpriv` (util-linux), so it never outlives Kanade.
-- For Google Calendar: a Secret Service, like GNOME Keyring, KWallet or KeePassXC, and `xdg-open`. See [Google Calendar](Google-Calendar.md).
+Kanade provides the session's polkit authentication agent under niri and Umbriel (ADRs 0146, 0147); the installer does not add polkit-gnome. Live Umbriel registration, prompt placement, Cancel/Escape and overview deferral passed on the candidate recorded in ADR 0147; password/PAM authentication remains unverified.
+
+The binary goes to `~/.cargo/bin`, where the unit expects it, and the shell completions to `~/.local/share/bash-completion/completions/kanade`, `~/.config/fish/completions/kanade.fish` and `~/.local/share/zsh/site-functions/_kanade` (under `XDG_DATA_HOME` and `XDG_CONFIG_HOME` when set); zsh needs that directory in its `fpath` before `compinit`.
+
+A run replaces the unit and keeps the old one as `kanade.service.bak.DATE`; customize it with `systemctl --user edit kanade.service`, whose drop-in an update leaves alone, and `--uninstall` keeps those copies too. A failed build leaves the installed binary as it was.
+
+## Manual build
+
+From a checkout:
 
 ```sh
 cargo install --locked --path .
@@ -44,9 +64,48 @@ cargo install --locked --path .
 
 This puts `kanade` in `~/.cargo/bin`. `kanade completions bash|fish|zsh` prints the completions for a shell, from the commands `kanade help` lists, to put where that shell reads them, like `kanade completions fish > ~/.config/fish/completions/kanade.fish`.
 
-Kanade must be the only notification daemon. Stop mako, dunst or any other one and keep it from starting again, for example `systemctl --user disable --now mako` and removing it from niri's `spawn-at-startup`. Otherwise the Notifications Surface says which daemon has the bus name, and no notification reaches the island until it is stopped and Kanade restarted.
+## Requirements
 
-To keep the wallpaper in niri's overview, add a layer rule to your niri config, which Kanade changes only when you ask it to (`kanade niri-config rules apply overview-backdrop`, [CLI](CLI.md)), or through Settings under niri. awww draws on a Background layer named `awww-daemon`, and niri shows such a layer in the overview and between workspaces only with `place-within-backdrop` (niri 25.05 or later); without it the overview shows niri's background color. The default config from the installer has a rule for every layer. `kanade doctor` warns while the `wallpaper` Module is on and no rule places `awww-daemon` there; it reads `$NIRI_CONFIG`, else `config.kdl` in niri's config directory, and the files it includes. A pattern it cannot read as plain text counts as matching, so it never warns wrongly.
+Each need is optional only where it says so.
+
+- niri or Umbriel. Kanade selects a reachable Umbriel IPC socket (`$UMBRIEL_SOCKET`, else `$XDG_RUNTIME_DIR/umbriel-$WAYLAND_DISPLAY.sock`) first, then niri over `$NIRI_SOCKET`. See [Umbriel](#umbriel) below; the installer still installs niri by default.
+- A Rust toolchain and these system libraries with their headers: a C compiler, pkg-config, wayland, libxkbcommon, fontconfig, freetype, expat, vulkan-loader, libpulseaudio and linux-pam.
+- Optional, see [Limitations](Limitations.md): `pactl`, `udevadm`, `dbus-monitor`, `setpriv` (util-linux) and `pw-dump` (pipewire).
+- For the clipboard history: `wl-copy` (wl-clipboard), required for restoring entries.
+- For screen recording: `wf-recorder`, and an encoder that works.
+  - A VA-API driver for an Intel or AMD GPU (`intel-media-driver`, `mesa`), NVENC on an NVIDIA GPU (`nvidia-utils`), or neither, when it encodes on the CPU with libx264 (`ffmpeg` built with it, which Arch's is).
+  - `recording.encoder` is `auto`, which takes the first that works in that order and never wakes an NVIDIA GPU while VA-API works; `kanade doctor` says which it chose, on which render node (`recording.device`), why, and what is missing. `recording.quality` sets the size against the picture.
+  - Optional: `ffmpeg` to pause a recording and to test the encoders.
+  - For recording a window: `gst-launch-1.0` with the PipeWire plugin and the plugin of the encoder (`gst-plugin-pipewire`, `gst-plugins-bad` and `gst-plugin-va` for VA-API, `gst-plugins-ugly` for libx264) and `ffmpeg`.
+  - NVENC and libx264 take niri's DMA-BUF cast through the VA-API post-processor (a working VA-API driver, `gst-plugin-va`; it tries the Intel and AMD nodes, the boot GPU first, and a node that fails on the live cast gives way to the OpenGL path), else through GStreamer's OpenGL plugin (`gst-plugins-base`, with EGL). That path cannot import Intel's compressed tiled buffers and is not verified on NVIDIA-only machines.
+- For the wallpaper: [awww](https://codeberg.org/LGFae/awww) (`awww` and `awww-daemon`), which draws it; standard desktop and explicit Niri/SDDM installs include it.
+  - Kanade picks the image and runs `awww-daemon` unless one runs already, only through `setpriv` (util-linux), so it never outlives Kanade.
+  - Without awww the Wallpapers Surface and random wallpaper seed are unavailable; Kanade starts normally.
+- For wallpaper-derived shell colors and configured app themes: Matugen 4.x (optional; without it, Kanade uses built-in colors).
+  - With `appearance.sync`: qt5ct/qt6ct for Qt apps, Darkly for a Qt6 style that draws the palette, and the Pywalfox browser extension for Firefox and Zen (all optional).
+- For caffeine, locking before sleep and the `idle` Module's inhibitors: `systemd-inhibit` (systemd) and `setpriv` (util-linux), which ties the inhibitor to Kanade so it never outlives it.
+- For notification sounds (`notifications.sound`, off by default; its sound files and volume are keys beside it): `pw-play` (PipeWire) or `canberra-gtk-play`, and `setpriv` so a sound never outlives Kanade.
+  - `kanade doctor` says whether a player is found.
+- For the night light: [wlsunset](https://git.sr.ht/~kennylevinsen/wlsunset) and `setpriv` (util-linux), so it never outlives Kanade.
+- For Google Calendar: a Secret Service, like GNOME Keyring, KWallet or KeePassXC, and `xdg-open`. See [Google Calendar](Google-Calendar.md).
+
+## Notification daemon
+
+Kanade must be the only notification daemon. Stop mako, dunst or any other one and keep it from starting again, for example `systemctl --user disable --now mako` and removing it from niri's `spawn-at-startup`.
+
+Otherwise the Notifications Surface says which daemon has the bus name, and no notification reaches the island until it is stopped and Kanade restarted.
+
+Starting early also keeps D-Bus from activating another notification daemon for the first notification of the session.
+
+## Compositor layer rules
+
+Each rule goes in your niri config, which Kanade changes only when you ask it to: `kanade niri-config rules apply <id>`, or through Settings under niri.
+
+### Overview backdrop
+
+To keep the wallpaper in niri's overview, add a layer rule: `kanade niri-config rules apply overview-backdrop` ([CLI](CLI.md)), or Settings under niri.
+
+awww draws on a Background layer named `awww-daemon`, and niri shows such a layer in the overview and between workspaces only with `place-within-backdrop` (niri 25.05 or later); without it the overview shows niri's background color. The default config from the installer has a rule for every layer.
 
 ```kdl
 layer-rule {
@@ -55,7 +114,13 @@ layer-rule {
 }
 ```
 
-The `blur` finish (`appearance.finish`) asks niri to blur what lies behind the Island, Dock and Banners, which needs niri 26.04 or later. niri blurs a layer's request as xray, the wallpaper only, so windows behind a pane would show through sharp; a layer rule in your niri config (Kanade changes that file only when you ask, with `kanade niri-config rules apply blur-xray` or through Settings) turns xray off for Kanade's layers. The default config from the installer has it. niri marks non-xray effects experimental and recomputes them whenever what lies behind changes, so they cost more GPU than xray. `kanade doctor` warns while the finish is `blur` and no rule sets `xray false` on `kanade`, `kanade-dock` and `kanade-banners`, and when the compositor has no `ext_background_effect_manager_v1`; it reads the config as it does for the wallpaper rule. niri's own `blur { off }` turns all blur off, this one included.
+`kanade doctor` warns while the `wallpaper` Module is on and no rule places `awww-daemon` there. It reads `$NIRI_CONFIG`, else `config.kdl` in niri's config directory, and the files it includes; a pattern it cannot read as plain text counts as matching, so it never warns wrongly.
+
+### Blur xray
+
+The `blur` finish (`appearance.finish`) asks niri to blur what lies behind the Island, Dock and Banners, which needs niri 26.04 or later. niri blurs a layer's request as xray, the wallpaper only, so windows behind a pane would show through sharp. A layer rule turns xray off for Kanade's layers: `kanade niri-config rules apply blur-xray`, or Settings under niri. The default config from the installer has it.
+
+niri marks non-xray effects experimental and recomputes them whenever what lies behind changes, so they cost more GPU than xray.
 
 ```kdl
 layer-rule {
@@ -67,7 +132,15 @@ layer-rule {
 }
 ```
 
-A Banner shows a notification's text, and a screencast (a browser share, OBS) shows the Banner too. To hide Banners from screencasts, add a layer rule for `kanade-banners` (`kanade niri-config rules apply screencast-banners` or through Settings); niri draws them as a black rectangle there. It is off by default, because a viewer then never sees a Banner you wanted to show, and the installer's config has it commented out. Use `"screencast"`, not `"screen-capture"`, which would also blank Kanade's privacy indicators. Leave the `kanade` namespace alone: the Island draws the privacy dots, which must stay visible. `kanade doctor` says whether the rule is set while the `banners` Module runs, and never warns about it. See [ADR 0070](../adr/0070-banners-out-of-screencasts.md).
+`kanade doctor` warns while the finish is `blur` and no rule sets `xray false` on `kanade`, `kanade-dock` and `kanade-banners`, and when the compositor has no `ext_background_effect_manager_v1`; it reads the config as it does for the wallpaper rule. niri's own `blur { off }` turns all blur off, this one included.
+
+### Screencast banners
+
+A Banner shows a notification's text, and a screencast (a browser share, OBS) shows the Banner too. To hide Banners from screencasts, add a layer rule for `kanade-banners` (`kanade niri-config rules apply screencast-banners` or through Settings); niri draws them as a black rectangle there.
+
+It is off by default, because a viewer then never sees a Banner you wanted to show, and the installer's config has it commented out.
+
+Use `"screencast"`, not `"screen-capture"`, which would also blank Kanade's privacy indicators. Leave the `kanade` namespace alone: the Island draws the privacy dots, which must stay visible.
 
 ```kdl
 layer-rule {
@@ -77,25 +150,51 @@ layer-rule {
 }
 ```
 
-Only one Kanade runs per session. A second one stops at start with `failed to listen: kanade is already running`.
+`kanade doctor` says whether the rule is set while the `banners` Module runs, and never warns about it. See [ADR 0070](../adr/0070-banners-out-of-screencasts.md).
 
 ## Umbriel
 
-Kanade's Auth Surface supports Umbriel through the selected compositor's focused output, with the `polkit` Module on by default. Live Umbriel registration, visible focused-output placement, exclusive keyboard ownership, Cancel/Escape and overview deferral/retry passed on implementation `cc0ea5c`. A separate authorization check returned `pkcheck` exit 0 with no observed prompt or password entry; password delivery and PAM success remain unverified. Live lock cancellation/password clearing, missing or stale focus, and niri acceptance remain **NOT RUN**. Only one polkit agent can own this session: to use Kanade's agent, stop the competing agent and remove its startup entry. Kanade retries registration automatically, up to 30 s between attempts, and logs `kanade: polkit agent registered for this session` after success. A request waits without taking the keyboard while focus is missing or overview is active, then retries on an Island change. If you previously disabled the Module, enable it with `kanade module enable polkit` and restart through Umbriel. To keep an external agent instead, leave Kanade's `polkit` Module off. See [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md) for automated evidence and live verification limits.
+Umbriel is a compositor Kanade supports in place of niri. Install Umbriel separately; `scripts/install` does not install its package.
 
-Install Umbriel separately; `scripts/install` does not install its package. Use `--shell-only` for an existing desktop, or `--no-niri` to keep the desktop packages while skipping niri. The installer also copies `dist/umbriel/config.toml` to `$XDG_CONFIG_HOME/umbriel/config.toml` (default `~/.config/umbriel/config.toml`) when missing, including on a shell-only install, and keeps an existing file.
+### Setup
 
-The supplied Umbriel config starts `kanade` through `[general] autostart = ["kanade"]`. In an existing config, add `kanade` to that list once, preserving other entries, and ensure `~/.cargo/bin` is on the compositor's PATH. Keep Umbriel as the startup owner. Bare `kanade` starts a non-rendering recovery parent named `kanade-recover`, which runs one rendering shell and restarts it after any child exit. Duplicate starts are refused, including while an older direct shell is running. The supplied `kanade.service` remains enabled under `niri.service`; Umbriel does not need a different unit or a systemd ownership switch.
+Kanade selects a reachable Umbriel IPC socket (`$UMBRIEL_SOCKET`, else `$XDG_RUNTIME_DIR/umbriel-$WAYLAND_DISPLAY.sock`) first, then niri over `$NIRI_SOCKET`.
+
+Use `--shell-only` for an existing desktop, or `--no-niri` to keep the desktop packages while skipping niri. The installer also copies `dist/umbriel/config.toml` to `$XDG_CONFIG_HOME/umbriel/config.toml` (default `~/.config/umbriel/config.toml`) when missing, including on a shell-only install, and keeps an existing file.
+
+The supplied Umbriel config starts `kanade` through `[general] autostart = ["kanade"]`. In an existing config, add `kanade` to that list once, preserving other entries, and ensure `~/.cargo/bin` is on the compositor's PATH. Keep Umbriel as the startup owner.
+
+Kanade's Auth Surface supports Umbriel through the selected compositor's focused output, with the `polkit` Module on by default. Only one polkit agent can own this session: to use Kanade's agent, stop the competing agent and remove its startup entry. A request waits without taking the keyboard while focus is missing or overview is active, then retries on an Island change.
+
+Kanade retries registration automatically, up to 30 s between attempts, and logs `kanade: polkit agent registered for this session` after success. If you previously disabled the Module, enable it with `kanade module enable polkit` and restart through Umbriel. To keep an external agent instead, leave Kanade's `polkit` Module off.
+
+The default config includes the `blur-kanade` layer rule. For an existing Umbriel config, Settings under Compositor offers the rule, or `kanade umbriel-config rules apply blur-kanade` writes it on request. The KDL layer rules above apply only to niri.
+
+Umbriel area screenshots need `slurp` and `grim`, output screenshots need `grim`, and copying the saved PNG needs `wl-copy`; a copy failure does not discard the saved screenshot. Window screenshots, the color picker and niri's cast controls remain unavailable under Umbriel. See [Settings](Settings.md), [Limitations](Limitations.md) and [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md).
+
+### Startup and recovery
+
+The supplied `kanade.service` remains enabled under `niri.service`; Umbriel does not need a different unit or a systemd ownership switch. Bare `kanade` starts a non-rendering recovery parent named `kanade-recover`, which runs one rendering shell and restarts it after any child exit. Duplicate starts are refused, including while an older direct shell is running.
 
 `kanade status` names the recovery parent's PID, and `kanade doctor` checks that it owns the running Umbriel shell. `pgrep -x kanade` still names only the rendering shell. To stop recovery intentionally, send SIGTERM to the parent PID reported by status; stopping only the rendering child restarts it. Compositor exit stops the parent and its child. `scripts/dev` controls the parent, so a rebuild or Ctrl+C also stops and reaps the old child.
 
-The parent keeps acknowledged lock intent in memory, before any lock request reaches Umbriel. If the shell crashes with a lock pending or held, the replacement restores the lock screen even though Umbriel does not supply logind's `LockedHint`. Umbriel's source keeps the gap blank and locked; continuous frame coverage of that gap remains unobserved. Restart delay starts at 250 ms and doubles to at most 8 s; a shell that runs for 30 s resets it. No passwords or disk lock-state markers are kept. A crash after an unlock but before its confirmation reaches the parent can cause a conservative relock. If you disabled the lock Module before a crash while locked, the replacement still restores that existing lock, with new lock controls, sleep handling and lock/unlock hooks disabled. `kanade lock status` also refuses with `module lock is off` during that recovery: it follows the Module's verb gate and cannot diagnose the inherited lock. After confirmed unlock or refusal, the shell restarts once more with the lock Module fully off.
+The parent keeps acknowledged lock intent in memory, before any lock request reaches Umbriel. If the shell crashes with a lock pending or held, the replacement restores the lock screen even though Umbriel does not supply logind's `LockedHint`. Umbriel's source keeps the gap blank and locked; continuous frame coverage of that gap remains unobserved.
 
-Recovery requires the parent to survive. Abrupt parent death kills the rendering child and loses lock intent; the parent itself is not restarted. Do not stop it while locked expecting a fresh start to restore the lock screen. A hung shell is not detected. If the parent dies while locked, recover from another TTY with a compatible replacement locker; ending the graphical session is the last resort and loses unsaved work. See [ADR 0149](../adr/0149-umbriel-starts-a-shell-recovery-parent.md).
+Restart delay starts at 250 ms and doubles to at most 8 s; a shell that runs for 30 s resets it. No passwords or disk lock-state markers are kept. A crash after an unlock but before its confirmation reaches the parent can cause a conservative relock.
 
-Live Umbriel renderer-crash recovery and replacement-lock authentication were observed with the lock Module enabled and with a persisted disable on candidate `6ad11434ca099666dddf13ea32a519864503437d`, binary SHA-256 `43e16923ee0834fa297dfec0f4aa7862912e1747bd7522cb140c77bd77f22e2b`. Both replacements stayed under their surviving parent, showed the lock screen and refused UI requests while locked. In the disabled run, replacement lock/unlock hooks stayed suppressed, and authentication led to another child with the Module fully off. Both runs restored the exact original shell after unlocking and left real settings untouched. No frames covered the short replacement gap, so no-desktop-flash remains unobserved. Live logout/compositor shutdown and niri acceptance remain **NOT RUN**; subprocess fixtures cover automated process-lifetime behavior only. See ADR 0149 for the run evidence and the earlier unlocked smoke.
+If you disabled the lock Module before a crash while locked, the replacement still restores that existing lock, with new lock controls, sleep handling and lock/unlock hooks disabled. `kanade lock status` also refuses with `module lock is off` during that recovery: it follows the Module's verb gate and cannot diagnose the inherited lock. After confirmed unlock or refusal, the shell restarts once more with the lock Module fully off.
 
-The default config includes the `blur-kanade` layer rule. For an existing Umbriel config, Settings under Compositor offers the rule, or `kanade umbriel-config rules apply blur-kanade` writes it on request. The KDL layer rules above apply only to niri. Umbriel area screenshots need `slurp` and `grim`, output screenshots need `grim`, and copying the saved PNG needs `wl-copy`; a copy failure does not discard the saved screenshot. Window screenshots, the color picker and niri's cast controls remain unavailable under Umbriel. See [Settings](Settings.md), [Limitations](Limitations.md) and [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md).
+Recovery requires the parent to survive. Abrupt parent death kills the rendering child and loses lock intent; the parent itself is not restarted. Do not stop it while locked expecting a fresh start to restore the lock screen. A hung shell is not detected.
+
+If the parent dies while locked, recover from another TTY with a compatible replacement locker; ending the graphical session is the last resort and loses unsaved work. See [ADR 0149](../adr/0149-umbriel-starts-a-shell-recovery-parent.md).
+
+### What was verified
+
+Live Umbriel registration, visible focused-output placement, exclusive keyboard ownership, Cancel/Escape and overview deferral/retry passed on implementation `cc0ea5c`. A separate authorization check returned `pkcheck` exit 0 with no observed prompt or password entry; password delivery and PAM success remain unverified. Live lock cancellation/password clearing, missing or stale focus, and niri acceptance remain **NOT RUN**. See [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md) for automated evidence and live verification limits.
+
+Live Umbriel renderer-crash recovery and replacement-lock authentication were observed with the lock Module enabled and with a persisted disable on candidate `6ad11434ca099666dddf13ea32a519864503437d`, binary SHA-256 `43e16923ee0834fa297dfec0f4aa7862912e1747bd7522cb140c77bd77f22e2b`. Both replacements stayed under their surviving parent, showed the lock screen and refused UI requests while locked. In the disabled run, replacement lock/unlock hooks stayed suppressed, and authentication led to another child with the Module fully off.
+
+Both runs restored the exact original shell after unlocking and left real settings untouched. No frames covered the short replacement gap, so no-desktop-flash remains unobserved. Live logout/compositor shutdown and niri acceptance remain **NOT RUN**; subprocess fixtures cover automated process-lifetime behavior only. See ADR 0149 for the run evidence and the earlier unlocked smoke.
 
 ## Run with niri
 
@@ -108,7 +207,9 @@ systemctl --user daemon-reload
 systemctl --user enable --now kanade.service
 ```
 
-The unit runs `~/.cargo/bin/kanade`; edit its `ExecStart` for another install. Remove any `spawn-at-startup "kanade"` from niri's config: a second shell stops at start. `kanade doctor` warns about a unit that is not enabled or does not run the shell. The unit restarts the shell however it ends; `systemctl --user stop kanade.service` stops it.
+The unit runs `~/.cargo/bin/kanade`; edit its `ExecStart` for another install. `kanade doctor` warns about a unit that is not enabled or does not run the shell. The unit restarts the shell however it ends; `systemctl --user stop kanade.service` stops it.
+
+Remove any `spawn-at-startup "kanade"` from niri's config: a second shell stops at start. Only one Kanade runs per session, and a second one stops with `failed to listen: kanade is already running`.
 
 On a machine with two GPUs, Kanade draws on the one its window can present on, which is usually the integrated one, but the Vulkan loader still opens every driver in `/usr/share/vulkan/icd.d/`. On an Intel or AMD laptop with an NVIDIA dGPU that means about 50 MiB of the NVIDIA libraries mapped and resident for a GPU the shell never draws on. Naming the drawing GPU's driver in the unit keeps the others out:
 
@@ -129,8 +230,6 @@ Kanade's own notifications, like the timer's, show its icon from the icon theme:
 install -Dm644 dist/kanade.png ~/.local/share/icons/hicolor/256x256/apps/kanade.png
 ```
 
-Starting early also keeps D-Bus from activating another notification daemon for the first notification of the session.
-
 A shell that crashes at every start stops restarting after 5 starts in 60 s, and a locked session stays on niri's red screen. From another TTY (`Ctrl+Alt+F3`), fix the cause, then restart the unit, which locks again and keeps the session:
 
 ```sh
@@ -143,4 +242,3 @@ Only if that fails, end the graphical session with `loginctl terminate-session <
 `kanade update` builds `main` with Cargo into `~/.cargo/bin/kanade`, refreshes the user unit while preserving its old copy and systemd drop-ins, and restarts `kanade.service` if it was active. It does not install packages or write a compositor config. A failed build leaves the installed binary as it was.
 
 From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it on every save.
-

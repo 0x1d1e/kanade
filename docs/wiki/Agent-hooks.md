@@ -1,8 +1,8 @@
 # Agent hooks
 
-A coding agent can show a session as a live Activity on the Island: it starts with your prompt, shows the tool it runs, says when it waits for you, and ends when the turn does. It is the `live` Module's `kanade activity` (see [CLI](CLI.md)), fed by the agent's own hooks.
+A coding agent can show a session as a live Activity on the Island. It starts with your prompt, shows the tool it runs, says when it waits for you, and ends when the turn does. The Activity is the `live` Module's `kanade activity` (see [CLI](CLI.md)), fed by the agent's own hooks.
 
-Only Claude Code is supported, as its [hooks reference](https://code.claude.com/docs/en/hooks) describes its events. No other agent is claimed: see the last section for any that can run a command on an event.
+Only Claude Code is supported, as its [hooks reference](https://code.claude.com/docs/en/hooks) describes its events. No other agent is claimed; the last section covers any agent that can run a command on an event.
 
 ## Claude Code
 
@@ -22,9 +22,11 @@ Add this to `~/.claude/settings.json` (or a project's `.claude/settings.json`), 
 }
 ```
 
-`kanade` must be on the `PATH` Claude Code runs with. Each hook reads its event from stdin, so there is nothing else to configure; use as few of the events as you like.
+`kanade` must be on the `PATH` Claude Code runs with. Each hook reads its event from stdin, so there is nothing else to configure. Use as few of the events as you like.
 
-`PreToolUse` fires before every tool call, so it is the one that could add latency to a busy turn; `"async": true` ([hooks reference](https://code.claude.com/docs/en/hooks), "Run hooks in the background") lets Claude Code go on without waiting for it. Claude Code then does not enforce `timeout` on it, which is why it has none here; the hook bounds itself to 2 s. Events can then arrive out of order: a tool detail for a session that has ended changes nothing, and one that lands a few milliseconds after "Waiting for you" replaces that line until the next event. The other events are rare and stay synchronous.
+`PreToolUse` fires before every tool call, so it is the one that could add latency to a busy turn. `"async": true` ([hooks reference](https://code.claude.com/docs/en/hooks), "Run hooks in the background") lets Claude Code go on without waiting for it. Claude Code then does not enforce `timeout` on it, which is why it has none here; the hook bounds itself to 2 s.
+
+The events can then arrive out of order. A tool detail for a session that has ended changes nothing, and one that lands a few milliseconds after "Waiting for you" replaces that line until the next event. The other events are rare and stay synchronous.
 
 | Claude Code event | The Activity |
 |---|---|
@@ -66,6 +68,8 @@ The pills show on Peek, as any Activity's actions do, and stay until the press, 
 
 `kanade activity` has no agent in it: any agent or script that can run a command on its events can use the same verbs.
 
+Start a turn:
+
 ```sh
 kanade activity start agent-1 "My agent"        # a turn starts
 kanade activity detail agent-1 "Running tests"  # what it does now
@@ -77,12 +81,18 @@ kanade activity end agent-1                     # done; `fail agent-1 "why"` for
 
 An agent can ask on the Island and hear the answer. It sets up to 3 buttons and reads the press back; Kanade runs nothing for it.
 
+Set the buttons, wait for the press, then take them off:
+
 ```sh
 kanade activity actions agent-1 allow=Allow deny=Deny   # buttons on Peek
 key=$(kanade activity wait agent-1 --timeout 60)        # prints allow or deny; exits 1 on timeout
 kanade activity actions agent-1                         # take them off
 ```
 
-The agent does the work for the key it reads. A pressed button shows `...` until the agent's next `detail`, `progress`, `end`, `fail` or `actions`, or 10 s. They end with the Activity. The buttons show on Peek only and answer to the pointer; no key reaches them yet. Labels are cut to 24 characters and are never `Cancel`, `Now`, `Dismiss`, `Stop` or `Confirm`. `activity run ... --action cancel=<label>` ends the command with SIGTERM sent to the command itself, not its process group, so a `sh -c` wrapper dies and what it started may live on. The Claude Code hook (`activity hook claude`) sets none: Claude Code's own permission prompt stays where it is. The opt-in `activity hook claude decide` is the exception, and only on `PermissionRequest`.
+The agent does the work for the key it reads. A pressed button shows `...` until the agent's next `detail`, `progress`, `end`, `fail` or `actions`, or 10 s. They end with the Activity. The buttons show on Peek only and answer to the pointer; no key reaches them yet. Labels are cut to 24 characters and are never `Cancel`, `Now`, `Dismiss`, `Stop` or `Confirm`.
+
+`activity run ... --action cancel=<label>` ends the command with SIGTERM sent to the command itself, not its process group, so a `sh -c` wrapper dies and what it started may live on.
+
+The Claude Code hook (`activity hook claude`) sets none: Claude Code's own permission prompt stays where it is. The opt-in `activity hook claude decide` is the exception, and only on `PermissionRequest`.
 
 An id is 1 to 64 letters, digits, `.`, `_` or `-`; give each session its own. Whatever the agent's hook feeds in must come from its documentation. Kanade reads only Claude Code's own events and does not guess at other formats.

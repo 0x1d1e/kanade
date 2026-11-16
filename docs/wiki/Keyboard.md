@@ -1,5 +1,7 @@
 # Keyboard
 
+## niri keybinds
+
 Every Surface opens from a verb, so a niri keybind reaches it. Add these lines inside the `binds` block of `~/.config/niri/config.kdl`:
 
 ```kdl
@@ -19,7 +21,7 @@ Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island"
 
 `peek down` / `peek up` and `dictate down` / `up` are for niri's press and release binds. Kanade grabs no key. Tap Super opening the Launcher stays a niri bind to `kanade launcher toggle`.
 
-With `capture.annotate` on, a screenshot `capture screenshot` saved opens the annotation editor on the focused output: drag to draw a rectangle or an arrow, press Rectangle or Arrow to choose, Undo or Ctrl+Z takes the last shape back, Save writes `<stem>-annotated.png` beside the original and Escape closes without writing. Off by default in Settings' Screenshots section.
+## Screenshots, recording and caffeine
 
 Screenshots and caffeine work the same way:
 
@@ -35,13 +37,25 @@ Mod+Alt+K hotkey-overlay-title="Caffeine" { spawn "kanade" "caffeine" "toggle"; 
 Mod+Alt+L hotkey-overlay-title="Lock" { spawn "kanade" "lock"; }
 ```
 
+With `capture.annotate` on, a screenshot `capture screenshot` saved opens the annotation editor on the focused output. Drag to draw a rectangle or an arrow; press Rectangle or Arrow to choose.
+
+Undo or Ctrl+Z takes the last shape back. Save writes `<stem>-annotated.png` beside the original, and Escape closes without writing. Off by default in Settings' Screenshots section.
+
+## Gestures
+
 The pointer-gesture launcher opens from a key as well; Kanade grabs no key of its own. Draw with the left button held; Escape or a right click cancels, and so does 8 seconds without a stroke ending:
 
 ```kdl
 Mod+G hotkey-overlay-title="Gesture" { spawn "kanade" "gesture"; }
 ```
 
-Kanade can lock on idle itself: turn on the `idle` Module (`kanade module enable idle`, then restart Kanade) and stop any idle daemon. After `idle.dim` seconds the screens fade toward dark, and any input brings them back; at `idle.lock` the session locks, then `idle.screen_off` turns the monitors off and `idle.suspend` suspends, each 0 for never, see [Configuration](Configuration.md). A video playing, caffeine or any logind idle inhibitor holds every stage. `kanade idle status` says how it stands, and `kanade doctor` warns when hypridle runs beside it.
+## Idle and locking
+
+Kanade can lock on idle itself: turn on the `idle` Module (`kanade module enable idle`, then restart Kanade) and stop any idle daemon.
+
+After `idle.dim` seconds the screens fade toward dark, and any input brings them back. At `idle.lock` the session locks, then `idle.screen_off` turns the monitors off and `idle.suspend` suspends, each 0 for never; see [Configuration](Configuration.md).
+
+A video playing, caffeine or any logind idle inhibitor holds every stage. `kanade idle status` says how it stands, and `kanade doctor` warns when hypridle runs beside it.
 
 With the Module off, as by default, an idle daemon locks the same way as the keybind. For hypridle, in `~/.config/hypr/hypridle.conf`:
 
@@ -56,9 +70,15 @@ listener {
 }
 ```
 
-Kanade locks before sleep on its own, so no `before_sleep_cmd` is needed, and caffeine keeps the `idle` Module or hypridle from locking or suspending. An explicit suspend still locks while caffeine is on. `kanade lock` exits 0 only once niri holds the lock for that call and no password typed since was accepted, never for a lock ending right before it, so a suspend hook can wait on it. It exits 3 at once when a password typed on the lock screen unlocks it or is being checked as it is called, and with 1 when niri refuses the lock, as while another locker holds the session. On the lock screen, type the password and press Enter.
+Kanade locks before sleep on its own, so no `before_sleep_cmd` is needed, and caffeine keeps the `idle` Module or hypridle from locking or suspending. An explicit suspend still locks while caffeine is on.
+
+`kanade lock` exits 0 only once niri holds the lock for that call and no password typed since was accepted, never for a lock ending right before it, so a suspend hook can wait on it. It exits 3 at once when a password typed on the lock screen unlocks it or is being checked as it is called, and with 1 when niri refuses the lock, as while another locker holds the session. On the lock screen, type the password and press Enter.
+
+## Keys in Kanade's Surfaces
 
 An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.
+
+The table below lists what each Surface does with a key; the Keys Surface searches it beside niri's own binds.
 
 | Where | Keys |
 |---|---|
@@ -88,4 +108,3 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Desk media | with the pointer already over the buttons, Left or Right draws a ring on one that can act and presses nothing; the next Left or Right moves it, skipping a button the player cannot do, and Enter or Space presses the one it shows. Escape clears the ring and presses nothing, and the next character goes to the window below. A note being typed, or a face held by its handle, takes the key instead. No keybind focuses the Desk |
 | Desk faces | a drag on a face's handle takes the pointer and asks for the keyboard on demand so Escape can put the face back where it stood. Losing the keyboard cancels the drag and restores that position too; releasing the pointer keeps the new place. The bar is the only part of a face that moves it, so a click anywhere else on the card still types into it |
 | Media, Controls, Weather, Session | a typed character collapses an island opened from a keybind, so it goes to the window beneath |
-

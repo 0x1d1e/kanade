@@ -1,6 +1,6 @@
 # Kanade wiki
 
-Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri) and Umbriel, centered on an adaptive activity island. See the [README](../../README.md) for what it is and [Installation](Installation.md) for compositor setup.
+Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri) and Umbriel, centered on an adaptive activity island. Start at [Installation](Installation.md) to set up a compositor and run it, at [Configuration](Configuration.md) to change how it behaves, and at [CLI](CLI.md) to drive it from scripts. The [README](../../README.md) gives the short overview.
 
 | Page | Covers |
 |---|---|
