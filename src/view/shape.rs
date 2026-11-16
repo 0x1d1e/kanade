@@ -143,10 +143,7 @@ pub(super) fn measure_compact(island: &IslandService) -> HashMap<Id, u16> {
                             "Low battery"
                         })
                 }
-                Detail::Usage(_) => 170.0,
-                Detail::UsageNotice(line) | Detail::NightLight(line) | Detail::ScreenTime(line) => {
-                    58.0 + width(line)
-                }
+                Detail::NightLight(line) | Detail::ScreenTime(line) => 58.0 + width(line),
                 Detail::Hardware(shown) => 58.0 + width(&shown.title),
                 Detail::Reminder(shown) => 58.0 + width(&shown.title),
                 Detail::Layout(shown) => 58.0 + width(&shown.short),

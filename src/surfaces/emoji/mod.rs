@@ -141,6 +141,8 @@ impl Search {
             | Key::Down
             | Key::Left
             | Key::Right
+            | Key::PageUp
+            | Key::PageDown
             | Key::Tab
             | Key::Home
             | Key::End => {
@@ -154,7 +156,14 @@ impl Search {
                     return Some((Search { ring, ..self }, None));
                 }
 
-                Some(match grid::moved(place, key, targets) {
+                let moved = match key {
+                    Key::PageUp | Key::PageDown => {
+                        grid::paged(place, key, page(self.offset, grid), targets)
+                    }
+                    _ => grid::moved(place, key, targets),
+                };
+
+                Some(match moved {
                     Some(Place { row, column }) => {
                         let at = targets[row][column].0;
 
@@ -316,6 +325,18 @@ fn reveal(offset: f32, row: usize, grid: &Grid) -> f32 {
         Some(&(top, height)) => offset.min(top).max(top + height - room()),
         None => offset,
     }
+}
+
+// how many rows of the grid a screenful holds at `offset`, at least one, as PageUp and PageDown
+// move: a row counts when its top shows, so a title above a group is measured with its row
+fn page(offset: f32, grid: &Grid) -> usize {
+    let end = offset + room();
+
+    grid.rows
+        .iter()
+        .filter(|&&(top, _)| top >= offset - 0.5 && top < end - 0.5)
+        .count()
+        .max(1)
 }
 
 // the first and last rows of targets that show whole at `offset`
@@ -984,5 +1005,52 @@ mod tests {
         assert_eq!(targets.len(), 5);
         assert_eq!(grid.rows[3].0, 2.0 * HEADER + 3.0 * (CELL + CELL_GAP));
         assert_eq!(grid.rows[4].0, 2.0 * HEADER + 4.0 * (CELL + CELL_GAP));
+    }
+
+    // a page moves a screenful of rows, keeps the ring in view, clamps at either end and never
+    // wraps
+    #[test]
+    fn a_page_moves_a_screenful_of_rows_and_clamps() {
+        let grin = emojis::get("\u{1f600}").expect("grinning");
+        let emoji = vec![grin; 200 * COLUMNS];
+        let listed = vec![Listed { group: Some(0) }; emoji.len()];
+        let grid = layout(&emoji, &listed, 0);
+        let targets = targets(&listed, 0);
+        let search = Search::begin(1).bounded(targets.len(), &grid);
+
+        // the first page key shows a ring that hid, without moving it
+        let (shown, pressed) = search.step(Key::PageDown, &grid, &targets).unwrap();
+        assert_eq!(pressed, None);
+        assert_eq!(shown.ring.at, Some(At::Emoji(0)));
+
+        let page = page(shown.offset, &grid);
+        assert!(page > 1 && page < targets.len());
+
+        let (down, pressed) = shown.step(Key::PageDown, &grid, &targets).unwrap();
+        assert_eq!(pressed, None);
+        assert_eq!(down.ring.at, Some(At::Emoji(page * COLUMNS)));
+
+        let place = grid::find(&targets, &down.ring.at.unwrap()).unwrap();
+        let (first, last) = whole(down.offset, &grid).unwrap();
+        assert!(
+            (first..=last).contains(&place.row),
+            "the ring stays in view"
+        );
+
+        let (up, _) = down.step(Key::PageUp, &grid, &targets).unwrap();
+        assert_eq!(up.ring.at, Some(At::Emoji(0)));
+
+        // at the top a page up stays, rather than wrapping to the bottom
+        let (top, _) = up.step(Key::PageUp, &grid, &targets).unwrap();
+        assert_eq!(top.ring.at, Some(At::Emoji(0)));
+
+        // at the bottom a page down stays on the last tile, rather than wrapping to the first
+        let last = Search {
+            ring: Ring::start(1, true).onto(At::Emoji(emoji.len() - 1)),
+            offset: most(&grid),
+            ..Search::begin(1)
+        };
+        let (bottom, _) = last.step(Key::PageDown, &grid, &targets).unwrap();
+        assert_eq!(bottom.ring.at, Some(At::Emoji(emoji.len() - 1)));
     }
 }

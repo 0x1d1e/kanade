@@ -8,7 +8,7 @@ use kanade_runtime::service::Service;
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Arc, Canvas, Cap, Center, Column, Cursor, End, Key, Rectangle, Row, Shape, Start, Text, Widget,
-    children, request_frame,
+    children, clock, request_frame,
 };
 
 use super::password;
@@ -229,7 +229,11 @@ fn status(prompt: &Prompt) -> Rectangle {
             0.0
         } else {
             request_frame();
-            START.get_or_init(Instant::now).elapsed().as_secs_f32() * (360.0 / 1.3) % 360.0
+            clock::now()
+                .saturating_duration_since(*START.get_or_init(Instant::now))
+                .as_secs_f32()
+                * (360.0 / 1.3)
+                % 360.0
         };
         let spinner = Canvas::new().width(14.0).height(14.0).shapes(vec![
             Box::new(Arc::new().radius(6.0).stroke(1.5, colors.outline)),

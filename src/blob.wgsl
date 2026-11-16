@@ -21,12 +21,15 @@ fn body(p: vec2<f32>) -> f32 {
     return rounded(p - (rect.xy + rect.zw * 0.5), rect.zw * 0.5, values[1].x);
 }
 
-// the smooth minimum of two distances, as `pane.wgsl`'s `united`: a fillet, not a crease, within
-// `blend` of each other, and exactly the nearer one beyond
+// the exact circular fillet of two distances, as `pane.wgsl`'s `united`: where both contours are
+// within `blend`, their edges meet in an arc of radius `blend` tangent to both; beyond that arc's
+// band the nearer one alone
 fn united(a: f32, b: f32, blend: f32) -> f32 {
-    let pull = max(blend - abs(a - b), 0.0) / max(blend, 1e-4);
+    if abs(a - b) >= blend {
+        return min(a, b);
+    }
 
-    return min(a, b) - pull * pull * blend * 0.25;
+    return max(blend, min(a, b)) - length(max(vec2<f32>(blend) - vec2<f32>(a, b), vec2<f32>(0.0)));
 }
 
 fn cover(d: f32) -> f32 {
@@ -65,7 +68,9 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         // and as faint as the dot is, so one fading in pulls a small neck, not a wide faint one
         let reach = values[1].y * (1.0 - clamp((apart - bud.z) / max(values[1].z, 1e-4), 0.0, 1.0)) * bud.w;
 
-        d = united(d, own, reach);
+        // the fillet's radius is the circular one's: 0.62 of the old blend draws the same depth,
+        // while `reach` itself still sets the neck's extent and its fade
+        d = united(d, own, reach * 0.62);
         dots = max(dots, cover(own) * bud.w);
 
         // a neck is as opaque as the dots near it, each fading out over a reach from its edge, so it

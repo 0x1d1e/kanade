@@ -39,11 +39,11 @@ impl LauncherProvider for Quicklinks<'_> {
                     if query.is_empty() {
                         return None;
                     }
-                    provider::fit(query, &link.title).unwrap_or(Fit::Anywhere)
+                    provider::fit_or_typo(query, &link.title).unwrap_or(Fit::Anywhere)
                 } else if query.is_empty() {
                     Fit::Prefix
                 } else {
-                    provider::fit(query, &link.title)?
+                    provider::fit_or_typo(query, &link.title)?
                 };
 
                 Some(answer(link, fit, query))

@@ -38,6 +38,9 @@ pub enum Fit {
 
     // every word of it is somewhere in what the answer says about itself
     Anywhere,
+
+    // the name is a typo or two away; never over a real answer (ADR 0152)
+    Typo,
 }
 
 // what a row shows before its title
@@ -196,11 +199,12 @@ fn separator(ch: char) -> bool {
     )
 }
 
-// Medium sensitivity: score >= 1.5 * (query length - 2) + 4.
+// Medium sensitivity: score >= 1.5 * (query length - 2) + 4, the length counting the query's
+// characters except a separator it skipped (ADR 0152).
 fn match_score(query: &str, name: &str) -> Option<i32> {
     let query = normalized(query);
     let name = normalized(name);
-    if query.is_empty() || query.len() > name.len() {
+    if query.is_empty() {
         return None;
     }
     if query
@@ -211,8 +215,13 @@ fn match_score(query: &str, name: &str) -> Option<i32> {
         return Some(i32::MAX);
     }
 
+    // a query separator the name does not match is spacing between words the name runs together
+    // (`libre office` for `LibreOffice`): the row is skipped, carrying the previous row's scores
+    // forward, and the threshold counts the shorter query
+    let mut skipped = 0usize;
     let mut previous = vec![None::<i32>; name.len()];
-    for (row, &(query_char, _)) in query.iter().enumerate() {
+    let mut row = 0usize;
+    for &(query_char, _) in &query {
         let mut current = vec![None::<i32>; name.len()];
 
         // the best score at a column already passed, so a jump over two or more characters
@@ -249,10 +258,21 @@ fn match_score(query: &str, name: &str) -> Option<i32> {
                     .map(|score| score + points)
             };
         }
+
+        // a character the name does not have ends the match; a separator is spacing to skip
+        if !current.iter().any(Option::is_some) {
+            if separator(query_char) {
+                skipped += 1;
+                continue;
+            }
+            return None;
+        }
         previous = current;
+        row += 1;
     }
+
     let best = previous.into_iter().flatten().max()?;
-    let threshold = 1.5 * (query.len() as f32 - 2.0) + 4.0;
+    let threshold = 1.5 * (query.len() as f32 - skipped as f32 - 2.0) + 4.0;
     (best as f32 >= threshold).then_some(best)
 }
 
@@ -264,7 +284,20 @@ fn match_score(query: &str, name: &str) -> Option<i32> {
 pub fn fit(query: &str, name: &str) -> Option<Fit> {
     let query = query.to_lowercase();
     let name_lowered = name.to_lowercase();
-    if name_lowered == query {
+
+    // a name with no separator of its own runs its words together, so the query's separators are
+    // spacing the score skips: `libre office` reads `libreoffice` for the tiers too (ADR 0152)
+    let compact = query
+        .chars()
+        .filter(|ch| !separator(*ch))
+        .collect::<String>();
+    let classified = if compact.is_empty() || name_lowered.chars().any(separator) {
+        query.clone()
+    } else {
+        compact
+    };
+
+    if name_lowered == classified {
         return Some(Fit::Exact);
     }
 
@@ -276,24 +309,135 @@ pub fn fit(query: &str, name: &str) -> Option<Fit> {
 
     match_score(&query, name)?;
 
-    if name_lowered.starts_with(&query) {
+    if name_lowered.starts_with(&classified) {
         return Some(Fit::Prefix);
     }
     if name_lowered
-        .match_indices(&query)
+        .match_indices(&classified)
         .any(|(at, _)| !name_lowered[..at].ends_with(char::is_alphanumeric))
     {
         return Some(Fit::Word);
     }
-    if folded(name).contains(&folded(&query)) {
+    if folded(name).contains(&folded(&classified)) {
         return Some(Fit::Within);
     }
     Some(Fit::Terms)
 }
 
+// the most edits a typo may make: one from four to seven alphanumeric characters, two from eight
+fn typo_budget(length: usize) -> Option<usize> {
+    match length {
+        0..=3 => None,
+        4..=7 => Some(1),
+        _ => Some(2),
+    }
+}
+
+// the characters a typo compares: folded letters and digits, so separators and punctuation are
+// ignored and `fire-fox` reads `firefox`
+fn compared(text: &str) -> Vec<char> {
+    folded(text)
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .collect()
+}
+
+/*
+ * how well `name` answers a query that is a typo of it, after folding case and diacritics: the
+ * first alphanumeric character must be the name's, the query needs four of them, and the optimal
+ * string alignment must be within `typo_budget` and above zero, a zero being a real fit. Digits are
+ * literal: only the same digit answers one (ADR 0152).
+ */
+pub fn typo(query: &str, name: &str) -> Option<Fit> {
+    let query = compared(query);
+    let name = compared(name);
+    let budget = typo_budget(query.len())?;
+
+    let (Some(first), Some(named)) = (query.first(), name.first()) else {
+        return None;
+    };
+    if first != named {
+        return None;
+    }
+
+    let distance = alignment(&query, &name, budget)?;
+    (distance > 0).then_some(Fit::Typo)
+}
+
+// `fit`, then a typo of the name alone, for a provider whose only haystack is the name
+pub fn fit_or_typo(query: &str, name: &str) -> Option<Fit> {
+    fit(query, name).or_else(|| typo(query, name))
+}
+
+// the optimal string alignment distance of `query` and `name`, bounded by `budget`; a digit is
+// matched only by the same digit, never edited
+fn alignment(query: &[char], name: &[char], budget: usize) -> Option<usize> {
+    let beyond = budget + 1;
+    let step = |from: usize| if from >= beyond { beyond } else { from + 1 };
+
+    let mut older = vec![beyond; name.len() + 1];
+    let mut previous = vec![beyond; name.len() + 1];
+    previous[0] = 0;
+    for column in 1..=name.len() {
+        previous[column] = if name[column - 1].is_alphabetic() {
+            step(previous[column - 1])
+        } else {
+            beyond
+        };
+    }
+
+    for row in 1..=query.len() {
+        let query_char = query[row - 1];
+        let mut current = vec![beyond; name.len() + 1];
+        current[0] = if query_char.is_alphabetic() {
+            step(previous[0])
+        } else {
+            beyond
+        };
+
+        for column in 1..=name.len() {
+            let name_char = name[column - 1];
+            let mut value = if query_char == name_char {
+                previous[column - 1]
+            } else if query_char.is_alphabetic() && name_char.is_alphabetic() {
+                step(previous[column - 1])
+            } else {
+                beyond
+            };
+
+            // a dropped query character, or an extra character of the name
+            if query_char.is_alphabetic() {
+                value = value.min(step(previous[column]));
+            }
+            if name_char.is_alphabetic() {
+                value = value.min(step(current[column - 1]));
+            }
+
+            // an adjacent transposition, never through a digit
+            if row > 1
+                && column > 1
+                && query_char == name[column - 2]
+                && query[row - 2] == name_char
+                && query_char.is_alphabetic()
+                && name_char.is_alphabetic()
+            {
+                value = value.min(step(older[column - 2]));
+            }
+
+            current[column] = value;
+        }
+
+        older = previous;
+        previous = current;
+    }
+
+    let distance = previous[name.len()];
+    (distance <= budget).then_some(distance)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Fit, fit, match_score};
+    use super::{Fit, fit, fit_or_typo, match_score, typo};
 
     #[test]
     fn fuzzy_match_golden_scores() {
@@ -323,7 +467,62 @@ mod tests {
         assert_eq!(fit("", "Firefox"), Some(Fit::Prefix));
         assert_eq!(fit("", ""), Some(Fit::Exact));
         assert_eq!(fit("fir", ""), None);
+        assert_eq!(fit(" ", ""), None);
         assert_eq!(fit("cafe", "Café"), Some(Fit::Within));
         assert_eq!(fit("火", "火狐"), Some(Fit::Prefix));
+    }
+
+    // a separator the name does not spell is skipped for the score and the tiers, and the
+    // threshold counts the query without it (ADR 0152)
+    #[test]
+    fn a_separator_the_name_runs_together_is_skipped() {
+        // the name has no separator, so its words are joined by the spelling alone
+        assert_eq!(match_score("libre office", "LibreOffice"), Some(25));
+        assert_eq!(fit("libre office", "LibreOffice"), Some(Fit::Exact));
+        assert_eq!(fit("my app", "MyApp"), Some(Fit::Exact));
+
+        // carrying the previous row forward: a trailing separator keeps the score of what was
+        // matched before it, and two skipped separators leave the shorter query's threshold
+        assert_eq!(match_score("fire ", "Firefox"), Some(10));
+        assert_eq!(match_score("l i b", "lib"), Some(8));
+        assert_eq!(fit("l i b", "lib"), Some(Fit::Exact));
+
+        // a character the name does not have still ends the match
+        assert_eq!(match_score("f b", "Firefox"), None);
+        assert_eq!(fit("f b", "Firefox"), None);
+    }
+
+    // a typo is one edit from four to seven alphanumeric characters, two from eight, and never a
+    // real fit, another first letter, a literal digit, or a short query (ADR 0152)
+    #[test]
+    fn a_typo_is_admitted_within_its_budget() {
+        assert_eq!(typo("fierfox", "Firefox"), Some(Fit::Typo));
+        assert_eq!(typo("firefox", "Firefox"), None, "distance zero is a fit");
+        assert_eq!(typo("fir", "Fier"), None, "three characters never");
+        assert_eq!(typo("f b", "Firefox"), None, "two characters never");
+        assert_eq!(typo("wierfox", "Firefox"), None, "the first letter matches");
+        assert_eq!(typo("fierfoxes", "Firefox"), None, "three edits");
+        assert_eq!(
+            typo("fierfoxx", "Firefox"),
+            Some(Fit::Typo),
+            "two from eight"
+        );
+
+        // two edits fail a seven character query and pass an eight character one
+        assert_eq!(typo("fierfoy", "Firefox"), None);
+        assert_eq!(typo("fierfoyx", "Firefox"), Some(Fit::Typo));
+        assert_eq!(typo("fierfoxyx", "Firefox"), None, "three from eight");
+
+        // separators are ignored, case and diacritics fold, and digits stay literal
+        assert_eq!(typo("fier fox", "Firefox"), Some(Fit::Typo));
+        assert_eq!(typo("fierfóxx", "Firefox"), Some(Fit::Typo));
+        assert_eq!(typo("fierfóx", "Firefox"), Some(Fit::Typo), "folded first");
+        assert_eq!(typo("fir3fox", "Firefox"), None);
+        assert_eq!(typo("fir3fox", "Fir4Fox"), None);
+
+        // the tiers run in order: a real fit first, then a typo of the name
+        assert!(Fit::Anywhere < Fit::Typo);
+        assert_eq!(fit_or_typo("firefox", "Firefox"), Some(Fit::Exact));
+        assert_eq!(fit_or_typo("fierfox", "Firefox"), Some(Fit::Typo));
     }
 }

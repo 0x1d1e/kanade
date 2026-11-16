@@ -27,7 +27,7 @@ use crate::sources::system::Switch;
 use crate::sources::{
     brightness, caffeine, capture, charge_limit, dictation, focus, google, live, media,
     night_light, niri, osd, power, pulse, recording, reminders, session, subscriptions, timer,
-    usage, wallpaper, weather,
+    wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor, sddm, ui};
@@ -61,7 +61,6 @@ pub struct Verb {
 pub enum Call {
     Island(Command),
     Timer(timer::Request),
-    Usage(usage::Request),
     Live(live::Request),
     Dmenu(choose::Asked),
     ClearNotifications,
@@ -566,25 +565,10 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return dictate::run(request);
     }
 
-    // the key is read at a terminal, never through the socket
-    if let Call::Usage(usage::Request::Key) = asked {
-        return usage::key();
-    }
-
     // the shell holds the call until a press arrives, so one ask is enough; the client's
     // timeout is its own, and a press the shell already holds is answered at once
     if let Call::Live(live::Request::Wait { id, timeout }) = &asked {
         return activity_wait(id, *timeout);
-    }
-
-    // the agent's event comes on stdin, never the arguments
-    if let Call::Live(live::Request::Hook(agent)) = asked {
-        return live::hook(agent);
-    }
-
-    // the opt-in decider: the shell still never exits 2; this process may
-    if let Call::Live(live::Request::Decide(agent)) = asked {
-        return live::decide(agent);
     }
 
     // the lines come from stdin, never the arguments

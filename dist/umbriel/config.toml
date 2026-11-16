@@ -33,7 +33,7 @@ theme = "Bibata-Modern-Classic"
 size = 24
 
 [[layer_rule]]
-match.namespace = "^kanade(-dock|-banners)?$"
+match.namespace = "^kanade(-dock(-menu)?|-banners|-launcher)?$"
 blur = true
 blur_optimized = false
 blur_ignore_alpha = 0.5

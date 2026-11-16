@@ -263,7 +263,7 @@ impl LauncherProvider for Destinations {
             for (offered, icon, title, detail, names, destination) in tiles {
                 let fit = names
                     .iter()
-                    .filter_map(|name| provider::fit(&query, name))
+                    .filter_map(|name| provider::fit_or_typo(&query, name))
                     .min();
 
                 let Some(fit) = fit.filter(|_| offered) else {
@@ -308,7 +308,7 @@ impl LauncherProvider for Destinations {
 fn pages(query: &str) -> impl Iterator<Item = Answer> {
     settings::listed().filter_map(move |page| {
         let title = format!("{} settings", page.title);
-        let fit = provider::fit(query, &title.to_lowercase())?;
+        let fit = provider::fit_or_typo(query, &title.to_lowercase())?;
 
         Some(Answer {
             fit,
@@ -344,7 +344,9 @@ fn placed(query: &str) -> impl Iterator<Item = Answer> {
                     .split_whitespace()
                     .all(|term| term.chars().count() >= ANYWHERE && anywhere.contains(term))
                     .then_some(Fit::Anywhere)
-            })?;
+            })
+            .or_else(|| provider::typo(query, &setting.label.to_lowercase()))
+            .or_else(|| provider::typo(query, setting.key))?;
 
         Some(Answer {
             fit,
@@ -413,9 +415,9 @@ fn non_schema(query: &str) -> impl Iterator<Item = Answer> {
         let fit = item
             .keywords
             .iter()
-            .filter_map(|kw| provider::fit(query, kw))
+            .filter_map(|kw| provider::fit_or_typo(query, kw))
             .min()
-            .or_else(|| provider::fit(query, &item.title.to_lowercase()))?;
+            .or_else(|| provider::fit_or_typo(query, &item.title.to_lowercase()))?;
 
         Some(Answer {
             fit,

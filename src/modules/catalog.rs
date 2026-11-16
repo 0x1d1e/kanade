@@ -27,7 +27,7 @@ use crate::sources::{
     lyrics, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, polkit, power, privacy, pulse, radios, recording, reminders,
-    screen_time, seat, session, sleep, subscriptions, system, timer, tray, umbriel, usage, wake,
+    screen_time, seat, session, sleep, subscriptions, system, timer, tray, umbriel, wake,
     wallpaper, wallpaper_moving, weather, windows, workspace,
 };
 use crate::{
@@ -668,6 +668,7 @@ notifications dnd on until <HH:MM>
             service::watch::<Niri>(banners::follow_cover);
             service::watch::<kanade_runtime::Toplevels>(banners::follow_cover);
             service::watch::<crate::sources::fullscreen::Fullscreen>(banners::follow_cover);
+            service::watch::<kanade_runtime::idle::Idle>(banners::presence_changed);
 
             app.window_per_monitor(banners::window)
         },
@@ -1266,7 +1267,7 @@ notifications dnd on until <HH:MM>
                     .ok_or(Unparsed::Usage)
             },
         }],
-        start: |app| app,
+        start: |app| app.window_per_monitor_under(surfaces::wallpapers::preview),
     },
     // a countdown or a pomodoro to start from the island, and the one running
     Module {
@@ -1492,37 +1493,6 @@ notifications dnd on until <HH:MM>
         }],
         start: |app| {
             screen_time::start();
-            app
-        },
-    },
-    // Claude's plan usage as two rings on the island, off unless turned on (ADR 0145)
-    Module {
-        name: "usage",
-        about: "Claude's plan usage as two rings on the Island",
-        requires: &[CORE],
-        optional: &[],
-        warns: None,
-        needs: &[],
-        settings: &[],
-        hooks: Hooks::NONE,
-        verbs: &[Verb {
-            name: "usage",
-            about: "Refresh Claude's plan usage, or set the API key",
-            usage: || {
-                String::from(
-                    "usage
-usage key
-  key: reads the Claude plan key from stdin (typed hidden at a terminal) into $XDG_STATE_HOME/kanade/usage-key",
-                )
-            },
-            parse: |arguments| {
-                usage::Request::parse(arguments)
-                    .map(Call::Usage)
-                    .ok_or(Unparsed::Usage)
-            },
-        }],
-        start: |app| {
-            usage::start();
             app
         },
     },

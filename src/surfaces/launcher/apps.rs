@@ -71,7 +71,8 @@ impl Apps<'_> {
 
 /*
  * how well an app answers the lowercase query, as `provider::fit` says of its name, then every
- * word anywhere in its name, description or command
+ * word anywhere in its name, description or command, then a typo of its name: a real metadata
+ * match beats a typo (ADR 0152)
  */
 fn fit(query: &str, name: &str, description: &str, exec: &str) -> Option<Fit> {
     let name = name.to_lowercase();
@@ -82,10 +83,11 @@ fn fit(query: &str, name: &str, description: &str, exec: &str) -> Option<Fit> {
 
     let anywhere = format!("{name} {description} {exec}").to_lowercase();
 
-    query
-        .split_whitespace()
-        .all(|term| anywhere.contains(term))
-        .then_some(Fit::Anywhere)
+    if query.split_whitespace().all(|term| anywhere.contains(term)) {
+        return Some(Fit::Anywhere);
+    }
+
+    provider::typo(query, &name)
 }
 
 // the app's icon, or its name's initial for one without

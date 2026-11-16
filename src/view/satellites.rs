@@ -122,8 +122,6 @@ pub(super) fn satellite_mark(activity: &Activity, output: &str, now: Instant) ->
         Detail::Session(Leaving::Failed { .. } | Leaving::Unanswered { .. }) => {
             label(String::from("!"), theme::signals().critical)
         }
-        Detail::Usage(usage) => super::usage::mark(usage),
-        Detail::UsageNotice(_) => Box::new(Icon::Pulse.on(14.0, theme::signals().critical)),
         _ => label(
             abbreviation(activity.kind()).to_owned(),
             theme::island().on_surface,
@@ -191,6 +189,5 @@ pub(super) fn abbreviation(kind: Kind) -> &'static str {
         Kind::Live => "Lv",
         Kind::NightLight => "Nl",
         Kind::Reminder => "Rm",
-        Kind::Usage => "Us",
     }
 }

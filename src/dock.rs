@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Color, Column, Cursor, End, Horizontal, Layer, LayerWindow, Margin, Monitor,
-    Monitors, Padding, Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone,
+    Monitors, Padding, Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone, clock,
     request_frame,
 };
 use kanade_runtime::{MutexExt, service::Service};
@@ -564,7 +564,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     // merged, a Crown's icons grow over the Island's body just in from the plate, as they do over anything
     let most = config.magnify.most();
     let size = Size::of(config.dock_size);
-    let now = Instant::now();
+    let now = clock::now();
 
     // dark, as the pane under them is dark, not the palette's background
     let roles = theme::island();
@@ -574,7 +574,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let drag = pointers.drag().cloned();
     let autohide = autohides(place);
 
-    // our springs, not runtime Animations, so the view asks for frames until those it shows rest
+    // our springs, so the view asks for frames until those it shows rest
     if pointer.is_some_and(|pointer| {
         moving(&pointer.grow, now) || autohide && moving(&pointer.shown, now)
     }) {
@@ -831,7 +831,7 @@ pub(crate) fn between(
     let config = config::get();
     let place = config.dock_placement();
     let size = Size::of(config.dock_size);
-    let now = Instant::now();
+    let now = clock::now();
     let roles = theme::island();
     let pieces = pieces(&items);
     let far = place.anchor.edge == Edge::Bottom;

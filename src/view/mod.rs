@@ -11,7 +11,7 @@ use kanade_runtime::service::{Service, Write};
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Horizontal, Layer, LayerWindow, Monitor, Parent, Rectangle, Scroll, Stack,
-    Start, Vertical, Widget, Zone, request_frame,
+    Start, Vertical, Widget, Zone, clock, request_frame,
 };
 
 use crate::autohide;
@@ -45,7 +45,6 @@ mod shape;
 mod standing;
 mod status;
 mod toast;
-mod usage;
 
 pub(crate) use self::covered::covered;
 use self::covered::raise;
@@ -228,7 +227,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     // reading subscribes this window to island changes
     let island = IslandService::read();
 
-    let now = Instant::now();
+    let now = clock::now();
     let _on = shape::On::take(monitor);
 
     // a left press swells the window's drawing and hit targets, a spring of ours too
@@ -278,7 +277,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         island.settled(&monitor.name, now),
     );
 
-    // the spring is ours, not a runtime Animation, so the view asks for frames until it rests
+    // the spring is ours, so the view asks for frames until it rests
     if !island.settled(&monitor.name, now) {
         request_frame();
     }

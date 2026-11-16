@@ -1,8 +1,7 @@
 //! Live Activities from outside (ADR 0042): `kanade activity` lets a script, a build or a download
 //! show what it does on the Island. `start` posts a Persistent Ongoing Live Activity, `progress`
 //! and `detail` repost it, and `end` or `fail` turn it into a short Transient done or failed form,
-//! as a saved recording's. `run` wraps a command in all of it, on the client's side, and `hook`
-//! turns an agent's hook events into the same verbs (`hook.rs`, ADR 0058).
+//! as a saved recording's. `run` wraps a command in all of it, on the client's side.
 //!
 //! What comes in is another program's, so it is bounded: at most `MOST` live at once, of which at
 //! most `NOTIFIED` are a notification's progress (ADR 0059), ids from a small alphabet that never
@@ -40,9 +39,6 @@ use crate::island::activity::{
     Action, Activity, Detail, Ended, Id, Interrupt, Job, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::service::IslandService;
-pub use hook::{Agent, decide, run as hook};
-
-mod hook;
 
 // how many may be live at once; another is refused until one ends
 pub const MOST: usize = 8;
@@ -163,22 +159,6 @@ pub enum Request {
         actions: Vec<Action>,
         command: Vec<String>,
     },
-
-    // the client's own: one hook event of an agent on stdin, told as the verbs above
-    Hook(Agent),
-
-    // the client's own: `activity hook claude decide`, a permission decider (ADR 0058)
-    Decide(Agent),
-
-    // a tool name `always` allowed, for this process only; the command is never kept
-    Remember {
-        tool: String,
-    },
-
-    // whether `remember` kept this tool name
-    Remembered {
-        tool: String,
-    },
 }
 
 impl Request {
@@ -259,14 +239,6 @@ impl Request {
                     command: command.iter().map(|word| (*word).to_owned()).collect(),
                 })
             }
-            ["hook", agent, "decide"] => Some(Request::Decide(Agent::parse(agent)?)),
-            ["hook", agent] => Some(Request::Hook(Agent::parse(agent)?)),
-            ["remember", tool] => Some(Request::Remember {
-                tool: (*tool).to_owned(),
-            }),
-            ["remembered", tool] => Some(Request::Remembered {
-                tool: (*tool).to_owned(),
-            }),
             _ => None,
         }
     }
@@ -286,7 +258,6 @@ activity pressed <id>
 activity wait <id> [--timeout <seconds>]
 activity list
 activity run <id> <title> [--action <key>=<label>]... -- <command>...
-activity hook claude
   <id>: 1 to {ID} letters, digits, '.', '_' or '-', not starting with '{NOTIFICATION}' or '{LAUNCHER}'; it names one live Activity until it ends
   <title>: what it is, one line, cut to {TITLE} characters
   <amount>: a percent like 40 or 40%, or a fraction like 0.4
@@ -298,10 +269,7 @@ seconds at most). The actions end with the Activity
   <key>: 1 to {KEY} lowercase letters, digits, '_' or '-'
   <label>: one line, cut to {LABEL} characters, never {reserved}, which are the shell's own
   <command>: run with the Activity live, ended as done on exit status 0 and failed on any other, \
-which kanade exits with; an action keyed 'cancel' ends the command with SIGTERM
-  hook: reads one Claude Code hook event as JSON on stdin and shows the session as a live Activity \
-(`docs/wiki/Agent-hooks.md`); it exits 0 or 1, never 2, which Claude Code takes as a block. \
-`hook claude decide` is the opt-in permission decider, a replacement for that one hook entry"
+which kanade exits with; an action keyed 'cancel' ends the command with SIGTERM"
     )
 }
 
@@ -818,7 +786,7 @@ impl Board {
     }
 }
 
-// how a refusal for an id that is not live begins, which `hook` tells from any other
+// how a refusal for an id that is not live begins
 const NOT_LIVE: &str = "no live Activity named ";
 
 fn unknown(id: &str) -> String {
@@ -833,40 +801,6 @@ static CHANGED: Condvar = Condvar::new();
 // the replies to `pressed-wait` calls, held until a press of that Activity arrives; one waiter
 // after another on one id, the first of them answered when a press does
 static PRESS_WAIT: Mutex<Vec<(String, IpcReply)>> = Mutex::new(Vec::new());
-
-// tool names an `always` press kept, for this process only, not on disk; the command is never stored
-const REMEMBERED: usize = 64;
-const TOOL: usize = 64;
-static ALLOWED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-// `name` as the tool key that is remembered, or none when it is empty once cut
-fn tool_name(name: &str) -> Option<String> {
-    let name = line(&[name], TOOL);
-
-    (!name.is_empty()).then_some(name)
-}
-
-// keep `name` until this process ends; a full list drops the oldest, and a repeat is not stored twice
-fn remember(name: &str) -> Result<(), String> {
-    let Some(name) = tool_name(name) else {
-        return Err(String::from("no tool name"));
-    };
-    let mut allowed = ALLOWED.locked();
-
-    if !allowed.iter().any(|kept| kept == &name) {
-        if allowed.len() == REMEMBERED {
-            allowed.remove(0);
-        }
-
-        allowed.push(name);
-    }
-
-    Ok(())
-}
-
-fn remembered(name: &str) -> bool {
-    tool_name(name).is_some_and(|name| ALLOWED.locked().iter().any(|kept| kept == &name))
-}
 
 /*
  * a `pressed-wait`, the call behind `activity wait`: no press is waiting, so the reply is held
@@ -951,26 +885,9 @@ pub fn request(request: Request) -> Result<String, String> {
         }
         Request::Pressed { id } => return board.pressed(&id, now),
         Request::List => return Ok(board.list().join("\n")),
-        Request::Remember { tool } => {
-            remember(&tool)?;
-            return Ok(String::new());
-        }
-        Request::Remembered { tool } => {
-            return Ok(if remembered(&tool) {
-                String::from("yes")
-            } else {
-                String::new()
-            });
-        }
         // these run in the client; a `pressed-wait` is answered by `held`, before `run`
-        Request::Run { .. }
-        | Request::Wait { .. }
-        | Request::Hook(_)
-        | Request::Decide(_)
-        | Request::PressedWait { .. } => {
-            return Err(String::from(
-                "`activity run`, `wait` and `hook` run in the client",
-            ));
+        Request::Run { .. } | Request::Wait { .. } | Request::PressedWait { .. } => {
+            return Err(String::from("`activity run` and `wait` run in the client"));
         }
     };
 
@@ -1659,29 +1576,6 @@ mod tests {
             read(Ok(Reply::Done(String::from("yes")))),
             Ok(Some(String::from("yes")))
         );
-    }
-
-    #[test]
-    fn an_always_keeps_the_tool_name_only_and_only_in_this_process() {
-        assert_eq!(
-            Request::parse(&["hook", "claude", "decide"]),
-            Some(Request::Decide(Agent::Claude))
-        );
-        assert_eq!(Request::parse(&["hook", "claude", "other"]), None);
-        assert!(remember("Bash").is_ok());
-        assert!(remembered("Bash"));
-        assert!(!remembered("rm -rf /"));
-        assert!(remember("").is_err());
-        assert!(!remembered(""));
-
-        for index in 0..REMEMBERED {
-            assert!(remember(&format!("tool-{index}")).is_ok());
-        }
-
-        // the cap drops the oldest, and still never grows past it
-        assert!(!remembered("Bash"));
-        assert!(remembered("tool-0"));
-        assert_eq!(ALLOWED.locked().len(), REMEMBERED);
     }
 
     #[test]

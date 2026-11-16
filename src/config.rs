@@ -1854,7 +1854,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.finish",
         label: "Finish",
-        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, or \"blur\", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is \"light\" (needs niri 26.04)",
+        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, or \"blur\", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is \"light\". Blur needs niri 26.04 with ext_background_effect, or Umbriel with the blur-kanade layer rule; without either it draws the opaque tinted solid",
         kind: Kind::Choice(
             Choices::named(Finish::NAMES),
             Field {
@@ -1883,7 +1883,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.accessibility",
         label: "Follow desktop accessibility",
-        help: "follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; turning it on takes a restart",
+        help: "follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; the desktop is followed live while the shell runs, and turning this on or off applies at the next reload, which Settings makes, without a restart",
         kind: Kind::Switch(Field {
             get: |config| config.appearance.accessibility,
             set: |config, follow| config.appearance.accessibility = follow,

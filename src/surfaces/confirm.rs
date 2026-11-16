@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::service::Service;
-use kanade_runtime::{Color, Rectangle, Stack, Widget, children, request_frame};
+use kanade_runtime::{Color, Rectangle, Stack, Widget, children, clock, request_frame};
 
 use crate::config;
 use crate::island::motion::Mode;
@@ -183,7 +183,7 @@ pub fn release() {
 // how full `what` is for the view, which keeps drawing while it moves
 pub fn fill(what: impl Hash) -> f32 {
     let reduced = config::get().island.motion == Mode::Reduced;
-    let (fill, moving) = Confirm::read().fill_at(name(what), Instant::now(), reduced);
+    let (fill, moving) = Confirm::read().fill_at(name(what), clock::now(), reduced);
 
     if moving {
         request_frame();

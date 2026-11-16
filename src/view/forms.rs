@@ -315,8 +315,6 @@ pub(super) fn small_form(
 
             reminder(presentation, shown, actions, key)
         }
-        (presentation, Some(Detail::Usage(usage))) => super::usage::form(presentation, usage),
-        (presentation, Some(Detail::UsageNotice(line))) => super::usage::notice(presentation, line),
         _ => None,
     }
 }

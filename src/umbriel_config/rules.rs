@@ -34,9 +34,9 @@ pub const PRESETS: &[RulePreset] = &[
     RulePreset {
         id: "blur-kanade",
         label: "Blur behind Kanade surfaces",
-        description: "Enable blur with popups blurred and non-optimized blur for Kanade Island, Dock and Banners",
+        description: "Enable blur with popups blurred and non-optimized blur for Kanade Island, Dock, Dock menus, Banners and Launcher",
         toml_body: r#"[[layer_rule]]
-match.namespace = "^kanade(-dock|-banners)?$"
+match.namespace = "^kanade(-dock(-menu)?|-banners|-launcher)?$"
 blur = true
 blur_optimized = false
 blur_ignore_alpha = 0.5
@@ -76,11 +76,10 @@ pub fn matches_preset(table: &Table, id: &str) -> bool {
     match id {
         "blur-kanade" => {
             let has_blur = table.get("blur").and_then(|b| b.as_bool()).unwrap_or(false);
-            let matches_ns = ns.is_some_and(|n| {
-                n == "^kanade(-dock|-banners)?$"
-                    || n == "^kanade(-banners|-dock)?$"
-                    || n.contains("kanade")
-            });
+            // the recommended pattern, and the narrower ones earlier releases wrote (their names
+            // all contain "kanade"), so an existing rule still reads active
+            let matches_ns = ns
+                .is_some_and(|n| n == crate::sources::binds::PANE_PATTERN || n.contains("kanade"));
             has_blur && matches_ns
         }
         _ => false,
@@ -297,6 +296,23 @@ blur_popups = true
     fn detects_active_rule() {
         assert!(is_rule_active(SAMPLE, "blur-kanade"));
         assert!(!is_rule_active(SAMPLE, "overview-wallpaper"));
+    }
+
+    // the recommended rule covers every namespace Kanade draws a pane on; an old narrow rule
+    // still reads active, so an existing config is not reported missing
+    #[test]
+    fn the_recommended_pattern_covers_every_kanade_namespace() {
+        use crate::sources::binds::{PANE_NAMESPACES, PANE_PATTERN, covers};
+
+        let body = preset("blur-kanade").unwrap().toml_body;
+        assert!(body.contains(PANE_PATTERN));
+
+        for namespace in PANE_NAMESPACES {
+            assert_eq!(covers(PANE_PATTERN, namespace), Some(true), "{namespace}");
+        }
+        assert_eq!(covers(PANE_PATTERN, "kanade-settings"), Some(false));
+
+        assert!(is_rule_active(SAMPLE, "blur-kanade"));
     }
 
     #[test]

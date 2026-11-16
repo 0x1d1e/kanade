@@ -2687,6 +2687,107 @@ mod tests {
         }
     }
 
+    // an app with the name it shows and the description its desktop entry gives
+    fn named(name: &str, description: &str) -> App {
+        let id = format!("{name}.desktop");
+
+        let launch = Launch::of(&launch::Fields {
+            id: &id,
+            name,
+            icon: None,
+            file: Path::new(""),
+            exec: Some("run"),
+            path: None,
+            terminal: false,
+            dbus_activatable: false,
+        })
+        .expect("an Exec starts");
+
+        App {
+            name: name.into(),
+            id,
+            description: Some(description.into()),
+            icon: None,
+            icon_file: None,
+            launch,
+            actions: Vec::new(),
+        }
+    }
+
+    /*
+     * the ranked search end to end: a query's separators are spacing when the name runs its words
+     * together, a real fit always leads a typo, and a typo is an answer, so the web's rows do not
+     * follow it (ADR 0152)
+     */
+    #[test]
+    fn separated_queries_and_typos_rank_after_real_fits() {
+        let apps = [
+            named("Firefox", "Web Browser"),
+            named("LibreOffice", "Office Suite"),
+            named("MyApp", "Notes"),
+            named("Visual Studio Code", "Code Editor"),
+            named("Fier Fox", "Fiction"),
+        ];
+        let provider = AppsProvider(&apps);
+        let ranked = |query: &str| provider::ranked(&[&provider], query);
+        let titles = |answers: &[Answer]| {
+            answers
+                .iter()
+                .map(|answer| answer.title.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // a separator the name does not spell is spacing between the words it runs together
+        let answers = ranked("libre office");
+        assert_eq!(titles(&answers), ["LibreOffice"]);
+        assert!(
+            matches!(answers[0].fit, Fit::Exact | Fit::Prefix),
+            "{:?}",
+            answers[0].fit
+        );
+
+        let answers = ranked("my app");
+        assert_eq!(titles(&answers), ["MyApp"]);
+        assert!(
+            matches!(answers[0].fit, Fit::Exact | Fit::Prefix),
+            "{:?}",
+            answers[0].fit
+        );
+
+        // Firefox's own entry says what the second term belongs to; LibreOffice's name says both
+        // letters too, and it follows
+        let answers = ranked("f b");
+        assert_eq!(answers[0].title, "Firefox");
+        assert_eq!(answers[0].fit, Fit::Anywhere);
+
+        // an abbreviation keeps the tier the score gives it
+        let answers = ranked("vsc");
+        assert_eq!(titles(&answers), ["Visual Studio Code"]);
+
+        // a real fit always leads a typo, and an exact name leads both
+        let answers = ranked("firefox");
+        assert_eq!(answers[0].title, "Firefox");
+        assert_eq!(answers[0].fit, Fit::Exact);
+
+        let answers = ranked("fierfox");
+        assert_eq!(answers[0].title, "Fier Fox");
+        assert_eq!(answers[0].fit, Fit::Terms);
+        let typo = answers
+            .iter()
+            .find(|answer| answer.title == "Firefox")
+            .expect("a typo answers the query");
+        assert_eq!(typo.fit, Fit::Typo);
+        assert!(!typo.filler);
+
+        // a typo is a real answer, so the web's rows do not follow it
+        let web = offered("fierfox", answers.clone(), true, || true);
+        assert_eq!(web.len(), answers.len());
+        assert!(
+            web.iter()
+                .all(|answer| !matches!(answer.action, Action::Browse(_)))
+        );
+    }
+
     /*
      * cached rankings follow their inputs: unchanged inputs reuse the answer; app changes rerank.
      * Window titles come from shared Services, so the test holds their write turn across reads.

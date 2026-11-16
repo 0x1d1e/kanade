@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::sources::niri::Niri;
 use crate::sources::notifications::{Notification, Notifications, Urgency};
+use kanade_runtime::idle::{Idle, PRESENCE};
 use kanade_runtime::queue::Nudge;
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
@@ -76,6 +77,15 @@ static PANES: LazyLock<Mutex<HashMap<String, Panes>>> = LazyLock::new(Mutex::def
 // the tallest a Banner gets, as its text lays out the same for good
 static TALLEST: OnceLock<f32> = OnceLock::new();
 
+// the quiet line under the cards, as tall as it lays out for good
+static MORE_HEIGHT: LazyLock<f32> = LazyLock::new(|| {
+    tall(
+        &Text::new("N more")
+            .size(theme::text::LABEL_SMALL)
+            .weight(theme::text::MEDIUM),
+    )
+});
+
 /*
  * a deadline change nudges listen(), which otherwise sleeps until the next deadline; one pending
  * nudge is enough, since listen() reads the deadline again when it wakes
@@ -118,6 +128,15 @@ impl Service for Banners {
         let receiver = NUDGE.receiver();
 
         loop {
+            // away, every time waits for the user to come back (ADR 0157)
+            let present = Idle::read().idled(PRESENCE).is_none();
+
+            if Self::read().stack.present() != present {
+                Self::write().stack.presence(present, Instant::now());
+                nudge();
+                continue;
+            }
+
             /*
              * every change to the stack nudges, so a Banner gone whose notification stays out of the
              * history closes it here, past the Banners' lock
@@ -238,6 +257,11 @@ impl Banners {
             Vec::new()
         }
     }
+
+    // how many wait behind the Banners shown
+    pub fn queued(&self) -> usize {
+        self.stack.queued()
+    }
 }
 
 /*
@@ -308,6 +332,12 @@ fn nudge() {
     NUDGE.nudge();
 }
 
+// a watcher of `Idle`: the user went away or came back, so the Banners' thread pauses or restarts
+// the timers. A nudge now, never a poll
+pub fn presence_changed() {
+    nudge();
+}
+
 /*
  * what an output's column had room for, as it drew it, `nearest` the Island first. A view may not
  * write a Service, so it leaves them here and nudges the Banners' thread, which holds or releases
@@ -365,6 +395,13 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     // reading subscribes this window to the Banners
     let shown = Banners::read().shown_on(&monitor.name);
 
+    // the ones waiting behind them, which the column counts under the cards
+    let queued = if shown.is_empty() {
+        0
+    } else {
+        Banners::read().queued()
+    };
+
     let now = Instant::now();
     let config = config::get();
     let anchor = config.island_placement().anchor;
@@ -379,12 +416,16 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let tallest = *TALLEST.get_or_init(tallest);
     let reach = ShadowStyle::AMBIENT.reach() as f32;
 
+    // the quiet line under the cards, out of the layout when nothing waits
+    let more = if queued == 0 { 0.0 } else { *MORE_HEIGHT };
+    let extra = if more > 0.0 { more + GAP } else { 0.0 };
+
     let drawing = !shown.is_empty() || MOTIONS.locked().contains_key(&monitor.name);
 
     // merged with the Dock, the Island's body stands further from its edge, past the Dock's plate;
     // reading subscribes this window to the apps, so only while it draws
     let apart = if drawing { merge::apart() } else { 0.0 };
-    let full = canvas.height + apart + MOST as f32 * (tallest + GAP) + reach;
+    let full = canvas.height + apart + MOST as f32 * (tallest + GAP) + reach + extra;
 
     // beside an Island on a side edge, past its largest body
     let width = if hang.sideways() {
@@ -435,7 +476,15 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     } else {
         None
     };
-    let lane = Lane::of(hang, (width, height), rest_body(hang, canvas, shift), dock);
+    let mut lane = Lane::of(hang, (width, height), rest_body(hang, canvas, shift), dock);
+
+    // the count sits past the cards, so they fit short of it
+    if extra > 0.0 {
+        match hang.edge {
+            Edge::Bottom => lane.end += extra,
+            _ => lane.end -= extra,
+        }
+    }
 
     let heights: HashMap<u32, f32> = shown
         .iter()
@@ -618,6 +667,48 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             if placed.out >= TAKES && !placed.leaving {
                 areas.push(outward(at));
             }
+        }
+
+        // how many wait behind the cards, one quiet line past the last of them
+        if more > 0.0 {
+            let roles = theme::island();
+            let pose = stand.pose(
+                island.shape(&monitor.name, now),
+                autohide::at(&monitor.name, now),
+            );
+            let body = shift.of(stand.body(pose));
+            let (x, base) = lane.from(body, hang);
+
+            let extent = placed
+                .iter()
+                .map(|placed| {
+                    placed.slot
+                        + heights
+                            .get(&placed.banner.id)
+                            .copied()
+                            .unwrap_or_else(|| measured(&placed.banner))
+                })
+                .fold(0.0, f32::max);
+            let at = if hang.edge == Edge::Bottom {
+                (base - extent - GAP - more).max(0.0)
+            } else {
+                (base + extent + GAP).min(height - more).max(0.0)
+            };
+
+            cards.push(Box::new(
+                Rectangle::new()
+                    .width(width)
+                    .height(height)
+                    .align_child(Start, Start)
+                    .child(
+                        Rectangle::new()
+                            .width(WIDTH)
+                            .height(more)
+                            .align_child(Start, Start)
+                            .translate(x + INSET, at)
+                            .child(more_count(queued, &roles)),
+                    ),
+            ));
         }
     }
 
@@ -1139,6 +1230,14 @@ fn close(id: u32) {
     if Banners::read().contains(id) {
         Banners::write().close(id, now);
     }
+}
+
+// the Banners waiting behind the ones shown, as one quiet line; it takes no pointer
+fn more_count(queued: usize, roles: &ThemeRoles) -> Text {
+    Text::new(format!("{queued} more"))
+        .size(theme::text::LABEL_SMALL)
+        .color(roles.on_surface_variant)
+        .weight(theme::text::MEDIUM)
 }
 
 // what a Banner says: the sender's picture, who sent it, the summary, the body and a close, then

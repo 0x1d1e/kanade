@@ -13,7 +13,7 @@ pub use self::blur::{FILL as BLUR_FILL, behind as blurred, blurs};
 pub use self::body::{Body, Join};
 pub use self::shader::{shader, shadow_shader};
 
-use kanade_runtime::{Color, Fill, Gradient, Rectangle};
+use kanade_runtime::{Color, Rectangle};
 
 use crate::theme;
 
@@ -45,37 +45,6 @@ const RIM_ROW: usize = 7;
  * content over it keep their place mid-press or mid-drag
  */
 pub fn layer(pane: Pane) -> Rectangle {
-    // a plain pane (not merged with the Dock) needs no shader: a rounded Rectangle fill
-    // with a rim border reproduces its outline; only the merged outline needs the shader
-    if pane.united.is_none() {
-        let surface = theme::island().surface;
-
-        // Blur's panes are the tinted solid's, translucent over what the compositor blurs behind them
-        let mut fill_color = surface;
-
-        if blur::on() {
-            fill_color = Color::rgba(
-                fill_color.red(),
-                fill_color.green(),
-                fill_color.blue(),
-                (fill_color.alpha() as f32 * blur::FILL) as u8,
-            );
-        }
-
-        let lit_color = theme::tint::lit(surface);
-
-        return Rectangle::new()
-            .width(pane.width)
-            .height(pane.height)
-            .radius(pane.radius)
-            .continuous()
-            .fill(Fill::Gradient(Gradient::linear(
-                180.0,
-                [(0.0, lit_color), (0.7, fill_color), (1.0, fill_color)],
-            )))
-            .border(1.0, theme::pane_rim());
-    }
-
     let mut values = vec![[0.0; 4]; RIM_ROW + 1];
 
     values[0] = [pane.radius, 0.0, 0.0, 0.0];
@@ -102,7 +71,7 @@ pub fn layer(pane: Pane) -> Rectangle {
     // Blur's panes are the tinted solid's, translucent over what the compositor blurs behind them
     let mut fill = rgba(surface);
 
-    if blur::on() {
+    if blur::translucent() {
         fill[3] *= blur::FILL;
     }
 
@@ -125,7 +94,7 @@ pub fn layer(pane: Pane) -> Rectangle {
 pub fn body_fill() -> Color {
     let surface = theme::island().surface;
 
-    if blur::on() {
+    if blur::translucent() {
         theme::faded(surface, blur::FILL)
     } else {
         surface

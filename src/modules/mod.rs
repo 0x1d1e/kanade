@@ -378,9 +378,10 @@ pub fn start(mut app: App) -> App {
         }
         crate::sources::compositor::Compositor::None => {}
     }
-    if config::get().appearance.accessibility {
-        supervise::spawn("accessibility", accessibility::follow);
-    }
+    // followed for the whole run, whatever `appearance.accessibility` says: the switch only
+    // decides whether `config::read_applied` uses its answer, so turning it on or off applies at
+    // the next reload, not at a restart
+    supervise::spawn("accessibility", accessibility::follow);
     if modules.on("wallpaper") {
         wallpaper::look_for_appearance();
     }

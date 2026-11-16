@@ -1,8 +1,8 @@
 //! Which Banners show and for how long (ADR 0007): at most `MOST` at a time, the rest queued in
 //! arrival order with Critical ones ahead. Low shows 4 s, normal 6 s, Critical until closed, unless
-//! its notification's rule gives a time. The pointer on any Banner pauses every timer. Under DND
-//! only Critical ones show, and those whose rule bypasses DND. Time is an input; this never reads a
-//! clock.
+//! its notification's rule gives a time. The pointer on any Banner pauses every timer, and so does
+//! the user being away (ADR 0157). Under DND only Critical ones show, and those whose rule bypasses
+//! DND. Time is an input; this never reads a clock.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -92,9 +92,12 @@ struct Shown {
 
     // a reply is being typed, so it stays until sent or closed, however long that takes
     drafting: bool,
+
+    // the absence paused its timer, so coming back gives it its full time again
+    absent: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Stack {
     // oldest first
     shown: Vec<Shown>,
@@ -107,9 +110,25 @@ pub struct Stack {
     // a fullscreen window covers the focused output: quiet Banners wait, they are not dropped
     held: bool,
 
+    // someone is at the desk: false while away pauses every timer
+    present: bool,
+
     // the Banners that left, any way, whose notification stays out of the history, for it to close:
     // id and version
     left: Vec<(u32, u64)>,
+}
+
+impl Default for Stack {
+    fn default() -> Self {
+        Self {
+            shown: Vec::new(),
+            queued: VecDeque::new(),
+            hovered: false,
+            held: false,
+            present: true,
+            left: Vec::new(),
+        }
+    }
 }
 
 impl Stack {
@@ -156,13 +175,17 @@ impl Stack {
                 return;
             }
 
+            let present = self.present;
+            let hovered = self.hovered;
+
             let shown = &mut self.shown[index];
             shown.drafting = drafting;
             shown.timer = if drafting {
                 Timer::Sticky
             } else {
-                timer(&banner, self.hovered, now)
+                timer(&banner, hovered, now, present)
             };
+            shown.absent = !drafting && !present && matches!(shown.timer, Timer::Paused(_));
             shown.held = None;
             shown.banner = banner;
             return;
@@ -273,6 +296,62 @@ impl Stack {
         self.hovered
     }
 
+    // someone is at the desk; false while away
+    pub fn present(&self) -> bool {
+        self.present
+    }
+
+    /*
+     * the user went away or came back (ADR 0157): away pauses every running time where it stands,
+     * and being back starts the Banners it paused with their full time again. Sticky ones and a
+     * reply being typed stay, and the queue is untouched, so a Banner promoted behind them still
+     * has its full time. False when it already was. A hovered return stays paused, as the pointer
+     * on a Banner always pauses every timer
+     */
+    pub fn presence(&mut self, present: bool, now: Instant) -> bool {
+        if self.present == present {
+            return false;
+        }
+
+        self.present = present;
+
+        if !present {
+            for shown in &mut self.shown {
+                if let Timer::Running(until) = shown.timer {
+                    shown.timer = Timer::Paused(until.saturating_duration_since(now));
+                    shown.absent = true;
+                }
+            }
+
+            return true;
+        }
+
+        let hovered = self.hovered;
+
+        for shown in &mut self.shown {
+            if !shown.absent {
+                continue;
+            }
+
+            shown.absent = false;
+
+            let timer = timer(&shown.banner, hovered, now, true);
+
+            // one the column had no room for holds its full time for when it is placed again
+            if let Some(held) = shown.held.as_mut() {
+                *held = match timer {
+                    Timer::Sticky => Duration::ZERO,
+                    Timer::Paused(left) => left,
+                    Timer::Running(until) => until.saturating_duration_since(now),
+                };
+            }
+
+            shown.timer = timer;
+        }
+
+        true
+    }
+
     // the pointer came on or left the Banners; false when it already was
     pub fn hover(&mut self, inside: bool, now: Instant) -> bool {
         // nothing shows to be on
@@ -283,6 +362,11 @@ impl Stack {
         }
 
         self.hovered = inside;
+
+        // away has every time paused already; coming back reads the pointer and starts them
+        if !self.present {
+            return true;
+        }
 
         for shown in &mut self.shown {
             // one with no room in the column keeps what it had until it is placed again
@@ -312,6 +396,7 @@ impl Stack {
     // time or starts it afresh; false when nothing changed
     pub fn draft(&mut self, id: u32, drafting: bool, now: Instant) -> bool {
         let hovered = self.hovered;
+        let present = self.present;
 
         let Some(shown) = self
             .shown
@@ -325,8 +410,9 @@ impl Stack {
         shown.timer = if drafting {
             Timer::Sticky
         } else {
-            timer(&shown.banner, hovered, now)
+            timer(&shown.banner, hovered, now, present)
         };
+        shown.absent = !drafting && !present && matches!(shown.timer, Timer::Paused(_));
 
         // its time starts afresh once it is placed again
         shown.held = None;
@@ -334,8 +420,13 @@ impl Stack {
         true
     }
 
-    // takes down every Banner whose time ran out, and shows queued ones in their place
+    // takes down every Banner whose time ran out, and shows queued ones in their place. While the
+    // user is away no time runs out (ADR 0157)
     pub fn expire(&mut self, now: Instant) {
+        if !self.present {
+            return;
+        }
+
         let over = |shown: &Shown| {
             shown.held.is_none() && matches!(shown.timer, Timer::Running(until) if until <= now)
         };
@@ -351,8 +442,13 @@ impl Stack {
         self.promote(now);
     }
 
-    // when a Banner's time runs out next; a Banner with no room in the column has none
+    // when a Banner's time runs out next; a Banner with no room in the column has none, and none
+    // while the user is away
     pub fn deadline(&self) -> Option<Instant> {
+        if !self.present {
+            return None;
+        }
+
         self.shown
             .iter()
             .filter(|shown| shown.held.is_none())
@@ -404,6 +500,11 @@ impl Stack {
         self.shown.iter().rev().map(|shown| &shown.banner)
     }
 
+    // how many wait behind the ones shown
+    pub fn queued(&self) -> usize {
+        self.queued.len()
+    }
+
     pub fn contains(&self, id: u32) -> bool {
         self.shown.iter().any(|shown| shown.banner.id == id)
             || self.queued.iter().any(|queued| queued.id == id)
@@ -423,7 +524,7 @@ impl Stack {
         self.queued.insert(at, banner);
     }
 
-    // fills the free places from the queue, each with its full time
+    // fills the free places from the queue, each with its full time, held while away
     fn promote(&mut self, now: Instant) {
         while self.shown.len() < MOST {
             let Some(index) = self
@@ -436,13 +537,15 @@ impl Stack {
             let Some(banner) = self.queued.remove(index) else {
                 break;
             };
-            let timer = timer(&banner, self.hovered, now);
+            let timer = timer(&banner, self.hovered, now, self.present);
+            let absent = !self.present && matches!(timer, Timer::Paused(_));
 
             self.shown.push(Shown {
                 banner,
                 timer,
                 held: None,
                 drafting: false,
+                absent,
             });
         }
 
@@ -458,11 +561,11 @@ fn waits(held: bool, loud: bool) -> bool {
     crate::sources::notifications::policy::hold_banner(loud, held, true)
 }
 
-// a full time, held while the pointer is on the Banners
-fn timer(banner: &Banner, hovered: bool, now: Instant) -> Timer {
+// a full time, held while the pointer is on the Banners or the user is away
+fn timer(banner: &Banner, hovered: bool, now: Instant, present: bool) -> Timer {
     match banner.length() {
         None => Timer::Sticky,
-        Some(length) if hovered => Timer::Paused(length),
+        Some(length) if hovered || !present => Timer::Paused(length),
         Some(length) => Timer::Running(now + length),
     }
 }
@@ -752,5 +855,118 @@ mod tests {
 
         stack.expire(later + LOW);
         assert!(!stack.contains(1));
+    }
+
+    // away pauses the time where it stands, and coming back gives the full time again
+    #[test]
+    fn presence_pauses_timers_and_return_starts_them_afresh() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        stack.arrive(banner(1, Urgency::Normal), false, now);
+        assert_eq!(stack.deadline(), Some(now + NORMAL));
+        assert!(stack.present());
+
+        let away = now + Duration::from_secs(2);
+        assert!(stack.presence(false, away));
+        assert!(!stack.present());
+        assert!(!stack.presence(false, away));
+        assert_eq!(stack.deadline(), None);
+
+        // well past the time it had, it is still there and nothing runs out
+        stack.expire(now + Duration::from_secs(60));
+        assert!(stack.contains(1));
+
+        let back = now + Duration::from_secs(90);
+        assert!(stack.presence(true, back));
+        assert_eq!(stack.deadline(), Some(back + NORMAL));
+
+        stack.expire(back + NORMAL - Duration::from_millis(1));
+        assert!(stack.contains(1));
+        stack.expire(back + NORMAL);
+        assert!(!stack.contains(1));
+    }
+
+    // a Critical Banner, or one whose sender asked for it never to expire, stays away as at the desk
+    #[test]
+    fn presence_does_not_restart_a_sticky_banner() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        stack.arrive(banner(1, Urgency::Critical), false, now);
+        assert!(stack.presence(false, now + Duration::from_secs(10)));
+        assert!(stack.presence(true, now + Duration::from_secs(70)));
+
+        assert!(stack.contains(1));
+        assert_eq!(stack.deadline(), None);
+        stack.expire(now + Duration::from_secs(1000));
+        assert!(stack.contains(1));
+    }
+
+    // a reply being typed holds its Banner away too; coming back changes nothing about it
+    #[test]
+    fn presence_keeps_a_drafting_banner() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+        let replying = Banner {
+            reply: Some(String::new()),
+            ..banner(1, Urgency::Normal)
+        };
+
+        stack.arrive(replying, false, now);
+        assert!(stack.draft(1, true, now));
+        assert!(stack.presence(false, now + Duration::from_secs(10)));
+        assert!(stack.presence(true, now + Duration::from_secs(70)));
+
+        assert!(stack.drafting(1));
+        assert!(stack.contains(1));
+        assert_eq!(stack.deadline(), None);
+        stack.expire(now + Duration::from_secs(1000));
+        assert!(stack.contains(1));
+    }
+
+    // the pointer on the Banners still pauses every timer when the user comes back
+    #[test]
+    fn a_hovered_return_stays_paused() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        stack.arrive(banner(1, Urgency::Normal), false, now);
+        assert!(stack.presence(false, now + Duration::from_secs(10)));
+        assert!(stack.hover(true, now + Duration::from_secs(11)));
+        assert!(stack.presence(true, now + Duration::from_secs(70)));
+
+        assert_eq!(stack.deadline(), None);
+        stack.expire(now + Duration::from_secs(1000));
+        assert!(stack.contains(1));
+
+        // the pointer off, it has its full time from then
+        let off = now + Duration::from_secs(1001);
+        assert!(stack.hover(false, off));
+        assert_eq!(stack.deadline(), Some(off + NORMAL));
+    }
+
+    // a Banner queued behind the ones shown keeps its full time while the user is away
+    #[test]
+    fn presence_leaves_the_queue_alone() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        for id in 1..=4 {
+            stack.arrive(banner(id, Urgency::Normal), false, now);
+        }
+        assert_eq!(stack.queued(), 1);
+
+        assert!(stack.presence(false, now + Duration::from_secs(10)));
+        assert_eq!(stack.queued(), 1);
+        assert!(stack.presence(true, now + Duration::from_secs(70)));
+        assert_eq!(stack.queued(), 1);
+
+        // a place free, the queued one shows from then with its full time
+        let back = now + Duration::from_secs(70);
+        stack.close(1, back);
+        assert_eq!(stack.queued(), 0);
+        assert!(stack.shown().any(|banner| banner.id == 4));
+        assert_eq!(stack.deadline(), Some(back + NORMAL));
     }
 }

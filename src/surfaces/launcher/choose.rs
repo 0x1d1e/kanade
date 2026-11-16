@@ -187,7 +187,7 @@ impl LauncherProvider for Choices<'_> {
             .iter()
             .enumerate()
             .filter_map(|(index, choice)| {
-                let fit = provider::fit(&query, &choice.lower)?;
+                let fit = provider::fit_or_typo(&query, &choice.lower)?;
 
                 Some(Answer {
                     fit,

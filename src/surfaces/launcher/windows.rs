@@ -174,12 +174,14 @@ impl LauncherProvider for Titles<'_> {
                 let title = entry.title.to_lowercase();
                 let anywhere = format!("{title} {}", entry.app.to_lowercase());
 
-                let fit = provider::fit(&query, &title).or_else(|| {
-                    query
-                        .split_whitespace()
-                        .all(|term| anywhere.contains(term))
-                        .then_some(Fit::Anywhere)
-                })?;
+                let fit = provider::fit(&query, &title)
+                    .or_else(|| {
+                        query
+                            .split_whitespace()
+                            .all(|term| anywhere.contains(term))
+                            .then_some(Fit::Anywhere)
+                    })
+                    .or_else(|| provider::typo(&query, &title))?;
 
                 // a window whose title is its app's name has nothing more to say of the app
                 let shown = if entry.title.is_empty() {

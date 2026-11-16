@@ -27,8 +27,8 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
     apps, bluetooth, brightness, caffeine, charge_limit, dictation, focus, fullscreen, google,
-    live, media, network, night_light, power, pulse, reminders, session, subscriptions, usage,
-    wallpaper, weather,
+    live, media, network, night_light, power, pulse, reminders, session, subscriptions, wallpaper,
+    weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -117,7 +117,6 @@ pub fn draws(arguments: &[String]) -> Draws {
 
         Call::Island(_)
         | Call::Timer(_)
-        | Call::Usage(_)
         | Call::Live(_)
         | Call::Dmenu(_)
         | Call::ClearNotifications
@@ -165,8 +164,6 @@ fn run(call: Call) -> Reply {
             timer::request(request);
             Reply::Done(String::new())
         }
-        // the fetch is on the usage's thread, so this answers at once
-        Call::Usage(request) => usage::request(request).map_or_else(Reply::Refused, Reply::Done),
         Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
         // opens the overlay or answers from the state file; the user's stroke is no answer to this
         Call::Gesture(request) => gesture::run(request),

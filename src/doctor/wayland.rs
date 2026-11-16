@@ -36,7 +36,8 @@ const BLUR: (&str, &str) = (
     "the finish blur draws as the tinted solid, not translucent",
 );
 
-// `blur` is whether the finish is `blur`, which asks for the compositor's blur
+// `blur` is whether the finish is `blur` on a compositor that supplies the compositor's blur
+// through `ext-background-effect` (niri); Umbriel's own layer rule needs this global not at all
 pub fn check(blur: bool) -> Vec<Check> {
     match globals() {
         Ok(globals) => judge(&globals, blur),

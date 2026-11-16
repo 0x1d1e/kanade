@@ -434,6 +434,22 @@ fn umbriel_readable(action: &str) -> (Group, String) {
     (group, sentence(&words))
 }
 
+/// The layers whose panes the Blur finish draws: the Island, the Dock and its menus, Banners and
+/// the Launcher.
+pub const PANE_NAMESPACES: [&str; 5] = [
+    "kanade",
+    "kanade-dock",
+    "kanade-dock-menu",
+    "kanade-banners",
+    "kanade-launcher",
+];
+
+/// The recommended layer-rule namespace pattern covering every layer in `PANE_NAMESPACES`.
+pub const PANE_PATTERN: &str = "^kanade(-dock(-menu)?|-banners|-launcher)?$";
+
+// the narrower patterns earlier releases shipped, still read as the same rule
+const NARROW_PATTERNS: [&str; 2] = ["^kanade(-dock|-banners)?$", "^kanade(-banners|-dock)?$"];
+
 // what the walk gathers from the files
 #[derive(Default)]
 struct Found {
@@ -486,8 +502,12 @@ pub fn places_within_backdrop(
  * tried as written and any other is unknown: guessing yes would let doctor claim a block niri does
  * not make, and a false ok about notification text on a screencast is worse than a warn
  */
-fn covers(pattern: &str, namespace: &str) -> Option<bool> {
-    if pattern == "^kanade(-dock|-banners)?$" || pattern == "^kanade(-banners|-dock)?$" {
+pub(crate) fn covers(pattern: &str, namespace: &str) -> Option<bool> {
+    if pattern == PANE_PATTERN {
+        return Some(PANE_NAMESPACES.contains(&namespace));
+    }
+
+    if NARROW_PATTERNS.contains(&pattern) {
         return Some(matches!(
             namespace,
             "kanade" | "kanade-dock" | "kanade-banners"

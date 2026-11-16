@@ -38,13 +38,10 @@ pub enum Kind {
 
     // today's focused time crossed its limit (ADR 0138)
     ScreenTime,
-
-    // Claude's plan usage as two rings (ADR 0145)
-    Usage,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 19] = [
+    pub const ALL: [Kind; 18] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -63,7 +60,6 @@ impl Kind {
         Kind::Reminder,
         Kind::Dictation,
         Kind::ScreenTime,
-        Kind::Usage,
     ];
 
     // as IPC names it
@@ -87,7 +83,6 @@ impl Kind {
             Kind::Reminder => "reminder",
             Kind::Dictation => "dictation",
             Kind::ScreenTime => "screen-time",
-            Kind::Usage => "usage",
         }
     }
 
@@ -286,12 +281,6 @@ pub enum Detail {
     Dictation(Dictation),
     ScreenTime(String),
 
-    // Claude's plan usage as rings and their percentages
-    Usage(Usage),
-
-    // one window at or over its limit, once per reset
-    UsageNotice(String),
-
     // a device that connected, went or took over, whatever Kind posts it
     Hardware(Hardware),
 }
@@ -317,7 +306,6 @@ impl Detail {
             Detail::Reminder(_) => Some(Kind::Reminder),
             Detail::Dictation(_) => Some(Kind::Dictation),
             Detail::ScreenTime(_) => Some(Kind::ScreenTime),
-            Detail::Usage(_) | Detail::UsageNotice(_) => Some(Kind::Usage),
             Detail::Hardware(_) => None,
         }
     }
@@ -341,16 +329,6 @@ impl Detail {
             _ => false,
         }
     }
-}
-
-// Claude's plan usage: the two windows and their utilization, 0 to 1 each
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Usage {
-    // five hours
-    pub five_hour: Option<f32>,
-
-    // seven days
-    pub seven_day: Option<f32>,
 }
 
 /*

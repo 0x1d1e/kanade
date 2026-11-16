@@ -412,24 +412,27 @@ impl LauncherProvider for Commands {
      * An empty query lists every command, each as a Prefix
      */
     fn find(&self, query: &str) -> Vec<Answer> {
-        self.matching(query, FROM)
+        self.matching(query, FROM, true)
     }
 }
 
 /*
  * the commands `?` lists: every one that fits, from a single letter, since no other provider
- * answers after the `?` (ADR 0135)
+ * answers after the `?` (ADR 0135). A typo is not a fit here: the mode lists by name
  */
 impl Commands {
     pub fn find_any(&self, query: &str) -> Vec<Answer> {
-        self.matching(query, 1)
+        self.matching(query, 1, false)
     }
+}
 
+impl Commands {
     /*
      * the commands whose name fits `query`; nothing below `from` letters, and the empty query
-     * lists every command
+     * lists every command. `typo` admits a name a typo away, for the ordinary search only
+     * (ADR 0152)
      */
-    fn matching(&self, query: &str, from: usize) -> Vec<Answer> {
+    fn matching(&self, query: &str, from: usize, typo: bool) -> Vec<Answer> {
         // an empty query lists every command; a query shorter than `from` lists none
         if !query.is_empty() && query.chars().count() < from {
             return Vec::new();
@@ -449,7 +452,13 @@ impl Commands {
                         .iter()
                         .copied()
                         .chain([title.as_str()])
-                        .filter_map(|name| provider::fit(&query, name))
+                        .filter_map(|name| {
+                            if typo {
+                                provider::fit_or_typo(&query, name)
+                            } else {
+                                provider::fit(&query, name)
+                            }
+                        })
                         .min()?;
                     let key = recents::command(command.verb);
 
@@ -562,9 +571,7 @@ pub fn denied(words: &[&str]) -> bool {
     }
     match call {
         Call::Ui(_)
-        | Call::Live(
-            live::Request::Run { .. } | live::Request::Hook(_) | live::Request::Decide(_),
-        )
+        | Call::Live(live::Request::Run { .. })
         | Call::Dmenu(_)
         | Call::Gesture(_)
         | Call::PickColor => true,
@@ -620,7 +627,6 @@ mod tests {
         for words in [
             &["ui", "describe"][..],
             &["activity", "run", "b", "Build", "--", "make"],
-            &["activity", "hook", "claude"],
             &["session", "logout"],
             &["session", "reboot"],
             &["session", "poweroff"],

@@ -41,8 +41,8 @@ pub const PRESETS: &[RulePreset] = &[
     RulePreset {
         id: "blur-xray",
         label: "Blur behind panes",
-        description: "Turn off xray so windows behind Island, Dock and Banners blur instead of showing sharp",
-        kdl_body: "{\n    match namespace=\"^kanade(-dock|-banners)?$\"\n    background-effect {\n        xray false\n    }\n}",
+        description: "Turn off xray so windows behind Island, Dock, Dock menus, Banners and Launcher blur instead of showing sharp",
+        kdl_body: "{\n    match namespace=\"^kanade(-dock(-menu)?|-banners|-launcher)?$\"\n    background-effect {\n        xray false\n    }\n}",
     },
     RulePreset {
         id: "screencast-banners",
@@ -61,6 +61,9 @@ pub const PRESETS: &[RulePreset] = &[
 pub fn preset(id: &str) -> Option<&'static RulePreset> {
     PRESETS.iter().find(|p| p.id == id)
 }
+
+// the layers the narrower blur rule shipped before the recommendation widened still covers
+const NARROW_BLURRED: [&str; 3] = ["kanade", "kanade-dock", "kanade-banners"];
 
 pub fn matches_preset(node: &KdlNode, id: &str) -> bool {
     if node.name().value() != "layer-rule" {
@@ -93,7 +96,8 @@ pub fn matches_preset(node: &KdlNode, id: &str) -> bool {
             });
             let matches_ns = !has_match
                 || patterns.iter().flatten().any(|p| {
-                    *p == "^kanade(-dock|-banners)?$"
+                    *p == binds::PANE_PATTERN
+                        || *p == "^kanade(-dock|-banners)?$"
                         || *p == "^kanade(-banners|-dock)?$"
                         || p.contains("kanade")
                 });
@@ -148,13 +152,21 @@ impl Editor<'_> {
                 .any(|node| matches_preset(node, preset.id));
 
             let active = match preset.id {
-                "blur-xray" => binds::xrayed(
-                    &self.file,
-                    &["kanade", "kanade-dock", "kanade-banners"],
-                    &mut |p| fs::read_to_string(p),
-                )
-                .map(|x| x.is_empty())
-                .unwrap_or(found_in_self),
+                "blur-xray" => {
+                    let all = binds::xrayed(&self.file, &binds::PANE_NAMESPACES, &mut |p| {
+                        fs::read_to_string(p)
+                    });
+                    match all {
+                        Ok(xrayed) if xrayed.is_empty() => true,
+                        // the narrower rule earlier releases shipped still covers the layers it
+                        // was written for, so an existing config is not reported missing
+                        _ => binds::xrayed(&self.file, &NARROW_BLURRED, &mut |p| {
+                            fs::read_to_string(p)
+                        })
+                        .map(|xrayed| xrayed.is_empty())
+                        .unwrap_or(found_in_self),
+                    }
+                }
                 "screencast-banners" => {
                     binds::blocked_from_screencasts(&self.file, "kanade-banners", &mut |p| {
                         fs::read_to_string(p)
@@ -263,5 +275,26 @@ impl Editor<'_> {
 
         self.remove(&format!("layer-rule[{ordinal}]"))
             .map(|_| format!("rule {id} removed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the recommended body parses as the rule it recommends, and the old narrow one still reads
+    // as the same rule so an existing config is not reported missing
+    #[test]
+    fn the_recommended_blur_rule_matches_and_the_old_pattern_stays_active() {
+        let recommended = preset("blur-xray").unwrap();
+        let doc = edit::parse(&format!("layer-rule {}", recommended.kdl_body)).unwrap();
+        assert!(matches_preset(&doc.nodes()[0], "blur-xray"));
+
+        let old = edit::parse(
+            "layer-rule { match namespace=\"^kanade(-dock|-banners)?$\"; \
+             background-effect { xray false; }; }",
+        )
+        .unwrap();
+        assert!(matches_preset(&old.nodes()[0], "blur-xray"));
     }
 }

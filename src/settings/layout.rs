@@ -125,7 +125,6 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "media",
             "timer",
             "screen-time",
-            "usage",
             "live",
             "launcher-entry",
             "battery",

@@ -15,8 +15,9 @@ use crate::view;
 // how far the Island's body reaches into the Dock's plate under a Crown, where their panes flow together
 pub const OVERLAP: f32 = 6.0;
 
-// how far the two edges pull toward each other where they meet, in logical pixels
-pub const BLEND: f32 = 14.0;
+// the radius of the circular fillet where the two edges meet, in logical pixels: 9 keeps the depth
+// the old 14 px polynomial union drew ((sqrt(2) - 1) * 9 is about 0.25 * 14)
+pub const BLEND: f32 = 9.0;
 
 /*
  * how the Island and the Dock merge now, if they do: `dock.merge` is on, and both stand on the same

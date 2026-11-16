@@ -136,8 +136,10 @@ fn gather(shell: Check, pid: Option<u32>) -> Vec<Check> {
     checks.extend(compositor());
 
     let blur = config.appearance.finish == Finish::Blur;
+    // Umbriel has no background-effect protocol; its layer rule is what blurs behind a pane
+    let protocol_blur = blur && compositor::active() != compositor::Compositor::Umbriel;
 
-    checks.extend(wayland::check(blur));
+    checks.extend(wayland::check(protocol_blur));
     checks.extend(sockets());
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
@@ -1027,18 +1029,22 @@ fn backdrop_check(found: Result<bool, binds::Unread>) -> Check {
     }
 }
 
-// the layers whose panes blur behind them under the finish `blur`
-const BLURRED: [&str; 3] = ["kanade", "kanade-dock", "kanade-banners"];
+// the layers whose panes show a Blur finish: the Island, Dock and its menus, Banners and Launcher
+const BLURRED: [&str; 5] = binds::PANE_NAMESPACES;
 
 /*
- * whether niri blurs the windows behind Kanade's panes, not only the wallpaper: it blurs what a
- * layer asks for xray, the wallpaper alone, unless a layer rule in niri's config (edited by Kanade only on request)
- * sets `background-effect { xray false }` (ADR 0057). Asked only while the finish is `blur`
+ * whether the compositor blurs the windows behind Kanade's panes, not only the wallpaper: under
+ * niri it blurs what a layer asks for xray, the wallpaper alone, unless a layer rule in niri's
+ * config (edited by Kanade only on request) sets `background-effect { xray false }` (ADR 0057).
+ * Under Umbriel the pane is translucent only while its `blur-kanade` layer rule blurs the layer
+ * surface; neither compositor takes a region from Kanade for this. Asked only while the finish is
+ * `blur`
  */
 fn blur_check() -> Option<Check> {
     if compositor::active() == compositor::Compositor::Umbriel {
-        return None;
+        return Some(umbriel_blur_check());
     }
+
     let path = binds::config()?;
     let found = binds::xrayed(&path, &BLURRED, &mut |file| fs::read_to_string(file));
 
@@ -1051,9 +1057,9 @@ fn blur_check() -> Option<Check> {
                 String::from(
                     "apply with `kanade niri-config rules apply blur-xray`, or add to niri's config.kdl:",
                 ),
-                String::from(
-                    "layer-rule { match namespace=\"^kanade(-dock|-banners)?$\"; \
-                     background-effect { xray false; }; }",
+                format!(
+                    "layer-rule {{ match namespace=\"{}\"; background-effect {{ xray false; }}; }}",
+                    binds::PANE_PATTERN
                 ),
             ],
             ..Check::warn(format!(
@@ -1068,6 +1074,46 @@ fn blur_check() -> Option<Check> {
             unread.why
         )),
     })
+}
+
+/*
+ * whether Umbriel's own layer rule blurs behind Kanade's panes: with `blur-kanade` the pane's
+ * translucent fill shows Umbriel's blur, without it the pane draws the opaque tinted solid.
+ * Umbriel blurs the layer surface where its alpha passes `blur_ignore_alpha`, not a region Kanade
+ * sends (ADR 0153)
+ */
+fn umbriel_blur_check() -> Check {
+    let path = match crate::umbriel_config::target(None) {
+        Ok(path) => path,
+        Err(problem) => {
+            return Check::warn(format!(
+                "umbriel: cannot find its config ({problem}), so no blur-kanade layer rule is \
+                 known and panes draw the opaque tinted solid"
+            ));
+        }
+    };
+
+    match fs::read_to_string(&path) {
+        Ok(text) if crate::umbriel_config::rules::is_rule_active(&text, "blur-kanade") => {
+            Check::ok(String::from(
+                "umbriel: the blur-kanade layer rule blurs behind Kanade's layers",
+            ))
+        }
+        Ok(_) => Check {
+            detail: vec![String::from(
+                "apply with `kanade umbriel-config rules apply blur-kanade`, or add the layer_rule \
+                 through Settings under Compositor",
+            )],
+            ..Check::warn(format!(
+                "umbriel: no blur-kanade layer rule in {}, so panes draw the opaque tinted solid",
+                path.display()
+            ))
+        },
+        Err(error) => Check::warn(format!(
+            "umbriel: cannot read {} ({error}), so panes draw the opaque tinted solid",
+            path.display()
+        )),
+    }
 }
 
 /*

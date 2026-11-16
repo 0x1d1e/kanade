@@ -15,8 +15,8 @@ use std::time::Instant;
 
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Center, Cursor, End, Image, ImageState, Key, Parent, Rectangle, Row, Scroll, Stack, Start,
-    Text, Widget, children,
+    Center, Cursor, End, Image, ImageState, Key, Keyboard, Layer, LayerWindow, Monitor, Parent,
+    Rectangle, Row, Scroll, Size, Stack, Start, Text, Widget, WindowSize, Zone, children,
 };
 use kanade_runtime::{
     Column, MutexExt,
@@ -26,6 +26,7 @@ use kanade_runtime::{
 use crate::icon::Icon;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::lock;
 use crate::sources::wallpaper::{self, From, Output, Unset};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
@@ -87,6 +88,11 @@ fn tile_height() -> f32 {
 
 fn step() -> f32 {
     tile_height() + TILE_GAP
+}
+
+// how many whole rows a screenful holds, at least one, as PageUp and PageDown move
+fn page() -> usize {
+    ((room() / step()).floor() as usize).max(1)
 }
 
 fn rows(count: usize) -> usize {
@@ -264,7 +270,15 @@ impl Pick {
             Key::Space => Some((self.typed(Some(' ')), false)),
             Key::Backspace => Some((self.typed(None), false)),
             Key::Enter => Some((self, true)),
-            Key::Up | Key::Down | Key::Left | Key::Right | Key::Tab | Key::Home | Key::End => {
+            Key::Up
+            | Key::Down
+            | Key::Left
+            | Key::Right
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Tab
+            | Key::Home
+            | Key::End => {
                 let targets = targets(count);
                 let at = self.at();
 
@@ -273,7 +287,11 @@ impl Pick {
                     return Some((self, false));
                 };
 
-                let to = grid::moved(place, key, &targets).unwrap_or(place);
+                let to = match key {
+                    Key::PageUp | Key::PageDown => grid::paged(place, key, page(), &targets),
+                    _ => grid::moved(place, key, &targets),
+                }
+                .unwrap_or(place);
                 let Place { row, column } = to;
 
                 Some((self.put(targets[row][column].0, count), false))
@@ -396,13 +414,87 @@ fn name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-// the view's own read of the visit, so this never reads IslandService again
-pub fn surface(monitor: &str, visit: u64) -> Rectangle {
+/*
+ * the query's finds, the wallpaper showing and the ring bounded to both, as one read: the grid and
+ * the full-resolution preview behind it always agree on the picture focused
+ */
+fn picking(monitor: &str, visit: u64) -> (Vec<PathBuf>, Vec<PathBuf>, Pick) {
     let current = wallpaper::showing_on(&Output::Named(monitor.to_owned()));
     let pick = Pick::read().of(visit);
     let found = found(&pick.query);
-    let all = wallpaper::images().len();
     let pick = pick.bounded(&found, &current);
+
+    (found, current, pick)
+}
+
+// the picture the ring is on, none while it is on Shuffle or the query finds nothing
+fn focused(monitor: &str, visit: u64) -> Option<PathBuf> {
+    let (found, _, pick) = picking(monitor, visit);
+
+    match pick.at() {
+        At::Tile(index) => found.get(index).cloned(),
+        At::Shuffle => None,
+    }
+}
+
+/*
+ * the picture the ring is on, full-resolution on the output behind the Island while the Wallpapers
+ * Surface is open, so its crop, mood and palette are judged before it is set. It takes no pointer
+ * and no keyboard, sits on the Top layer under the Island and the rest of the shell and over normal
+ * windows, and shows nothing while the Surface is closed, under the lock, over a fullscreen window
+ * and in the overview. The window stays mapped with an empty child when it shows nothing, so its
+ * layer order, fixed when it was created before the other windows, never changes. It draws the same
+ * picture the grid's ring is on, from the runtime's bounded image cache: no scrim and no decoder of
+ * its own
+ */
+pub fn preview(monitor: &Monitor) -> LayerWindow {
+    let island = IslandService::read();
+    let open = island.expanded_on() == Some(monitor.name.as_str())
+        && island.surface() == Some(Surface::Wallpapers)
+        && island.presentation(&monitor.name) == Presentation::Expanded(Surface::Wallpapers);
+    let overview = island.overview();
+    let covered = view::covered(monitor, || overview);
+    let visit = island.visit();
+    drop(island);
+
+    let focused = open
+        .then(|| focused(&monitor.name, visit))
+        .flatten()
+        .filter(|_| !covered && !overview && !lock::holds());
+
+    let child: Box<dyn Widget> = match focused {
+        Some(path) => Box::new(
+            Rectangle::new()
+                .width(Size::Parent)
+                .height(Size::Parent)
+                .fill(Image::cover(path)),
+        ),
+        None => Box::new(Rectangle::new().width(0.0).height(0.0)),
+    };
+
+    shell().child(child)
+}
+
+/*
+ * the window behind the grid: the whole output, above normal windows and under the Island and the
+ * rest of the shell on its layer, with neither pointer nor keyboard. It is mapped from the start
+ * and never unmapped, so a picture shown later cannot remap it above them
+ */
+fn shell() -> LayerWindow {
+    LayerWindow::new()
+        .width(WindowSize::Full)
+        .height(WindowSize::Full)
+        .layer(Layer::Top)
+        .keyboard(Keyboard::None)
+        .space(Zone::Ignore)
+        .namespace("kanade-wallpaper-preview")
+        .click_through()
+}
+
+// the view's own read of the visit, so this never reads IslandService again
+pub fn surface(monitor: &str, visit: u64) -> Rectangle {
+    let (found, current, pick) = picking(monitor, visit);
+    let all = wallpaper::images().len();
 
     let grid: Box<dyn Widget> = if all == 0 {
         Box::new(missing(monitor))
@@ -832,4 +924,56 @@ fn wheel(monitor: &str, lines: f32) {
     let found = found(&pick.query);
 
     store(pick.bounded(&found, &current).wheel(lines, found.len()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a page moves the ring a screenful of whole rows in the key's direction, keeps it visible,
+    // clamps at either end and never wraps
+    #[test]
+    fn a_page_jumps_a_screenful_of_rows_without_wrapping() {
+        let columns = columns();
+        let page = page();
+        let count = (page + 2) * columns + 1;
+        let found: Vec<PathBuf> = (0..count)
+            .map(|at| PathBuf::from(format!("{at}.png")))
+            .collect();
+
+        assert!(page >= 1);
+        assert!(page * columns < count);
+
+        let pick = Pick::begin(1).bounded(&found, &[]);
+        assert_eq!(pick.selected, Some(0));
+
+        let (down, presses) = pick
+            .clone()
+            .step(Key::PageDown, count)
+            .expect("PageDown is its own");
+        assert!(!presses);
+        assert_eq!(down.selected, Some(page * columns));
+
+        let row = down.selected.unwrap() / columns;
+        let (first, end) = shown(down.offset, count);
+        assert!((first..end).contains(&row), "the ring stays in view");
+
+        let (up, _) = down.step(Key::PageUp, count).expect("PageUp is its own");
+        assert_eq!(up.selected, Some(0));
+
+        // at the top a page up stays, rather than wrapping to the bottom
+        let (top, _) = pick.step(Key::PageUp, count).expect("PageUp is its own");
+        assert_eq!(top.selected, Some(0));
+
+        // at the bottom a page down clamps to the last picture, rather than wrapping to the first
+        let last = Pick {
+            selected: Some(count - 1),
+            offset: most(count),
+            ..Pick::begin(1)
+        };
+        let (bottom, _) = last
+            .step(Key::PageDown, count)
+            .expect("PageDown is its own");
+        assert_eq!(bottom.selected, Some(count - 1));
+    }
 }
