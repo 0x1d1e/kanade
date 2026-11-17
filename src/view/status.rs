@@ -445,28 +445,39 @@ impl Level {
 }
 
 /*
- * icon, bar, number; Peek names the level above its bar. Every part has a fixed width, so a level
- * that moves slides the bar and nothing else
+ * icon, bar, number; Peek names the level above its bar. The icon and both gaps are fixed and the
+ * number takes its own width, so the bar takes the rest; while a progress animation runs the
+ * number is constant and only the bar's fill moves. The track is as wide as the digits leave it,
+ * so 99 and 100 draw bars of different lengths
  */
 pub(super) fn level(
     presentation: Presentation,
     level: Level,
     progress: Option<(f32, bool)>,
 ) -> Option<Rectangle> {
-    let (icon, number, size, inset) = match presentation {
-        Presentation::Compact => (20.0, 34.0, theme::text::BODY_LARGE, 15.0),
-        Presentation::Peek => (24.0, 34.0, theme::text::TITLE_LARGE, 20.0),
+    let (icon, size, inset) = match presentation {
+        Presentation::Compact => (20.0, theme::text::BODY_LARGE, 15.0),
+        Presentation::Peek => (24.0, theme::text::TITLE_LARGE, 20.0),
         _ => return None,
     };
-
-    let gap = 11.0;
-    let width = shape(presentation).width - 2.0 * inset - icon - number - 2.0 * gap;
 
     let tone = if level.quiet {
         theme::island().on_surface_variant
     } else {
         theme::island().on_surface
     };
+    let percent = Text::new(level.percent.to_string())
+        .tabular()
+        .size(size)
+        .color(tone)
+        .weight(theme::text::SEMIBOLD);
+    let Size::Fixed(number) = percent.width() else {
+        unreachable!("text measures a fixed width")
+    };
+
+    let gap = 11.0;
+    let width = shape(presentation).width - 2.0 * inset - icon - number - 2.0 * gap;
+
     let (fraction, moving) = progress.unwrap_or((f32::from(level.percent) / 100.0, false));
     if moving {
         kanade_runtime::request_frame();
@@ -505,18 +516,7 @@ pub(super) fn level(
                 Row::new(vec![
                     Box::new(level.icon.draw(icon)) as Box<dyn Widget>,
                     middle,
-                    Box::new(
-                        Rectangle::new()
-                            .width(number)
-                            .height(size)
-                            .align_child(End, Center)
-                            .child(
-                                Text::new(level.percent.to_string())
-                                    .size(size)
-                                    .color(tone)
-                                    .weight(theme::text::SEMIBOLD),
-                            ),
-                    ),
+                    Box::new(percent),
                 ])
                 .gap(gap)
                 .align(Center),
