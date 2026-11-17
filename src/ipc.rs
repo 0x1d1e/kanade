@@ -18,7 +18,7 @@ use crate::lock;
 use crate::modules;
 use crate::reload::{self, Outcome};
 use crate::settings;
-use crate::sources::capture::{self, Asked};
+use crate::sources::capture;
 use crate::sources::clipboard;
 use crate::sources::niri::Acted;
 use crate::sources::notifications::{self, timed};
@@ -180,6 +180,7 @@ fn run(call: Call) -> Reply {
         | Call::PowerProfile(_)
         | Call::Wallpaper(_)
         | Call::PickColor
+        | Call::Screenshot(_)
         | Call::Ui(_)
         | Call::Lock => Reply::Refused(String::from("answered later, not by `run`")),
         Call::ClearNotifications => {
@@ -195,12 +196,6 @@ fn run(call: Call) -> Reply {
                 kept => format!("kept {kept} pinned"),
             })
         }
-        // niri answers at once; an area is saved later, once the user picks it
-        Call::Screenshot(mode) => match capture::screenshot(mode) {
-            Ok(Asked::Taken(path)) => Reply::Done(path),
-            Ok(Asked::Unknown(why)) => Reply::Unknown(why),
-            Err(error) => Reply::Refused(error),
-        },
         // niri answers at once, but the client may wait on it as on a screenshot
         Call::Cast(to) => match capture::cast(&to) {
             Ok(Acted::Done) => Reply::Done(String::new()),

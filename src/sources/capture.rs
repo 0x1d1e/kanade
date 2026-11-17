@@ -1,23 +1,28 @@
-//! Screenshots (docs/archived/design.md Capture): niri takes them, as its own screenshot actions are
-//! all an area, a window or an output needs, so there is no other backend to choose. `kanade
-//! capture screenshot` asks niri to save one under `~/Pictures/Screenshots`, named as niri names its
-//! own. niri announces each screenshot it saves by its own notification, whoever asked for it; the
-//! Island shows none. The actions here pause, resume or stop a recording, copy its path or open it.
+//! Screenshots and the screen recording's actions (`docs/archived/design.md` Capture, ADR 0162).
+//! An area is Kanade's own frozen picker when the runtime can copy an output, under either
+//! compositor: every output is captured once, the drag picks a part of that copy, and only the crop
+//! is written under `~/Pictures/Screenshots`, named as niri names its own. Niri's own picker, and
+//! Umbriel's `slurp` and `grim`, stay as the fallback. Window and output captures are still the
+//! compositor's. The actions here pause, resume or stop a recording, copy its path or open it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
-use std::io;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use kanade_runtime::capture::Frame;
 use kanade_runtime::service::Service;
-use kanade_runtime::{IpcReply, MutexExt};
+use kanade_runtime::{IpcReply, Monitor, MutexExt};
 
 pub mod annotate;
+pub mod region;
 
 use super::clipboard;
 use super::json::{self, Json};
@@ -77,10 +82,15 @@ pub enum Asked {
 
     // niri may or may not take it; why, with the path it would be saved at
     Unknown(String),
+
+    // the user left Kanade's frozen picker: no shot, and nothing to show as a failure
+    Cancelled,
 }
 
 /*
- * asks niri or Wayland tools (slurp/grim) for a screenshot, saved to the path returned.
+ * asks the compositor or Wayland tools (slurp/grim) for a screenshot, saved to the path returned.
+ * An area is the frozen picker when the runtime can capture an output; otherwise niri's own picker
+ * or Umbriel's tools take it, as before.
  */
 pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     let dir = directory().ok_or("no screenshot folder: HOME is not set")?;
@@ -88,30 +98,242 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("no screenshot folder ({error}): {}", dir.display()))?;
 
+    if mode == Mode::Area
+        && kanade_runtime::capture::capable()
+        && let Some(result) = frozen(&dir)
+    {
+        return result;
+    }
+
     if super::compositor::active() == super::compositor::Compositor::Niri {
-        let window = match mode {
-            Mode::Window => Some(window().map_err(backend)?.ok_or("no window to capture")?),
-            _ => None,
-        };
-
-        let path = name(&dir, clock::stamp());
-        let path = path
-            .to_str()
-            .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
-
-        // the editor opens on niri's announcement of this path, when it saves it; asked before the
-        // request, since niri may save before it answers
-        annotate::asked(path);
-
-        match niri::act(&action(mode, path, window)).map_err(backend)? {
-            Acted::Done => Ok(Asked::Taken(path.to_owned())),
-            Acted::Unknown(why) => Ok(Asked::Unknown(format!(
-                "niri got the request, but {why}; the screenshot may still be saved at {path}"
-            ))),
-        }
+        through_niri(mode, &dir)
     } else {
         screenshot_external(mode, &dir)
     }
+}
+
+// the compositor's own screenshot action: niri's picker, window or output
+fn through_niri(mode: Mode, dir: &Path) -> Result<Asked, String> {
+    let window = match mode {
+        Mode::Window => Some(window().map_err(backend)?.ok_or("no window to capture")?),
+        _ => None,
+    };
+
+    let path = name(dir, clock::stamp());
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
+
+    // the editor opens on niri's announcement of this path, when it saves it; asked before the
+    // request, since niri may save before it answers
+    annotate::asked(path);
+
+    match niri::act(&action(mode, path, window)).map_err(backend)? {
+        Acted::Done => Ok(Asked::Taken(path.to_owned())),
+        Acted::Unknown(why) => Ok(Asked::Unknown(format!(
+            "niri got the request, but {why}; the screenshot may still be saved at {path}"
+        ))),
+    }
+}
+
+// whether one of Kanade's own screenshots is being taken: the frozen picker is one at a time
+static TAKING: AtomicBool = AtomicBool::new(false);
+
+// how long one output's frozen frame may take before the picker opens without it
+const FRAME_WAIT: Duration = Duration::from_millis(500);
+
+// how many taken file names a shot may step past before it gives up
+const NAMED_TRIES: usize = 8;
+
+// the screenshot in progress: one at a time, and no pixel left held however it ends
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // a grab that landed late is not the next picker's to serve
+        kanade_runtime::capture::clear_all();
+
+        TAKING.store(false, Ordering::Release);
+    }
+}
+
+/*
+ * `capture screenshot area` with Kanade's own frozen picker: each output is copied once, the user
+ * drags a part of that copy, and only the crop is written. `None` when the focused output's frame
+ * is missing, so the compositor's own picker is the fallback; another output without one keeps its
+ * overlay with no frozen base, and a drag there is ignored. Runs on the capture worker thread.
+ */
+fn frozen(dir: &Path) -> Option<Result<Asked, String>> {
+    if TAKING.swap(true, Ordering::AcqRel) {
+        return Some(Err(String::from("a screenshot is already being taken")));
+    }
+
+    // the guard first, so a panic while reading the outputs still lets go of the one shot
+    let _held = Held;
+
+    let monitors: Vec<Monitor> = kanade_runtime::Monitors::read().all().to_vec();
+
+    for monitor in &monitors {
+        kanade_runtime::capture::clear(&monitor.name);
+        kanade_runtime::capture::request(&monitor.name);
+    }
+
+    let mut frames = HashMap::new();
+
+    for monitor in &monitors {
+        if let Ok(frame) = kanade_runtime::capture::await_frame(&monitor.name, FRAME_WAIT) {
+            frames.insert(monitor.name.clone(), frame);
+        }
+    }
+
+    let focused = focused_output()
+        .filter(|name| monitors.iter().any(|monitor| monitor.name == *name))
+        .or_else(|| monitors.first().map(|monitor| monitor.name.clone()));
+
+    let Some(focused) = focused else {
+        return Some(Err(String::from("no output to capture")));
+    };
+
+    if !frames.contains_key(&focused) {
+        return None;
+    }
+
+    let (sender, receiver) = mpsc::channel();
+
+    region::shot(sender, frames.clone());
+
+    // a picker that refused to open drops its sender, which reads here as a cancel
+    let picked = receiver.recv().unwrap_or(None);
+
+    let Some((monitor, rect)) = picked else {
+        return Some(Ok(Asked::Cancelled));
+    };
+
+    let Some(frame) = frames.get(&monitor) else {
+        return Some(Err(String::from("no screenshot taken")));
+    };
+
+    Some(save(frame, rect, dir))
+}
+
+// the focused output, as the selected compositor last saw it
+pub(super) fn focused_output() -> Option<String> {
+    match super::compositor::active() {
+        super::compositor::Compositor::Umbriel => {
+            super::umbriel::Umbriel::read().seen.focused_output.clone()
+        }
+        super::compositor::Compositor::Niri | super::compositor::Compositor::None => {
+            Niri::read().seen.focused_output.clone()
+        }
+    }
+}
+
+// writes the crop of the frozen frame at a name made new, then tells the editor and the Island
+fn save(frame: &Frame, rect: recording::Rect, dir: &Path) -> Result<Asked, String> {
+    let (width, height, pixels) = slice(frame, rect)?;
+    let bytes = encode(width, height, &pixels)?;
+
+    let mut attempt = 0;
+
+    let path = loop {
+        let path = name(dir, clock::stamp());
+
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let text = path
+                    .to_str()
+                    .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?;
+
+                // asked before the pixels, so the editor opens on the file this write makes
+                annotate::asked(text);
+
+                if let Err(error) = file.write_all(&bytes) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+
+                    return Err(format!("cannot write the screenshot: {error}"));
+                }
+
+                drop(file);
+
+                break path;
+            }
+
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt < NAMED_TRIES => {
+                attempt += 1;
+            }
+
+            Err(error) => {
+                return Err(format!(
+                    "cannot write the screenshot ({error}): {}",
+                    path.display()
+                ));
+            }
+        }
+    };
+
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("path is not UTF-8: {}", path.display()))?
+        .to_owned();
+
+    annotate::heard(Some(path.clone()));
+
+    // Umbriel's screenshots have always gone on the clipboard; niri's own picker never does
+    if super::compositor::active() == super::compositor::Compositor::Umbriel {
+        copy_image_to_clipboard(&path);
+    }
+
+    Ok(Asked::Taken(path))
+}
+
+// the crop of a frame, clamped to it: its width, height and RGBA pixels, top row first
+fn slice(frame: &Frame, rect: recording::Rect) -> Result<(u32, u32, Vec<u8>), String> {
+    let x = rect.x.max(0) as u32;
+    let y = rect.y.max(0) as u32;
+
+    let right = x.saturating_add(rect.width).min(frame.width);
+    let bottom = y.saturating_add(rect.height).min(frame.height);
+
+    if x >= right || y >= bottom {
+        return Err(String::from("the picked area is outside the frozen frame"));
+    }
+
+    let (width, height) = (right - x, bottom - y);
+    let stride = frame.width as usize * 4;
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+
+    for row in y..bottom {
+        let start = row as usize * stride + x as usize * 4;
+        let end = start + width as usize * 4;
+
+        let Some(line) = frame.pixels.get(start..end) else {
+            return Err(String::from(
+                "the frozen frame is shorter than its size says",
+            ));
+        };
+
+        pixels.extend_from_slice(line);
+    }
+
+    Ok((width, height, pixels))
+}
+
+// an 8-bit RGBA PNG of the pixels, as the annotation editor encodes its copy
+fn encode(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(pixels))
+        .map_err(|error| format!("cannot encode the screenshot: {error}"))?;
+
+    Ok(bytes)
 }
 
 fn screenshot_external(mode: Mode, dir: &Path) -> Result<Asked, String> {
@@ -217,6 +439,8 @@ pub fn request(mode: Mode, reply: IpcReply) {
             let answer = match screenshot(mode) {
                 Ok(Asked::Taken(path)) => Reply::Done(path),
                 Ok(Asked::Unknown(why)) => Reply::Unknown(why),
+                // a picker the user left answers as it always did, without a Failed Activity
+                Ok(Asked::Cancelled) => Reply::Refused(String::from("no screenshot taken")),
                 Err(error) => Reply::Refused(error),
             };
 

@@ -209,6 +209,11 @@ Kanade's own screen recording (`wf-recorder` through niri's wlr-screencopy, ADR 
 - **Invariant:** saving never replaces a file: a name taken meanwhile keeps its file and the recording is left in the folder.
 - **Avoid:** screencast (the file's name, not the term), clip (a Clip is an Activity's detail)
 
+## Screenshot
+A picture of the screen the `capture screenshot` verb saves as a PNG under `~/Pictures/Screenshots`, named as niri names its own (ADR 0162). An area is Kanade's own frozen picker: the runtime copies each output once over `wlr-screencopy`, the drag picks a part of that copy, and only the crop is the write. The compositor's own picker (niri's, or Umbriel's `slurp` and `grim`) is the fallback when the runtime cannot capture; window and output shots are still the compositor's. Under Umbriel the saved area also goes to the clipboard, as its `grim` path did.
+- **Invariant:** one frozen area screenshot at a time; window and output shots are the compositor's and Kanade does not serialize them. Frozen frames live only while the picker is open, and are dropped on a pick, a cancel, a lock and every exit. No pixel is logged.
+- **Avoid:** grab, snip, screen capture (a screen cast is the privacy cluster's)
+
 ## Satellite
 Small secondary indicator beside the primary island: timer, VPN, low battery, a Live Activity.
 - Capture the privacy cluster sees is no Satellite: the cluster shows it, as dots inside the body. Kanade's own recording is an Activity like any other, so it can be one, carrying Pause or Resume and Stop (a paused one shows a Pause icon).

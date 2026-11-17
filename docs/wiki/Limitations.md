@@ -6,7 +6,7 @@ This page lists what Kanade does not do, what runs worse without an optional too
 
 - niri and Umbriel are supported; Hyprland and Sway are not. Kanade selects a reachable Umbriel IPC socket first, then niri, and follows only the selected compositor's event stream. Window and Strip Surfaces, the Dock, running apps, Launcher window selection, keybindings and compositor Settings support both.
 
-  Under Umbriel the Dock lists and focuses those windows; closing one from the Dock does nothing, since Umbriel's IPC client has no close that names a window. Umbriel screenshots use `grim` (and `slurp` for an area); window screenshots, the color picker, dynamic cast targets and Stop sharing through niri IPC remain niri-specific. Screen and window recording still require niri IPC for the focused output and window casts; area recording under Umbriel is unverified. The installer's service activation remains tied to `niri.service`; Umbriel's default config keeps `autostart = ["kanade"]`.
+  Under Umbriel the Dock lists and focuses those windows; closing one from the Dock does nothing, since Umbriel's IPC client has no close that names a window. Umbriel screenshots use Kanade's own frozen picker for an area, falling back to `slurp` and `grim`, and `grim` for an output; window screenshots, the color picker, dynamic cast targets and Stop sharing through niri IPC remain niri-specific. Screen and window recording still require niri IPC for the focused output and window casts; area recording under Umbriel is unverified. The installer's service activation remains tied to `niri.service`; Umbriel's default config keeps `autostart = ["kanade"]`.
 
   Under Umbriel that entry starts `kanade-recover`, a non-rendering parent that restarts one rendering child and keeps acknowledged lock intent in memory so a locked replacement relocks without logind's `LockedHint`. A persisted lock Module disable takes full effect after any inherited lock ends: recovery restores that lock with new lock controls, sleep handling and lock/unlock hooks off, then restarts once confirmed unlocked or refused. The parent itself is not restarted: abrupt parent death kills its child and loses intent, and a locked session stays blank. A hung child is not detected.
 
@@ -35,6 +35,8 @@ This page lists what Kanade does not do, what runs worse without an optional too
 ## Island and presentation
 
 - A screenshot niri saves shows on the island as the path, not a thumbnail. One it only copied says it was copied. The path is not logged. niri's own notification, if it posts one, is separate.
+
+- An area screenshot is Kanade's own frozen picker under niri and Umbriel once the runtime can copy the outputs: each output is frozen once, and the crop is the only write. Niri's own picker and Umbriel's `slurp`/`grim` stay as the fallback when it cannot, and window and output screenshots are unchanged. The picker on more than one monitor is untested, a monitor plugged in while it is open has no frozen base, and a fractional scale maps the drag by the frame's ratio. Under Umbriel the saved PNG still goes to the clipboard; under niri it does not, as niri's own path never copied it.
 
 - The annotation editor (`capture.annotate`, off by default) draws rectangles and arrows in one colour, with undo and save; it has no text, highlighter, crop, layers, selection or resizing, and a saved copy cannot be edited again.
 

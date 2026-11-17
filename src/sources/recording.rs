@@ -24,7 +24,6 @@
 mod encode;
 mod machine;
 mod mix;
-pub mod overlay;
 mod plan;
 mod probe;
 mod window;
@@ -53,7 +52,7 @@ use self::encode::QUIET;
 use self::machine::{Effect, Event, Machine, Phase, Pick, Segment};
 pub use self::plan::{Audio, ENCODER, JOINER, RECORDER, Rect};
 use self::plan::{MUXER, Source};
-use super::capture::{self, COPY, SHOW, SHOWN};
+use super::capture::{self, COPY, SHOW, SHOWN, region};
 use super::json::Json;
 use super::niri::{self, Heard};
 use super::wake::{self, Failed, NOT_FOUND};
@@ -238,8 +237,20 @@ impl Runtime {
 
     fn perform(&mut self, effect: Effect) {
         match effect {
-            Effect::Pick(serial) => overlay::open(serial),
-            Effect::Cancel => overlay::close(),
+            /*
+             * a screenshot's picker is already up: the recording leaves its pick rather than wait
+             * on it. Fed here, not through `recording::picked`, which would take `RUNTIME` while
+             * this already holds it
+             */
+            Effect::Pick(serial) => {
+                if !region::open(serial) {
+                    let _ = self.feed(Event::Picked {
+                        serial,
+                        pick: Pick::Left,
+                    });
+                }
+            }
+            Effect::Cancel => region::close(),
             Effect::Spawn { serial, segment } => {
                 if let Some(take) = &self.take {
                     post(running(take, false));
@@ -841,6 +852,12 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
     if pick {
         // the user takes their time, which `later` would not wait for
         runtime.feed(Event::Start { pick })?;
+
+        // a screenshot's picker already up leaves this pick at once: no area can be chosen
+        if !matches!(runtime.machine.phase(), Phase::Picking { .. }) {
+            return Err(String::from("a screenshot picker is already open"));
+        }
+
         later.done("choose the area on screen; recording starts when you have");
         return Ok(());
     }
@@ -1157,8 +1174,15 @@ fn feed(event: Event) {
     drop(RUNTIME.locked().feed(event));
 }
 
-/// Receives the chosen region from the native overlay (or None if cancelled).
+// the picks fed in, by serial: how the region picker's tests see a recording drag arrive whole
+#[cfg(test)]
+static PICKED: Mutex<Vec<(u64, Option<Rect>)>> = Mutex::new(Vec::new());
+
+/// Receives the chosen region from Kanade's own region picker (or None if cancelled).
 pub fn picked(serial: u64, rect: Option<Rect>) {
+    #[cfg(test)]
+    PICKED.locked().push((serial, rect));
+
     let mut runtime = RUNTIME.locked();
 
     if runtime.machine.serial() != Some(serial) {
@@ -1174,6 +1198,22 @@ pub fn picked(serial: u64, rect: Option<Rect>) {
     };
 
     drop(runtime.feed(Event::Picked { serial, pick }));
+}
+
+// what the picker fed for a serial, for the region picker's routing tests; the entry is taken out,
+// so a later test cannot be answered by a pick an earlier one heard
+#[cfg(test)]
+pub(crate) fn picked_for(serial: u64) -> Option<Option<Rect>> {
+    let mut picked = PICKED.locked();
+    let index = picked.iter().rposition(|(heard, _)| *heard == serial)?;
+
+    Some(picked.remove(index).1)
+}
+
+// forgets every pick heard so far, so a test proves the drag it makes is what arrives
+#[cfg(test)]
+pub(crate) fn clear_picked() {
+    PICKED.locked().clear();
 }
 
 // starts the recorder of `segment`, if the recording still waits for it

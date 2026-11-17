@@ -216,8 +216,10 @@ fn press(focus: Focus<At>, at: At) -> Focus<At> {
         At::Shot(mode) => {
             pad::close();
 
-            spawn("capture-surface", move || {
-                if let Err(why) = capture::screenshot(mode) {
+            spawn("capture-surface", move || match capture::screenshot(mode) {
+                // a picker the user left is no failure, as the colour picker's `Ok(None)` is not
+                Ok(_) => {}
+                Err(why) => {
                     eprintln!("capture: {why}");
                     live::screenshot_failed(&why);
                 }

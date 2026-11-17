@@ -57,7 +57,7 @@ Expanding the Island opens one of its Surfaces, navigable by keyboard or pointer
 - **Calendar**: an agenda over local iCalendar files, Google Calendar sync and read-only webcal subscriptions, with one-click Join for video meeting links.
 - **Weather**: current conditions with hourly and multi-day forecasts from Open-Meteo.
 - **Timer**: countdown, stopwatch and configurable pomodoro intervals with automatic phase transitions.
-- **Capture**: full-screen, output or region screenshots, a screen color picker, and output, area or window recording.
+- **Capture**: full-screen, output or region screenshots with a frozen region picker, a screen color picker, and output, area or window recording.
 - **Wallpapers**: a wallpaper browser driven by awww, with Matugen palette generation. With `wallpaper.moving` on, an animated GIF or APNG is drawn by Kanade itself at its own speed, pausing while the session is locked, the niri or Umbriel overview is open, or a fullscreen window covers its output.
 - **Keys**: a searchable cheatsheet of compositor keybindings and Kanade shell shortcuts.
 - **Session**: lock, logout, suspend, reboot and power off, with a grace-period countdown and inhibitor warnings.

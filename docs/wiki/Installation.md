@@ -174,7 +174,7 @@ Kanade retries registration automatically, up to 30 s between attempts, and logs
 
 The default config includes the `blur-kanade` layer rule, and with it the Blur finish is translucent: Umbriel's rule blurs behind the Island, Dock and its menus, Banners and Launcher, where the fill's alpha passes `blur_ignore_alpha`, and Kanade requests no blur region. Without the rule the pane draws the opaque tinted solid, and `kanade doctor` warns while the finish is `blur`. For an existing Umbriel config, Settings under Compositor offers the rule, or `kanade umbriel-config rules apply blur-kanade` writes it on request. The KDL layer rules above apply only to niri.
 
-Umbriel area screenshots need `slurp` and `grim`, output screenshots need `grim`, and copying the saved PNG needs `wl-copy`; a copy failure does not discard the saved screenshot. Window screenshots, the color picker and niri's cast controls remain unavailable under Umbriel. See [Settings](Settings.md), [Limitations](Limitations.md) and [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md).
+Umbriel area screenshots normally use Kanade's own frozen picker over `wlr-screencopy`; `slurp` and `grim` are the fallback when the runtime cannot capture a frame, output screenshots need `grim`, and copying the saved PNG needs `wl-copy`; a copy failure does not discard the saved screenshot. Window screenshots, the color picker and niri's cast controls remain unavailable under Umbriel. See [Settings](Settings.md), [Limitations](Limitations.md) and [ADR 0147](../adr/0147-umbriel-compositor-support-and-config-editor.md).
 
 ### Startup and recovery
 

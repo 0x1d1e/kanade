@@ -28,6 +28,7 @@ mod wayland;
 mod widgets;
 mod window;
 
+pub mod capture;
 pub mod clock;
 pub mod idle;
 pub mod queue;

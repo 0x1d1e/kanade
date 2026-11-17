@@ -1,3 +1,4 @@
+mod capture;
 mod compositor;
 pub(crate) mod data_control;
 mod data_device;
@@ -60,6 +61,7 @@ use crate::ipc::IpcHandlers;
 use crate::ui_scale;
 use crate::window::Named;
 use crate::{Cursor, LayerWindow, Modifiers, Monitor};
+use capture::Captures;
 pub use effect::blur_available;
 use ime::Ime;
 use toplevels::Toplevel;
@@ -109,6 +111,9 @@ struct WaylandState {
 
     // blur behind the panes of a layer window, none when the compositor has no `ext-background-effect`
     background_effect: Option<ExtBackgroundEffectManagerV1>,
+
+    // one-shot output frames over the compositor's screencopy, none without its manager
+    captures: Option<Captures>,
 
     // the windows the compositor lists, none without its toplevel management
     toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
@@ -186,6 +191,8 @@ impl WaylandApp {
         let fractional_scale = globals.bind(&qh, 1..=1, ()).ok();
         let viewporter = globals.bind(&qh, 1..=1, ()).ok();
         let background_effect = globals.bind(&qh, 1..=1, ()).ok();
+        let captures = capture::bind(&globals, &qh);
+        let capable = captures.is_some();
         let ime = ime::bind(&globals, &qh);
 
         // windows per monitor are opened once the compositor describes each monitor
@@ -219,6 +226,8 @@ impl WaylandApp {
             viewporter,
 
             background_effect,
+
+            captures,
 
             ime,
 
@@ -256,6 +265,8 @@ impl WaylandApp {
         socket::insert(&event_loop.handle(), handlers);
 
         wake::insert(&event_loop.handle());
+
+        capture::insert(&event_loop.handle(), capable);
 
         // what was asked before the loop could be woken
         state.follow_idle();

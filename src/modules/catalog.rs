@@ -1380,9 +1380,9 @@ notifications dnd on until <HH:MM>
             niri::on_windows(recording::heard);
             recording::reclaim();
             recording::prewarm();
-            recording::overlay::spawn();
+            capture::region::spawn();
             capture::annotate::spawn();
-            app.window_per_monitor(recording::overlay::window)
+            app.window_per_monitor(capture::region::window)
                 .window_per_monitor(capture::annotate::window)
         },
     },

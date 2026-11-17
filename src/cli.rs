@@ -618,7 +618,9 @@ pub fn run(arguments: &[String]) -> ExitCode {
 
     // the user picks at their own pace
     let reply = match asked {
-        Call::PickColor | Call::Gesture(gesture::Request::Record(_)) => call_waiting(&arguments),
+        Call::PickColor | Call::Screenshot(_) | Call::Gesture(gesture::Request::Record(_)) => {
+            call_waiting(&arguments)
+        }
         _ => call(&arguments),
     };
 

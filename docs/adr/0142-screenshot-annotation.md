@@ -1,6 +1,6 @@
 # 142. Screenshots annotate in place, one slice of the editor
 
-Status: accepted. The first slice of "Built-in screenshot, region picker and annotation editor" (`TODO.md`): the annotation editor. A built-in screenshot and region picker are not part of it; niri still takes those.
+Status: accepted. The first slice of "Built-in screenshot, region picker and annotation editor" (`TODO.md`): the annotation editor. A built-in screenshot and region picker were not part of it; at that time niri still took those. The area screenshot is now Kanade's own frozen region picker (ADR 0162), which this editor hears of as it heard of niri's saved path.
 
 ## Context
 

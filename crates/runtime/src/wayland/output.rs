@@ -55,6 +55,9 @@ impl OutputHandler for WaylandState {
 
     // a window on a monitor that is gone goes the way a closed one does
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
+        // a frame asked for there can never land
+        self.captures_gone(&output);
+
         let gone = self
             .windows
             .iter()
