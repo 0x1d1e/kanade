@@ -57,6 +57,7 @@ pub(crate) fn trim_if_due() -> bool {
         return false;
     }
 
+    crate::graphics::image::forget_unheld_full();
     allocator::trim_heap();
 
     true
@@ -65,9 +66,11 @@ pub(crate) fn trim_if_due() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unpoisoned::MutexExt;
 
     #[test]
     fn a_visit_trims_once_after_its_frame() {
+        let _turn = crate::graphics::image::TEST_TURN.locked();
         release_visit();
         assert!(take_redraw());
 

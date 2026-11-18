@@ -33,6 +33,10 @@ const THUMBNAIL_BYTES: usize = 24 << 20;
 // past many pictures doesn't keep them waiting or decode them after they're gone
 const QUEUED: usize = 64;
 
+// full-size preview decodes stay tightly bounded while waiting and when no longer displayed
+const FULL_QUEUED: usize = 4;
+const FULL_UNHELD: usize = 3;
+
 // an svg's bytes drawn with the longest side `longest` pixels across: width, height, plain RGBA
 pub fn draw_svg(bytes: &[u8], longest: f32) -> Option<(u32, u32, Vec<u8>)> {
     // the side bounds the square the drawing fits in, so a request past `MOST_PIXELS` is refused
@@ -102,9 +106,19 @@ pub enum ImageState {
 
 /*
  * what a window waiting on an image counts as having read, so a finished
- * decode only draws the windows still missing a picture, not every window
+ * decode only draws the windows still missing a picture, not every window;
+ * thumbnails use a separate marker so grid decodes never wake full-size previews
  */
 struct Decoded;
+struct DecodedThumbnail;
+
+fn decoded_type(cover: Option<(u32, u32)>) -> TypeId {
+    if cover.is_some() {
+        TypeId::of::<DecodedThumbnail>()
+    } else {
+        TypeId::of::<Decoded>()
+    }
+}
 
 // file path, optional cover size, and modification time plus length to detect in-place replacement
 type Key = (PathBuf, Option<(u32, u32)>, Stamp);
@@ -178,7 +192,7 @@ fn ask(path: &Path, cover: Option<(u32, u32)>) -> (ImageState, Option<Arc<Bitmap
         return match &entry.slot {
             Slot::Loading => {
                 loader.prioritize(&key);
-                changes::note_read(TypeId::of::<Decoded>());
+                changes::note_read(decoded_type(cover));
                 (ImageState::Loading, None)
             }
             Slot::Ready(image) => (ImageState::Ready, Some(Arc::clone(image))),
@@ -194,10 +208,7 @@ fn ask(path: &Path, cover: Option<(u32, u32)>) -> (ImageState, Option<Arc<Bitmap
         },
     );
     loader.waiting.push(key.clone());
-
-    if key.1.is_some() {
-        loader.trim_waiting();
-    }
+    loader.trim_waiting();
 
     if loader.workers < WORKERS {
         loader.workers += 1;
@@ -207,7 +218,7 @@ fn ask(path: &Path, cover: Option<(u32, u32)>) -> (ImageState, Option<Arc<Bitmap
     drop(loader);
     WAITING.notify_one();
 
-    changes::note_read(TypeId::of::<Decoded>());
+    changes::note_read(decoded_type(cover));
 
     (ImageState::Loading, None)
 }
@@ -219,7 +230,7 @@ fn work() {
             let mut loader = LOADER.locked();
 
             loop {
-                if let Some(key) = loader.waiting.pop() {
+                if let Some(key) = loader.pop_waiting() {
                     break key;
                 }
 
@@ -251,20 +262,24 @@ fn read_key(key: &Key) -> Option<Bitmap> {
 fn finish(key: Key, image: Option<Bitmap>) {
     let mut loader = LOADER.locked();
 
-    if let Some(entry) = loader.entries.get_mut(&key) {
-        entry.slot = match image {
-            Some(image) => Slot::Ready(Arc::new(image)),
-            None => Slot::Failed,
-        };
-    }
+    let Some(entry) = loader.entries.get_mut(&key) else {
+        return;
+    };
+
+    entry.slot = match image {
+        Some(image) => Slot::Ready(Arc::new(image)),
+        None => Slot::Failed,
+    };
 
     if key.1.is_some() {
         loader.trim();
+    } else {
+        loader.trim_full();
     }
 
     drop(loader);
 
-    changes::mark(TypeId::of::<Decoded>());
+    changes::mark(decoded_type(key.1));
 }
 
 impl Loader {
@@ -276,14 +291,38 @@ impl Loader {
         }
     }
 
-    // queued thumbnails past QUEUED go, the longest unused first
+    // pops the most recently requested full-size decode ahead of any queued thumbnails
+    fn pop_waiting(&mut self) -> Option<Key> {
+        if let Some(pos) = self
+            .waiting
+            .iter()
+            .rposition(|(_, cover, _)| cover.is_none())
+        {
+            return Some(self.waiting.remove(pos));
+        }
+
+        self.waiting.pop()
+    }
+
+    // queued requests past their limit go, the longest unused first
     fn trim_waiting(&mut self) {
-        while self.waiting.iter().filter(|k| k.1.is_some()).count() > QUEUED {
+        self.trim_waiting_kind(true, QUEUED);
+        self.trim_waiting_kind(false, FULL_QUEUED);
+    }
+
+    fn trim_waiting_kind(&mut self, thumbnail: bool, limit: usize) {
+        while self
+            .waiting
+            .iter()
+            .filter(|k| k.1.is_some() == thumbnail)
+            .count()
+            > limit
+        {
             let oldest = self
                 .waiting
                 .iter()
                 .enumerate()
-                .filter(|(_, k)| k.1.is_some())
+                .filter(|(_, k)| k.1.is_some() == thumbnail)
                 .min_by_key(|(_, k)| self.entries.get(*k).map(|e| e.used).unwrap_or(0))
                 .map(|(i, _)| i);
 
@@ -294,6 +333,53 @@ impl Loader {
             let evicted = self.waiting.remove(pos);
             self.entries.remove(&evicted);
         }
+    }
+
+    /*
+     * keeps at most FULL_UNHELD unheld full-size decodes warm, evicting the longest unused first;
+     * held bitmaps and decodes in flight stay
+     */
+    fn trim_full(&mut self) {
+        let mut unheld: Vec<(u64, Key)> = self
+            .entries
+            .iter()
+            .filter(|(key, _)| key.1.is_none())
+            .filter_map(|(key, entry)| {
+                let unheld = match &entry.slot {
+                    Slot::Ready(image) => Arc::strong_count(image) == 1,
+                    Slot::Failed => true,
+                    Slot::Loading => false,
+                };
+
+                unheld.then(|| (entry.used, key.clone()))
+            })
+            .collect();
+
+        if unheld.len() <= FULL_UNHELD {
+            return;
+        }
+
+        unheld.sort_unstable_by_key(|(used, _)| *used);
+
+        let remove = unheld.len() - FULL_UNHELD;
+        for (_, key) in unheld.into_iter().take(remove) {
+            self.entries.remove(&key);
+        }
+    }
+
+    // drops every unheld full-size entry while preserving held bitmaps, loads in flight, and thumbnails
+    fn forget_unheld_full(&mut self) {
+        self.entries.retain(|(_, cover, _), entry| {
+            if cover.is_some() {
+                return true;
+            }
+
+            match &entry.slot {
+                Slot::Ready(kept) => Arc::strong_count(kept) > 1,
+                Slot::Failed => false,
+                Slot::Loading => true,
+            }
+        });
     }
 
     /*
@@ -355,18 +441,14 @@ impl Loader {
     }
 }
 
-/*
- * frees a full size image no window shows anymore; small copies stay
- * until there are too many, as decoding them again is slow
- */
-pub fn forget(image: &Arc<Bitmap>) {
-    let mut loader = LOADER.locked();
+// trims unheld full-size bitmaps down to FULL_UNHELD after a window stops drawing old frames
+pub(crate) fn trim_full() {
+    LOADER.locked().trim_full();
+}
 
-    loader.entries.retain(|(_, cover, _), entry| {
-        let same = matches!(&entry.slot, Slot::Ready(kept) if Arc::ptr_eq(kept, image));
-
-        cover.is_some() || !same
-    });
+// drops all unheld full-size bitmaps when a layer hides or a Surface visit finishes
+pub(crate) fn forget_unheld_full() {
+    LOADER.locked().forget_unheld_full();
 }
 
 // none for a file that can't be read or decoded, like one still being written
@@ -379,6 +461,10 @@ pub fn read(path: &Path) -> Option<Bitmap> {
         pixels: Arc::new(pixels),
     })
 }
+
+// tests touching global LOADER take turns with memory::trim_if_due tests
+#[cfg(test)]
+pub(crate) static TEST_TURN: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -441,6 +527,7 @@ mod tests {
      */
     #[test]
     fn a_replaced_file_is_drawn_from_its_new_pixels() {
+        let _turn = TEST_TURN.locked();
         let path = std::env::temp_dir().join(format!("kanade-newer-{}.png", std::process::id()));
 
         // a clear pixel, then an opaque one, at the same path
@@ -496,6 +583,7 @@ mod tests {
      */
     #[test]
     fn queued_thumbnails_are_bounded_and_reload_after_eviction() {
+        let _turn = TEST_TURN.locked();
         let path = std::env::temp_dir().join(format!("kanade-queue-{}.png", std::process::id()));
         write_png(&path, 0);
 
@@ -539,5 +627,201 @@ mod tests {
         }
 
         fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn full_size_loads_take_priority_and_bound_waiting_and_unheld_entries() {
+        let _turn = TEST_TURN.locked();
+
+        assert_ne!(decoded_type(Some((32, 32))), decoded_type(None));
+        assert_eq!(decoded_type(None), TypeId::of::<Decoded>());
+
+        let key =
+            |name: &str, cover: Option<(u32, u32)>| -> Key { (PathBuf::from(name), cover, None) };
+
+        let mut loader = Loader::default();
+        let total_full = FULL_QUEUED + 3;
+        for i in 1..=total_full {
+            let k = key(&format!("full-{i}.png"), None);
+            loader.entries.insert(
+                k.clone(),
+                Entry {
+                    slot: Slot::Loading,
+                    used: i as u64,
+                },
+            );
+            loader.waiting.push(k);
+        }
+
+        for i in 1..=2 {
+            let k = key(&format!("thumb-{i}.png"), Some((32, 32)));
+            loader.entries.insert(
+                k.clone(),
+                Entry {
+                    slot: Slot::Loading,
+                    used: (total_full + i) as u64,
+                },
+            );
+            loader.waiting.push(k);
+        }
+
+        loader.trim_waiting();
+
+        // stale full-size requests are evicted beyond FULL_QUEUED while newer ones and thumbnails stay
+        assert_eq!(
+            loader.waiting.iter().filter(|k| k.1.is_none()).count(),
+            FULL_QUEUED
+        );
+        for i in 1..=3 {
+            assert!(
+                !loader
+                    .entries
+                    .contains_key(&key(&format!("full-{i}.png"), None))
+            );
+        }
+        for i in 4..=total_full {
+            assert!(
+                loader
+                    .entries
+                    .contains_key(&key(&format!("full-{i}.png"), None))
+            );
+        }
+        assert!(
+            loader
+                .entries
+                .contains_key(&key("thumb-1.png", Some((32, 32))))
+        );
+        assert!(
+            loader
+                .entries
+                .contains_key(&key("thumb-2.png", Some((32, 32))))
+        );
+
+        // workers pop the most recent full-size request ahead of queued thumbnails
+        assert_eq!(
+            loader.pop_waiting(),
+            Some(key(&format!("full-{total_full}.png"), None))
+        );
+
+        // trim_full bounds unheld completed full-size entries while keeping held, loading, and thumbnails
+        let mut cache = Loader::default();
+        let held_bitmap = Arc::new(Bitmap::empty());
+        let held_key = key("held.png", None);
+        cache.entries.insert(
+            held_key.clone(),
+            Entry {
+                slot: Slot::Ready(Arc::clone(&held_bitmap)),
+                used: 1,
+            },
+        );
+        let loading_key = key("loading.png", None);
+        cache.entries.insert(
+            loading_key.clone(),
+            Entry {
+                slot: Slot::Loading,
+                used: 2,
+            },
+        );
+        let thumb_key = key("thumb.png", Some((64, 64)));
+        cache.entries.insert(
+            thumb_key.clone(),
+            Entry {
+                slot: Slot::Ready(Arc::new(Bitmap::empty())),
+                used: 3,
+            },
+        );
+
+        // 5 unheld completed full-size entries: 2 oldest (tick 10, 11) should be evicted
+        cache.entries.insert(
+            key("unheld-1.png", None),
+            Entry {
+                slot: Slot::Ready(Arc::new(Bitmap::empty())),
+                used: 10,
+            },
+        );
+        cache.entries.insert(
+            key("unheld-2-failed.png", None),
+            Entry {
+                slot: Slot::Failed,
+                used: 11,
+            },
+        );
+        for (i, used) in [(3, 12), (4, 13), (5, 14)] {
+            cache.entries.insert(
+                key(&format!("unheld-{i}.png"), None),
+                Entry {
+                    slot: Slot::Ready(Arc::new(Bitmap::empty())),
+                    used,
+                },
+            );
+        }
+
+        cache.trim_full();
+
+        assert!(!cache.entries.contains_key(&key("unheld-1.png", None)));
+        assert!(
+            !cache
+                .entries
+                .contains_key(&key("unheld-2-failed.png", None))
+        );
+        for i in 3..=5 {
+            assert!(
+                cache
+                    .entries
+                    .contains_key(&key(&format!("unheld-{i}.png"), None))
+            );
+        }
+        assert!(cache.entries.contains_key(&held_key));
+        assert!(cache.entries.contains_key(&loading_key));
+        assert!(cache.entries.contains_key(&thumb_key));
+
+        // forget_unheld_full drops all remaining unheld full-size entries, keeping held, loading, and thumbnails
+        cache.forget_unheld_full();
+
+        for i in 3..=5 {
+            assert!(
+                !cache
+                    .entries
+                    .contains_key(&key(&format!("unheld-{i}.png"), None))
+            );
+        }
+        assert!(cache.entries.contains_key(&held_key));
+        assert!(cache.entries.contains_key(&loading_key));
+        assert!(cache.entries.contains_key(&thumb_key));
+
+        // finish ignores keys already evicted from LOADER without inserting them back
+        let missing = key("evicted-before-finish.png", None);
+        finish(missing.clone(), Some(Bitmap::empty()));
+        assert!(!LOADER.locked().entries.contains_key(&missing));
+
+        // global forget_unheld_full drops unheld full-size bitmaps and keeps held ones
+        let global_held = Arc::new(Bitmap::empty());
+        let global_held_key = key("global-held.png", None);
+        let global_unheld_key = key("global-unheld.png", None);
+        {
+            let mut global = LOADER.locked();
+            global.entries.insert(
+                global_held_key.clone(),
+                Entry {
+                    slot: Slot::Ready(Arc::clone(&global_held)),
+                    used: 100,
+                },
+            );
+            global.entries.insert(
+                global_unheld_key.clone(),
+                Entry {
+                    slot: Slot::Ready(Arc::new(Bitmap::empty())),
+                    used: 101,
+                },
+            );
+        }
+        forget_unheld_full();
+        {
+            let mut global = LOADER.locked();
+            assert!(global.entries.contains_key(&global_held_key));
+            assert!(!global.entries.contains_key(&global_unheld_key));
+            global.entries.remove(&global_held_key);
+        }
+        drop(global_held);
     }
 }

@@ -1271,7 +1271,10 @@ notifications dnd on until <HH:MM>
         warns: None,
         needs: &[],
         settings: &[],
-        hooks: Hooks::NONE,
+        hooks: Hooks {
+            status: None,
+            reload: Some(surfaces::wallpapers::reload),
+        },
         verbs: &[Verb {
             name: "wallpaper",
             about: "Set the wallpaper or one at random, show status, open its Surface",
@@ -1282,7 +1285,10 @@ notifications dnd on until <HH:MM>
                     .ok_or(Unparsed::Usage)
             },
         }],
-        start: |app| app.window_per_monitor_under(surfaces::wallpapers::preview),
+        start: |app| {
+            surfaces::wallpapers::start();
+            app.window_per_monitor_under(surfaces::wallpapers::preview)
+        },
     },
     // a countdown or a pomodoro to start from the island, and the one running
     Module {

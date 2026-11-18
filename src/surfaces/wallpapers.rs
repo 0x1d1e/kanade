@@ -9,6 +9,7 @@
 //! follows, a circle transition growing from the picture pressed; the Surface stays open to try
 //! another, and says when one was not set.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
@@ -20,7 +21,7 @@ use kanade_runtime::{
 };
 use kanade_runtime::{
     Column, MutexExt,
-    service::{Service, Write},
+    service::{self, Service, Write},
 };
 
 use crate::icon::Icon;
@@ -438,31 +439,156 @@ fn focused(monitor: &str, visit: u64) -> Option<PathBuf> {
 }
 
 /*
+ * derived preview targets per monitor so unrelated IslandService writes (hover, attend(), morphs)
+ * only wake kanade-wallpaper-preview when its target actually changes
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Preview {
+    by: HashMap<String, (u64, PathBuf)>,
+}
+
+impl Service for Preview {
+    fn new() -> Self {
+        Preview::default()
+    }
+
+    fn listen() {}
+}
+
+// last full-resolution picture shown per monitor in the active visit, held while the next loads
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Shown {
+    visit: u64,
+    path: PathBuf,
+}
+
+static SHOWN: LazyLock<Mutex<HashMap<String, Shown>>> = LazyLock::new(Mutex::default);
+
+fn resolve_preview(
+    previous: Option<Shown>,
+    focused: Option<(u64, PathBuf)>,
+    mut state_of: impl FnMut(&Path) -> ImageState,
+) -> (Option<Shown>, Option<PathBuf>) {
+    let Some((visit, wanted)) = focused else {
+        return (None, None);
+    };
+
+    match state_of(&wanted) {
+        ImageState::Ready => {
+            let shown = Shown {
+                visit,
+                path: wanted.clone(),
+            };
+            (Some(shown), Some(wanted))
+        }
+        ImageState::Loading => {
+            // `state_of(&wanted)` already queued/prioritized `wanted` and subscribed to `Decoded`
+            let keep = previous
+                .filter(|prev| prev.visit == visit)
+                .filter(|prev| state_of(&prev.path) == ImageState::Ready);
+            let path = keep.as_ref().map(|prev| prev.path.clone());
+            (keep, path)
+        }
+        ImageState::Failed => (None, None),
+    }
+}
+
+fn sync_preview() {
+    let monitors = kanade_runtime::Monitors::read().all().to_vec();
+
+    SHOWN
+        .locked()
+        .retain(|name, _| monitors.iter().any(|monitor| monitor.name == *name));
+
+    let (expanded_on, is_wallpapers, overview, visit, expanded_monitors) = {
+        let island = IslandService::read();
+        let expanded_on = island.expanded_on().map(str::to_owned);
+        let is_wallpapers = island.surface() == Some(Surface::Wallpapers);
+        let overview = island.overview();
+        let visit = island.visit();
+        let expanded_monitors: Vec<String> = monitors
+            .iter()
+            .filter(|monitor| {
+                island.presentation(&monitor.name) == Presentation::Expanded(Surface::Wallpapers)
+            })
+            .map(|monitor| monitor.name.clone())
+            .collect();
+
+        (
+            expanded_on,
+            is_wallpapers,
+            overview,
+            visit,
+            expanded_monitors,
+        )
+    };
+
+    let mut next = HashMap::new();
+
+    if !lock::holds() && !overview && is_wallpapers {
+        for monitor in &monitors {
+            if expanded_on.as_deref() == Some(monitor.name.as_str())
+                && expanded_monitors.contains(&monitor.name)
+                && !view::covered(monitor, || false)
+                && let Some(path) = focused(&monitor.name, visit)
+            {
+                next.insert(monitor.name.clone(), (visit, path));
+            }
+        }
+    }
+
+    let mut preview = Preview::write();
+    if preview.by == next {
+        preview.quiet();
+    } else {
+        preview.by = next;
+    }
+}
+
+pub fn start() {
+    service::watch::<kanade_runtime::Monitors>(sync_preview);
+    service::watch::<IslandService>(sync_preview);
+    service::watch::<Pick>(sync_preview);
+    service::watch::<wallpaper::Shown>(sync_preview);
+    service::watch::<crate::sources::fullscreen::Fullscreen>(sync_preview);
+    service::watch::<kanade_runtime::Toplevels>(sync_preview);
+    service::watch::<crate::lock::Said>(sync_preview);
+    sync_preview();
+}
+
+pub fn reload() {
+    sync_preview();
+}
+
+/*
  * the picture the ring is on, full-resolution on the output behind the Island while the Wallpapers
  * Surface is open, so its crop, mood and palette are judged before it is set. It takes no pointer
  * and no keyboard, sits on the Top layer under the Island and the rest of the shell and over normal
  * windows, and shows nothing while the Surface is closed, under the lock, over a fullscreen window
  * and in the overview. The window stays mapped with an empty child when it shows nothing, so its
- * layer order, fixed when it was created before the other windows, never changes. It draws the same
- * picture the grid's ring is on, from the runtime's bounded image cache: no scrim and no decoder of
- * its own
+ * layer order, fixed when it was created before the other windows, never changes. It draws from
+ * `Preview` and keeps the visit's last ready picture while the next loads, from the runtime's
+ * bounded image cache: no scrim and no decoder of its own
  */
 pub fn preview(monitor: &Monitor) -> LayerWindow {
-    let island = IslandService::read();
-    let open = island.expanded_on() == Some(monitor.name.as_str())
-        && island.surface() == Some(Surface::Wallpapers)
-        && island.presentation(&monitor.name) == Presentation::Expanded(Surface::Wallpapers);
-    let overview = island.overview();
-    let covered = view::covered(monitor, || overview);
-    let visit = island.visit();
-    drop(island);
+    let focused = Preview::read().by.get(&monitor.name).cloned();
+    let focused = focused.filter(|_| !lock::holds());
+    let previous = SHOWN.locked().get(&monitor.name).cloned();
+    let (next_shown, path) = resolve_preview(previous, focused, |path| Image::cover(path).state());
 
-    let focused = open
-        .then(|| focused(&monitor.name, visit))
-        .flatten()
-        .filter(|_| !covered && !overview && !lock::holds());
+    {
+        let mut shown = SHOWN.locked();
+        match next_shown {
+            Some(entry) => {
+                shown.insert(monitor.name.clone(), entry);
+            }
+            None => {
+                shown.remove(&monitor.name);
+            }
+        }
+    }
 
-    let child: Box<dyn Widget> = match focused {
+    let child: Box<dyn Widget> = match path {
         Some(path) => Box::new(
             Rectangle::new()
                 .width(Size::Parent)
@@ -847,6 +973,15 @@ fn run(monitor: &str, visit: u64, press: Press) {
             Press::Shuffle => at_shuffle(&monitor),
         };
 
+        // keep the ring and preview synced immediately on pointer tile clicks and Shuffle presses
+        match &press {
+            Press::Set(_, index) => {
+                pick.shuffle = false;
+                pick.selected = Some(*index);
+            }
+            Press::Shuffle => pick.shuffle = true,
+        }
+
         let done: wallpaper::Done = Box::new(move |result: Result<(), Unset>| {
             settled(visit, set, result.map_err(|unset| unset.brief()))
         });
@@ -975,5 +1110,75 @@ mod tests {
             .step(Key::PageDown, count)
             .expect("PageDown is its own");
         assert_eq!(bottom.selected, Some(count - 1));
+    }
+
+    #[test]
+    fn preview_holds_the_visits_last_ready_picture_while_the_next_loads() {
+        let a = PathBuf::from("a.png");
+        let b = PathBuf::from("b.png");
+        let c = PathBuf::from("c.png");
+        let shown_a = Shown {
+            visit: 1,
+            path: a.clone(),
+        };
+        let shown_b = Shown {
+            visit: 1,
+            path: b.clone(),
+        };
+
+        // initial loading target with no prior picture draws nothing
+        let out = resolve_preview(None, Some((1, a.clone())), |_| ImageState::Loading);
+        assert_eq!(out, (None, None));
+
+        // A ready becomes the visit's last ready picture
+        let out = resolve_preview(None, Some((1, a.clone())), |p| {
+            if p == a {
+                ImageState::Ready
+            } else {
+                ImageState::Loading
+            }
+        });
+        assert_eq!(out, (Some(shown_a.clone()), Some(a.clone())));
+
+        // stepping to B while B loads checks B first (queuing/prioritizing it) and keeps A
+        let mut probed = Vec::new();
+        let out = resolve_preview(Some(shown_a.clone()), Some((1, b.clone())), |p| {
+            probed.push(p.to_path_buf());
+            if p == a {
+                ImageState::Ready
+            } else {
+                ImageState::Loading
+            }
+        });
+        assert_eq!(probed, vec![b.clone(), a.clone()]);
+        assert_eq!(out, (Some(shown_a.clone()), Some(a.clone())));
+
+        // once B is ready, preview switches to B
+        let out = resolve_preview(Some(shown_a), Some((1, b.clone())), |p| {
+            if p == b {
+                ImageState::Ready
+            } else {
+                ImageState::Loading
+            }
+        });
+        assert_eq!(out, (Some(shown_b.clone()), Some(b.clone())));
+
+        // a new visit does not leak the previous visit's picture while C loads
+        let out = resolve_preview(Some(shown_b.clone()), Some((2, c.clone())), |p| {
+            if p == b {
+                ImageState::Ready
+            } else {
+                ImageState::Loading
+            }
+        });
+        assert_eq!(out, (None, None));
+
+        // a failed target clears Shown immediately instead of holding the old picture
+        let out = resolve_preview(Some(shown_b.clone()), Some((1, c)), |_| ImageState::Failed);
+        assert_eq!(out, (None, None));
+
+        // None (Shuffle, closed, locked, covered, overview) clears Shown immediately
+        let out = resolve_preview(Some(shown_b), None, |_| ImageState::Ready);
+        assert_eq!(out, (None, None));
     }
 }

@@ -17,6 +17,7 @@ impl Gpu {
 
         self.drawn.clear();
         self.forget_unshown();
+        image::forget_unheld_full();
 
         // image textures can now be destroyed even if the window draws no further frames
         let _ = self.device.poll(vello::wgpu::PollType::Poll);
@@ -39,6 +40,8 @@ impl Gpu {
             .copied()
             .collect();
 
+        let mut removed_any = false;
+
         for key in unshown {
             let Some(image) = self.shown.remove(&key) else {
                 continue;
@@ -48,12 +51,15 @@ impl Gpu {
 
             self.quads.forget(key);
 
-            // held only here and by the loader, so no other window shows it either
-            if Arc::strong_count(&image) == 2 {
-                image::forget(&image);
-            }
+            // drop before trimming so unheld bitmaps reach strong_count == 1
+            drop(image);
+            removed_any = true;
         }
 
         self.drawn.clear();
+
+        if removed_any {
+            image::trim_full();
+        }
     }
 }
