@@ -93,6 +93,10 @@ pub enum Asked {
  * or Umbriel's tools take it, as before.
  */
 pub fn screenshot(mode: Mode) -> Result<Asked, String> {
+    if crate::lock::holds() {
+        return Err(String::from("the session is locked"));
+    }
+
     let dir = directory().ok_or("no screenshot folder: HOME is not set")?;
 
     std::fs::create_dir_all(&dir)
@@ -103,6 +107,10 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
         && let Some(result) = frozen(&dir)
     {
         return result;
+    }
+
+    if crate::lock::holds() {
+        return Err(String::from("the session is locked"));
     }
 
     if super::compositor::active() == super::compositor::Compositor::Niri {
@@ -164,6 +172,10 @@ impl Drop for Held {
  * overlay with no frozen base, and a drag there is ignored. Runs on the capture worker thread.
  */
 fn frozen(dir: &Path) -> Option<Result<Asked, String>> {
+    if crate::lock::holds() {
+        return Some(Err(String::from("the session is locked")));
+    }
+
     if TAKING.swap(true, Ordering::AcqRel) {
         return Some(Err(String::from("a screenshot is already being taken")));
     }
@@ -184,6 +196,10 @@ fn frozen(dir: &Path) -> Option<Result<Asked, String>> {
         if let Ok(frame) = kanade_runtime::capture::await_frame(&monitor.name, FRAME_WAIT) {
             frames.insert(monitor.name.clone(), frame);
         }
+    }
+
+    if crate::lock::holds() {
+        return Some(Err(String::from("the session is locked")));
     }
 
     let focused = focused_output()
@@ -826,5 +842,30 @@ mod tests {
                 "--type\nimage/png\n"
             );
         }
+    }
+
+    #[test]
+    fn locked_session_refuses_screenshot_and_frozen() {
+        const TEST: &str = "sources::capture::tests::locked_session_refuses_screenshot_and_frozen";
+        if std::env::var_os("KANADE_CAPTURE_LOCK_FIXTURE").is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KANADE_CAPTURE_LOCK_FIXTURE", "1")
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        crate::lock::pending_fixture();
+        assert_eq!(
+            screenshot(Mode::Area),
+            Err(String::from("the session is locked"))
+        );
+        assert_eq!(
+            frozen(Path::new("/nonexistent")),
+            Some(Err(String::from("the session is locked")))
+        );
     }
 }

@@ -1095,10 +1095,8 @@ fn remove_tree_entry(path: &Path) -> io::Result<()> {
     }
 }
 
-fn legacy_settings(overlay: &Path) -> (Option<String>, Option<String>) {
-    if !fs::symlink_metadata(overlay)
-        .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
-    {
+fn legacy_settings(w: &Where, overlay: &Path) -> (Option<String>, Option<String>) {
+    if root_owned_read_only(&w.root, overlay).is_err() {
         return (None, None);
     }
     let read_plain = |name: &str| {
@@ -1116,8 +1114,8 @@ fn legacy_settings(overlay: &Path) -> (Option<String>, Option<String>) {
 
 /*
  * an overlay that fails the root-owned, read-only check is moved whole to `<prefix>.legacy`, beside
- * it, and replaced by a fresh root-owned one. Never recover the user's copy. Read `QtVersion` and
- * `theme.conf.user` before the rename, since setup carries those settings over.
+ * it, and replaced by a fresh root-owned one. Never recover or read settings from an untrusted
+ * prefix, since symlinks or user-writable files inside it cannot be trusted.
  */
 fn migrate_legacy_prefix(w: &Where) -> Result<(Option<String>, Option<String>), String> {
     let prefix = w.prefix();
@@ -1144,12 +1142,11 @@ fn migrate_legacy_prefix(w: &Where) -> Result<(Option<String>, Option<String>), 
     let parent = prefix.parent().expect("prefix has a parent");
     root_owned_ancestors(&w.root, parent)?;
     let legacy = beside(&prefix, ".legacy");
-    let settings = legacy_settings(&w.overlay(OWN));
     remove_tree_entry(&legacy)
         .map_err(|error| format!("{}: {error}", class::plain(&legacy.display().to_string())))?;
     fs::rename(&prefix, &legacy)
         .map_err(|error| format!("{}: {error}", class::plain(&prefix.display().to_string())))?;
-    Ok(settings)
+    Ok((None, None))
 }
 
 fn install_own(w: &Where) -> Result<(), String> {
@@ -1175,7 +1172,7 @@ fn install_own(w: &Where) -> Result<(), String> {
     let target_qt = legacy_qt
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| target_qt_version(w, &overlay));
-    let previous_user = legacy_user.or_else(|| legacy_settings(&overlay).1);
+    let previous_user = legacy_user.or_else(|| legacy_settings(w, &overlay).1);
     let user = preserve_user_settings(previous_user.as_deref().unwrap_or(""));
     match fs::symlink_metadata(&temp) {
         Ok(meta) if meta.is_dir() => fs::remove_dir_all(&temp),
@@ -2999,5 +2996,57 @@ mod tests {
         assert!(!said.chars().any(char::is_control), "{said:?}");
         // the prefix is Kanade's own, outside the filter, so it is there whatever the message says
         assert_eq!(stderr_line("\u{1b}"), "kanade: sddm: ");
+    }
+
+    #[test]
+    fn migrate_legacy_prefix_moves_untrusted_tree_without_reading_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "kanade-sddm-untrusted-migrate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let w = Where::under(root.clone());
+        let prefix = w.prefix();
+        let overlay = w.overlay(OWN);
+        fs::create_dir_all(&overlay).unwrap();
+
+        let mut ancestor = root.clone();
+        fs::set_permissions(&ancestor, Permissions::from_mode(0o755)).unwrap();
+        for part in ["usr", "local", "share"] {
+            ancestor.push(part);
+            fs::set_permissions(&ancestor, Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let secret = root.join("secret.ini");
+        fs::write(&secret, "[General]\nfont=SecretFont\ntoken=do-not-leak\n").unwrap();
+        fs::set_permissions(&secret, Permissions::from_mode(0o600)).unwrap();
+
+        fs::set_permissions(&prefix, Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(&overlay, Permissions::from_mode(0o777)).unwrap();
+        symlink(&secret, overlay.join(USER)).unwrap();
+
+        assert_eq!(legacy_settings(&w, &overlay), (None, None));
+
+        install_own(&w).unwrap();
+
+        let legacy = beside(&prefix, ".legacy");
+        assert!(legacy.is_dir());
+        assert!(
+            fs::symlink_metadata(legacy.join("themes/kanade").join(USER))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        let installed_user = overlay.join(USER);
+        let meta = fs::symlink_metadata(&installed_user).unwrap();
+        assert!(!meta.file_type().is_symlink());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o644);
+        let written = fs::read_to_string(&installed_user).unwrap();
+        assert!(!written.contains("SecretFont"), "{written}");
+        assert!(!written.contains("do-not-leak"), "{written}");
+        assert!(!written.contains("token"), "{written}");
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

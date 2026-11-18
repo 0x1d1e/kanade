@@ -480,8 +480,16 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
                 surfaces::launcher::ready::confirm(&ready_on, ready_visit);
             }
         })
-        // empty under niri's overview, so the pointer reaches the overview beneath
-        .input_region(if island.overview() { vec![] } else { reach })
+        // empty under niri's overview unless Auth is open, so the pointer reaches the overview beneath
+        .input_region(
+            if island.overview()
+                && island.presentation(&monitor.name) != Presentation::Expanded(Surface::Auth)
+            {
+                vec![]
+            } else {
+                reach
+            },
+        )
         .child(content)
 }
 

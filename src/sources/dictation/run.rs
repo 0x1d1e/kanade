@@ -12,8 +12,8 @@ use std::io::{self, Read};
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
-use std::sync::Mutex;
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -52,6 +52,23 @@ const EXITING: Duration = Duration::from_millis(20);
 // how long `wtype` may take to type or to send the paste chord before it is killed
 const TYPING: Duration = Duration::from_secs(30);
 const PASTING: Duration = Duration::from_secs(5);
+
+// Always acquired before lock::REQUESTS and dictation::RUNTIME. Lock onset, start requests
+// and gate completion share this guard so lock onset completes before any new recording starts.
+// No Service is touched when dictation is cold.
+static LOCK_ONSET: Mutex<()> = Mutex::new(());
+
+pub(crate) struct LockOnset {
+    _onset: MutexGuard<'static, ()>,
+}
+
+pub(crate) fn lock_onset() -> LockOnset {
+    let guard = LockOnset {
+        _onset: LOCK_ONSET.locked(),
+    };
+    locked();
+    guard
+}
 
 static RUNTIME: Mutex<Runtime> = Mutex::new(Runtime {
     machine: Machine::new(),
@@ -108,12 +125,10 @@ fn arguments() -> [String; 10] {
  * consent read on the gate thread first, as the keyring may prompt
  */
 pub fn request(request: Request, later: Later) {
-    let mut runtime = RUNTIME.locked();
-
     match request {
         // the gate is read on the gate thread, as the keyring may be slow
         Request::Status => {
-            let said = runtime.machine.state().said();
+            let said = RUNTIME.locked().machine.state().said();
 
             if let Err(why) = ask(Job::Status {
                 said,
@@ -123,6 +138,7 @@ pub fn request(request: Request, later: Later) {
             }
         }
         Request::Cancel => {
+            let mut runtime = RUNTIME.locked();
             // a finished result dismissed is not a dictation cancelled
             let busy = runtime.machine.state().busy();
 
@@ -132,56 +148,53 @@ pub fn request(request: Request, later: Later) {
                 false => "nothing to cancel",
             });
         }
-        // nothing is recorded from a locked session
-        Request::Toggle if runtime.machine.state().starts() && lock::holds() => {
-            later.refused("the session is locked");
-        }
-        Request::Toggle if runtime.machine.state().starts() => {
-            let refused = runtime.feed(Event::Toggle, &[]);
+        Request::Toggle | Request::Down => {
+            let _onset = LOCK_ONSET.locked();
+            // Never hold RUNTIME while querying lock::holds().
+            let locked = lock::holds();
+            let mut runtime = RUNTIME.locked();
 
-            match runtime.gate.take() {
-                // the recorder starts from the gate thread's answer, which is fed by it
-                Some(ticket) => {
-                    if let Err(why) = ask(Job::Gate {
-                        ticket,
-                        later: later.clone(),
-                    }) {
-                        runtime.feed(Event::Cancel, &[]);
-                        later.refused(why);
-                    }
+            if runtime.machine.state().starts() {
+                // nothing is recorded from a locked session
+                if locked {
+                    later.refused("the session is locked");
+                    return;
                 }
-                None => later.result(answer(&runtime, refused)),
+
+                let event = match request {
+                    Request::Toggle => Event::Toggle,
+                    Request::Down => Event::Down,
+                    _ => unreachable!(),
+                };
+                let refused = runtime.feed(event, &[]);
+
+                match runtime.gate.take() {
+                    // the recorder starts from the gate thread's answer, which is fed by it
+                    Some(ticket) => {
+                        if let Err(why) = ask(Job::Gate {
+                            ticket,
+                            later: later.clone(),
+                        }) {
+                            runtime.feed(Event::Cancel, &[]);
+                            later.refused(why);
+                        }
+                    }
+                    None => later.result(answer(&runtime, refused)),
+                }
+            } else {
+                match request {
+                    Request::Toggle => {
+                        let refused = runtime.feed(Event::Toggle, &[]);
+                        later.result(answer(&runtime, refused));
+                    }
+                    Request::Down => later.done(""),
+                    _ => unreachable!(),
+                }
             }
         }
-        Request::Toggle => {
-            let refused = runtime.feed(Event::Toggle, &[]);
-
-            later.result(answer(&runtime, refused));
-        }
-        // a hold starts only from idle, and the lock refuses it before any audio
-        Request::Down if runtime.machine.state().starts() && lock::holds() => {
-            later.refused("the session is locked");
-        }
-        Request::Down if runtime.machine.state().starts() => {
-            let refused = runtime.feed(Event::Down, &[]);
-
-            match runtime.gate.take() {
-                Some(ticket) => {
-                    if let Err(why) = ask(Job::Gate {
-                        ticket,
-                        later: later.clone(),
-                    }) {
-                        runtime.feed(Event::Cancel, &[]);
-                        later.refused(why);
-                    }
-                }
-                None => later.result(answer(&runtime, refused)),
-            }
-        }
-        Request::Down => later.done(""),
         // stops only the recording this hold started; a toggle, or up alone, is left running
         Request::Up => {
-            runtime.feed(Event::Up, &[]);
+            RUNTIME.locked().feed(Event::Up, &[]);
             later.done("");
         }
         // handled by the CLI itself, which never asks the shell
@@ -275,8 +288,28 @@ fn status(said: &str, later: &Later) {
 
 // a toggle that starts, with the gate read first; off the draw thread
 fn begin(ticket: u64, later: &Later) {
-    let key = gate::load_key();
-    let marker = gate::read_consent();
+    begin_with(ticket, later, gate::load_key, gate::read_consent);
+}
+
+fn begin_with(
+    ticket: u64,
+    later: &Later,
+    load_key: impl FnOnce() -> Result<Option<Key>, String>,
+    read_consent: impl FnOnce() -> Option<String>,
+) {
+    let key = load_key();
+    let marker = read_consent();
+
+    let _onset = LOCK_ONSET.locked();
+    // the session may have locked while the keyring was asked; check before taking RUNTIME
+    if lock::holds() {
+        let mut runtime = RUNTIME.locked();
+        if runtime.machine.state().gating() == Some(ticket) {
+            runtime.feed(Event::Cancel, &[]);
+        }
+        later.refused("the session is locked");
+        return;
+    }
 
     let mut runtime = RUNTIME.locked();
 
@@ -302,13 +335,6 @@ fn begin(ticket: u64, later: &Later) {
             return;
         }
     };
-
-    // the session may have locked while the keyring was asked
-    if decided == gate::Gate::Ready && lock::holds() {
-        runtime.feed(Event::Cancel, &[]);
-        later.refused("the session is locked");
-        return;
-    }
 
     let refused = runtime.feed(
         Event::Gated {
@@ -347,21 +373,24 @@ pub fn act(key: &str, serial: &str) {
 }
 
 /*
- * the session is locking: any recording or stopping dictation is stopped immediately, its child
- * process killed, any stopping timer cancelled, and audio reading aborted.
+ * the session is locking: any recording, stopping or gating dictation is stopped immediately,
+ * its child process killed, any stopping timer cancelled, and audio reading aborted.
  */
 pub fn locked() {
     let mut runtime = RUNTIME.locked();
 
     runtime.stop_cancel = None;
 
-    if let Some((serial, child)) = runtime.child.as_mut() {
-        let serial = *serial;
+    if let Some((_, child)) = runtime.child.as_mut() {
         drop(child.kill());
+    }
 
-        if matches!(runtime.machine.state(), State::Recording { .. }) {
-            runtime.feed(Event::Locked { serial }, &[]);
-        }
+    if let State::Recording { serial, .. } = *runtime.machine.state() {
+        runtime.feed(Event::Locked { serial }, &[]);
+    }
+
+    if runtime.machine.state().gating().is_some() {
+        runtime.feed(Event::Cancel, &[]);
     }
 }
 
@@ -1012,5 +1041,148 @@ mod tests {
         assert!(matches!(runtime.machine.state(), State::Failed(_)));
         // No trailing audio should have been ingested into runtime.pcm
         assert!(runtime.pcm.is_empty());
+    }
+
+    #[test]
+    fn lock_onset_and_dictation_start_never_deadlock_or_leave_active_dictation() {
+        for case in [
+            "request",
+            "begin",
+            "gating-cancel",
+            "begin-after-lock",
+            "recording-locked",
+        ] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sources::dictation::run::tests::lock_onset_fixture",
+                    "--nocapture",
+                ])
+                .env("KANADE_DICTATION_LOCK_FIXTURE", case)
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                .status()
+                .unwrap();
+            assert!(status.success(), "dictation lock fixture {case} failed");
+        }
+    }
+
+    #[test]
+    fn lock_onset_fixture() {
+        use std::sync::{Arc, Barrier};
+
+        let Ok(case) = std::env::var("KANADE_DICTATION_LOCK_FIXTURE") else {
+            return;
+        };
+
+        if case == "gating-cancel" {
+            {
+                let mut runtime = RUNTIME.locked();
+                runtime.machine = Machine::new();
+                runtime.machine.step(Event::Toggle);
+                assert!(runtime.machine.state().gating().is_some());
+            }
+            lock::pending_fixture();
+            assert!(lock::holds());
+            assert_eq!(*RUNTIME.locked().machine.state(), State::Idle);
+            return;
+        }
+
+        if case == "begin-after-lock" {
+            lock::pending_fixture();
+            let ticket = {
+                let mut runtime = RUNTIME.locked();
+                runtime.machine = Machine::new();
+                runtime.machine.step(Event::Toggle);
+                runtime.machine.state().gating().unwrap()
+            };
+            begin_with(
+                ticket,
+                &Later::detached(),
+                || Ok(Key::new("test-key")),
+                || Some(String::from(gate::CONSENT)),
+            );
+            let runtime = RUNTIME.locked();
+            assert_eq!(*runtime.machine.state(), State::Idle);
+            assert!(runtime.child.is_none());
+            return;
+        }
+
+        if case == "recording-locked" {
+            {
+                let mut runtime = RUNTIME.locked();
+                runtime.machine = Machine::new();
+                runtime.machine.step(Event::Toggle);
+                runtime.machine.step(Event::Gated {
+                    ticket: 1,
+                    gate: gate::Gate::Ready,
+                });
+                assert!(matches!(runtime.machine.state(), State::Recording { .. }));
+            }
+            lock::pending_fixture();
+            assert!(lock::holds());
+            assert!(matches!(RUNTIME.locked().machine.state(), State::Failed(_)));
+            return;
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+        let (done_tx, done_rx) = mpsc::channel();
+
+        if case == "begin" {
+            let ticket = {
+                let mut runtime = RUNTIME.locked();
+                runtime.machine = Machine::new();
+                runtime.machine.step(Event::Toggle);
+                runtime.machine.state().gating().unwrap()
+            };
+            let b1 = Arc::clone(&barrier);
+            let tx1 = done_tx.clone();
+            thread::spawn(move || {
+                begin_with(
+                    ticket,
+                    &Later::detached(),
+                    || {
+                        b1.wait();
+                        Ok(None)
+                    },
+                    || None,
+                );
+                let _ = tx1.send("begin");
+            });
+        } else {
+            let b1 = Arc::clone(&barrier);
+            let tx1 = done_tx.clone();
+            thread::spawn(move || {
+                b1.wait();
+                request(Request::Toggle, Later::detached());
+                let _ = tx1.send("request");
+            });
+        }
+
+        let b2 = Arc::clone(&barrier);
+        let tx2 = done_tx;
+        thread::spawn(move || {
+            b2.wait();
+            lock::pending_fixture();
+            locked();
+            let _ = tx2.send("lock");
+        });
+
+        for _ in 0..2 {
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("dictation and lock onset deadlocked");
+        }
+
+        assert!(lock::holds());
+        let runtime = RUNTIME.locked();
+        assert!(
+            !matches!(
+                runtime.machine.state(),
+                State::Gating { .. } | State::Recording { .. }
+            ),
+            "dictation entered or remained active after lock onset: {:?}",
+            runtime.machine.state()
+        );
+        assert!(runtime.child.is_none());
     }
 }

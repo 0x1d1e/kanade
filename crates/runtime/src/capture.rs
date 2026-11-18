@@ -109,11 +109,11 @@ pub fn await_frame(output: &str, timeout: Duration) -> Result<Frame, String> {
     let mut held = held();
 
     loop {
-        if let Some(result) = held
-            .as_mut()
-            .and_then(|held| held.get_mut(output))
-            .and_then(|held| held.result.take())
-        {
+        let Some(slot) = held.as_mut().and_then(|held| held.get_mut(output)) else {
+            return Err(format!("no frame of {output} is awaited"));
+        };
+
+        if let Some(result) = slot.result.take() {
             return result;
         }
 
@@ -141,7 +141,13 @@ pub fn clear(output: &str) {
 /// Drops every output's held frame and generation. Called when a screenshot ends, whatever way it
 /// did: a grab that lands late has no slot to fill, so no pixel waits for the next picker.
 pub fn clear_all() {
+    let _ = asked().take();
     let _ = held().take();
+    READY.notify_all();
+
+    if let Some(ping) = PING.get() {
+        ping.ping();
+    }
 }
 
 /// The generation of `output`'s request as it stands now, which a grab is stamped with: an outcome
@@ -195,6 +201,8 @@ pub(crate) fn settle(output: &str, generation: u64, result: Outcome) {
 mod tests {
     use super::*;
 
+    static TEST_TURN: Mutex<()> = Mutex::new(());
+
     fn frame(width: u32) -> Frame {
         Frame {
             width,
@@ -206,6 +214,7 @@ mod tests {
     // a grab that outlived its picker is dropped, and the current request's frame is taken
     #[test]
     fn a_stale_grab_is_dropped_and_a_current_one_is_taken() {
+        let _turn = TEST_TURN.locked();
         let output = "generation-test";
 
         CAPABLE.store(true, Ordering::Relaxed);
@@ -237,6 +246,35 @@ mod tests {
         assert_eq!(
             await_frame(output, Duration::from_millis(1)).unwrap().width,
             3
+        );
+    }
+
+    #[test]
+    fn clear_all_wakes_waiter_drops_generation_and_clears_asked() {
+        let _turn = TEST_TURN.locked();
+        let output = "clear-all-test";
+
+        CAPABLE.store(true, Ordering::Relaxed);
+        request(output);
+        assert!(generation(output) > 0);
+
+        let started = Instant::now();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _ = waiting_tx.send(());
+            await_frame(output, Duration::from_secs(5))
+        });
+
+        waiting_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        clear_all();
+
+        assert_eq!(generation(output), 0);
+        assert!(take_requests().is_empty());
+        assert!(handle.join().unwrap().is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "clear_all did not wake await_frame promptly"
         );
     }
 }

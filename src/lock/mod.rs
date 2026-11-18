@@ -392,6 +392,17 @@ impl Requests {
         }
     }
 
+    // whether the newest lock request is compositor-confirmed and not being checked or unlocked
+    fn confirmed(&self) -> bool {
+        self.locked
+            && self.newest != 0
+            && self.confirmed == self.newest
+            && !self.unlocking
+            && !self.checking
+            && !self.ended
+            && !self.denied
+    }
+
     // whether the lock of the newest request holds or is on its way; none asked yet is unlocked
     fn holding(&self) -> Holding {
         if self.checking {
@@ -574,7 +585,8 @@ pub fn relock() {
         }
         if let Ok(locker) = started {
             let auth = polkit::lock_onset();
-            request_lock(&mut requests(), locker, &auth);
+            let dict = dictation::lock_onset();
+            request_lock(&mut requests(), locker, &auth, &dict);
         }
     }
 }
@@ -625,7 +637,8 @@ pub fn start() -> Result<u64, String> {
     let locker = locker()?;
 
     let auth = polkit::lock_onset();
-    Ok(request_lock(&mut requests(), locker, &auth))
+    let dict = dictation::lock_onset();
+    Ok(request_lock(&mut requests(), locker, &auth, &dict))
 }
 
 // answers `later` once the request `number` settles, on a thread of its own as niri may take a while
@@ -681,7 +694,12 @@ fn locker() -> Result<&'static Locker, String> {
 }
 
 // asks niri for a lock, or keeps the one held, and hands back the request's number
-fn request_lock(requests: &mut Requests, locker: &Locker, _auth: &polkit::LockOnset) -> u64 {
+fn request_lock(
+    requests: &mut Requests,
+    locker: &Locker,
+    _auth: &polkit::LockOnset,
+    _dict: &dictation::LockOnset,
+) -> u64 {
     // The surviving parent acknowledges intent before anything can ask the compositor to lock.
     // A crash from here through confirmation/unlock therefore always starts a replacement locker.
     crate::recovery::checkpoint(true);
@@ -693,6 +711,7 @@ fn request_lock(requests: &mut Requests, locker: &Locker, _auth: &polkit::LockOn
     // a screen recording is saved and ends (ADR 0116); only spawns, so nothing waits under the requests
     recording::locked();
     dictation::locked();
+    kanade_runtime::capture::clear_all();
 
     // the scenes read the clock only while locked, so say so and hand them over first: the lock's
     // first frame has them. One that fails to build must not keep the lock
@@ -746,10 +765,16 @@ pub fn holds() -> bool {
     matches!(requests().holding(), Holding::Held | Holding::Checking)
 }
 
+// whether the compositor has confirmed the newest lock and no check or unlock is pending
+pub fn confirmed() -> bool {
+    requests().confirmed()
+}
+
 // Private subprocess fixtures can exercise pending-lock gates without contacting a locker.
 #[cfg(test)]
 pub(crate) fn pending_fixture() {
     let _auth = polkit::lock_onset();
+    let _dict = dictation::lock_onset();
     let mut requests = requests();
     requests.request();
     say(&requests);
@@ -883,18 +908,42 @@ fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
     }
 
     let locker = locker()?;
+    held_with(
+        patience,
+        grace,
+        &REQUESTS,
+        &HEARD,
+        |requests, auth, dict| request_lock(requests, locker, auth, dict),
+    )
+}
+
+fn held_with(
+    patience: Duration,
+    grace: Option<Duration>,
+    state: &Mutex<Requests>,
+    heard: &Condvar,
+    mut ask: impl FnMut(&mut Requests, &polkit::LockOnset, &dictation::LockOnset) -> u64,
+) -> Result<(), String> {
     let deadline = Instant::now() + patience;
     let mut asked = None;
     let mut first = true;
     let mut grace = grace;
 
     loop {
-        // Match input/helper lock ordering, and never retain Auth's guard while waiting on news.
+        // Match input/helper lock ordering, and never retain Auth/Dictation guards while waiting on news.
         let auth = polkit::lock_onset();
-        let mut requests = requests();
+        let dict = dictation::lock_onset();
+        let mut requests = state.locked();
         // A lock held already, or an unlock on its way, is not one this lock may open.
         if first {
             grace = grace.filter(|_| requests.graceable());
+            if requests.holding() == Holding::Held
+                && !requests.unlocking
+                && !requests.ended
+                && !requests.denied
+            {
+                asked = Some(requests.newest);
+            }
             first = false;
         }
         match requests.next(asked) {
@@ -909,7 +958,7 @@ fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
                 if asked.is_some() {
                     grace = None;
                 }
-                asked = Some(request_lock(&mut requests, locker, &auth));
+                asked = Some(ask(&mut requests, &auth, &dict));
                 continue;
             }
             Next::Denied => {
@@ -925,9 +974,10 @@ fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
             return Err(format!("niri did not lock within {patience:?}"));
         }
 
+        drop(dict);
         drop(auth);
         drop(
-            HEARD
+            heard
                 .wait_timeout(requests, left)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0,
@@ -1923,5 +1973,104 @@ mod tests {
             granted: 0,
         };
         explore(&world, 10);
+    }
+
+    #[test]
+    fn confirmed_requires_compositor_lock_without_check_or_unlock() {
+        let now = boot();
+        let mut requests = Requests::new();
+        assert!(!requests.confirmed());
+
+        // Pending request: holds() is true (fail-closed), confirmed() is false until News::Locked.
+        let first = requests.request();
+        assert_eq!(requests.holding(), Holding::Held);
+        assert!(!requests.confirmed());
+
+        // Older request confirmation does not confirm a newer pending request.
+        let second = requests.request();
+        requests.heard(News::Locked(first));
+        assert!(!requests.confirmed());
+
+        requests.heard(News::Locked(second));
+        assert!(requests.confirmed());
+
+        // Checking a password suspends confirmation; failure restores it.
+        let check = requests.check().unwrap();
+        assert_eq!(requests.holding(), Holding::Checking);
+        assert!(!requests.confirmed());
+        assert!(requests.checked(check, false));
+        assert!(requests.confirmed());
+
+        // Accepted grace touch starts unlocking: no longer confirmed.
+        requests.grant(second, now + Duration::from_secs(5));
+        assert!(requests.touch(now + Duration::from_secs(1)));
+        assert!(!requests.confirmed());
+
+        // Re-request then compositor refusal/end.
+        let third = requests.request();
+        requests.heard(News::Locked(third));
+        assert!(requests.confirmed());
+        requests.heard(News::Finished(third));
+        assert!(!requests.confirmed());
+
+        // Denied lock request never confirms.
+        let fourth = requests.request();
+        requests.heard(News::Finished(fourth));
+        assert_eq!(requests.holding(), Holding::Denied);
+        assert!(!requests.confirmed());
+    }
+
+    #[test]
+    fn hold_waits_for_pending_lock_and_times_out_if_unconfirmed() {
+        let state = Mutex::new(Requests::new());
+        let heard = Condvar::new();
+        {
+            let mut requests = state.locked();
+            requests.request();
+            assert!(!requests.confirmed());
+        }
+
+        let mut asks = 0;
+        let outcome = held_with(
+            Duration::from_millis(20),
+            Some(Duration::from_secs(5)),
+            &state,
+            &heard,
+            |requests, _, _| {
+                asks += 1;
+                requests.request()
+            },
+        );
+        assert!(outcome.is_err());
+        assert_eq!(asks, 0, "pending lock should be waited on, not re-asked");
+
+        // When News::Locked arrives for the pending request, hold succeeds without granting grace.
+        let state = Mutex::new(Requests::new());
+        let heard = Condvar::new();
+        let pending = state.locked().request();
+        let confirmed = thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                let mut asks = 0;
+                let res = held_with(
+                    Duration::from_secs(1),
+                    Some(Duration::from_secs(5)),
+                    &state,
+                    &heard,
+                    |requests, _, _| {
+                        asks += 1;
+                        requests.request()
+                    },
+                );
+                (res, asks)
+            });
+            thread::sleep(Duration::from_millis(10));
+            state.locked().heard(News::Locked(pending));
+            heard.notify_all();
+            waiter.join().unwrap()
+        });
+        assert_eq!(confirmed, (Ok(()), 0));
+        let requests = state.locked();
+        assert!(requests.confirmed());
+        assert_eq!(requests.grace, None);
     }
 }

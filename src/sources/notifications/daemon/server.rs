@@ -36,6 +36,8 @@ fn replies() -> bool {
 }
 
 pub fn run() {
+    image_hint::sweep();
+
     let bus = Bus::session();
 
     // Watch before owning the name, so no early call is missed.

@@ -96,6 +96,15 @@ fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
     }
 }
 
+fn on_left_only(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
+    move |button| {
+        if button == Button::Left {
+            crate::view::claim();
+            press();
+        }
+    }
+}
+
 // a write wakes the window even when nothing changed, so only write a real change
 fn store<S: Service + PartialEq>(next: S) {
     if *S::read() != next {

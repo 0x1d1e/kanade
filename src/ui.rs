@@ -9,12 +9,15 @@
 use std::time::Duration;
 
 use kanade_runtime::IpcReply;
+use kanade_runtime::service::Service;
 use kanade_runtime::ui::{self, Act, Answer, Mode, Node, Value, Window};
 use serde_json::{Value as Json, json};
 
 use crate::cli::Reply;
 use crate::config;
 use crate::island::command::Unparsed;
+use crate::island::presentation::Surface;
+use crate::island::service::IslandService;
 use crate::lock;
 use crate::look::UiDescribe;
 
@@ -142,11 +145,27 @@ pub fn status() -> Vec<String> {
     vec![format!("ui: {}", config::get().ui_describe.name())]
 }
 
-// asks the runtime, which answers from the windows as they were last drawn, on this thread
-pub fn request(request: Request, reply: IpcReply) {
+fn refusal(request: &Request) -> Option<&'static str> {
     // the lock screen is the one place nothing may be read or pressed from outside
     if lock::holds() {
-        reply.send(&Reply::Refused(String::from("the session is locked")).encode());
+        return Some("the session is locked");
+    }
+
+    if let Request::Act { name, .. } = request
+        && (IslandService::read().surface() == Some(Surface::Auth)
+            || name == "authentication"
+            || name.starts_with("authentication/"))
+    {
+        return Some("polkit authentication is active");
+    }
+
+    None
+}
+
+// asks the runtime, which answers from the windows as they were last drawn, on this thread
+pub fn request(request: Request, reply: IpcReply) {
+    if let Some(why) = refusal(&request) {
+        reply.send(&Reply::Refused(String::from(why)).encode());
 
         return;
     }
@@ -231,4 +250,68 @@ fn node(node: &Node, nodes: &[Node]) -> Json {
     }
 
     said
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use kanade_runtime::MutexExt;
+
+    use super::*;
+
+    struct CloseAuth;
+
+    impl Drop for CloseAuth {
+        fn drop(&mut self) {
+            let now = Instant::now();
+            let mut island = IslandService::write();
+            island.displace(Surface::Auth, now);
+            island.set_niri(None, false, now);
+        }
+    }
+
+    #[test]
+    fn act_is_refused_while_auth_is_open_or_targeting_authentication_nodes() {
+        let _island = crate::island::service::ISLAND_TURN.locked();
+        let _cleanup = CloseAuth;
+
+        let act = |name: &str| Request::Act {
+            name: String::from(name),
+            window: None,
+            act: Act::Press,
+        };
+
+        assert_eq!(refusal(&act("controls/wifi")), None);
+        assert_eq!(
+            refusal(&act("authentication")),
+            Some("polkit authentication is active")
+        );
+        assert_eq!(
+            refusal(&act("authentication/cancel")),
+            Some("polkit authentication is active")
+        );
+
+        let now = Instant::now();
+        {
+            let mut island = IslandService::write();
+            island.set_niri(Some(String::from("eDP-1")), false, now);
+            island.open("eDP-1", Surface::Auth, now);
+            assert_eq!(island.surface(), Some(Surface::Auth));
+        }
+
+        for target in [
+            "controls/wifi",
+            "cancel",
+            "authenticate",
+            "authentication/password",
+        ] {
+            assert_eq!(
+                refusal(&act(target)),
+                Some("polkit authentication is active"),
+                "{target}"
+            );
+        }
+        assert_eq!(refusal(&Request::Describe { window: None }), None);
+    }
 }

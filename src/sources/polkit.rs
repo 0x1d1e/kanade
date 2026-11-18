@@ -1029,6 +1029,7 @@ fn converse(
     }
 
     let mut line = String::new();
+    let mut answered = false;
 
     loop {
         line.clear();
@@ -1044,7 +1045,7 @@ fn converse(
         };
 
         match message {
-            Message::Prompt { .. } => {
+            Message::Prompt { echo: false } if !answered => {
                 let _lifecycle = LIFECYCLE.locked();
                 if lock::holds() {
                     reset_all();
@@ -1057,7 +1058,8 @@ fn converse(
                 {
                     return Err(String::from("authentication cancelled"));
                 }
-                // one field: every prompt takes what was typed, echo or not
+                answered = true;
+                // one field: only the single hidden prompt takes what was typed
                 let mut typed = Zeroizing::new(password.as_str().to_owned());
                 typed.push('\n');
 
@@ -1065,6 +1067,7 @@ fn converse(
                     return Err(String::from("the polkit helper took no answer"));
                 }
             }
+            Message::Prompt { .. } => return Err(String::from("Authentication failed.")),
             Message::Said(_) => {}
             Message::Done => return Ok(()),
             Message::Failed => return Err(String::from("Authentication failed.")),
@@ -1364,6 +1367,8 @@ mod tests {
             "helper-lock",
             "helper-cancel",
             "helper-answer",
+            "helper-echo-on",
+            "helper-second-prompt",
             "lock-edit-race",
             "producer-missing",
             "producer-stale",
@@ -1700,11 +1705,40 @@ mod tests {
                 "helper-cancel" => cancel(),
                 _ => {}
             }
-            let _ = peer
-                .get_mut()
-                .write_all(b"PAM_PROMPT_ECHO_OFF Password:\nFAILURE\n");
+            let payload = match case.as_str() {
+                "helper-echo-on" => &b"PAM_PROMPT_ECHO_ON Verification code:\n"[..],
+                _ => &b"PAM_PROMPT_ECHO_OFF Password:\n"[..],
+            };
+            let _ = peer.get_mut().write_all(payload);
             line.clear();
+            if case == "helper-echo-on" {
+                let outcome = worker.join().unwrap();
+                assert_eq!(outcome, Err("Authentication failed.".into()));
+                cancel();
+                peer.read_line(&mut line).unwrap();
+                assert!(line.is_empty(), "refused PAM prompt received password");
+                cleared();
+                assert_eq!(answers.load(Ordering::SeqCst), 1);
+                return;
+            }
             peer.read_line(&mut line).unwrap();
+            if case == "helper-second-prompt" {
+                assert_eq!(line, "x\n");
+                let _ = peer
+                    .get_mut()
+                    .write_all(b"PAM_PROMPT_ECHO_OFF Second prompt:\n");
+                line.clear();
+                let outcome = worker.join().unwrap();
+                assert_eq!(outcome, Err("Authentication failed.".into()));
+                cancel();
+                peer.read_line(&mut line).unwrap();
+                assert!(line.is_empty(), "refused PAM prompt received password");
+                cleared();
+                assert_eq!(answers.load(Ordering::SeqCst), 1);
+                return;
+            } else if case == "helper-answer" {
+                let _ = peer.get_mut().write_all(b"FAILURE\n");
+            }
             let outcome = worker.join().unwrap();
             assert!(outcome.is_err());
             if case == "helper-answer" {

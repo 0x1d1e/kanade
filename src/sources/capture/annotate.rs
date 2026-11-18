@@ -315,6 +315,10 @@ fn open(path: String) {
 
 // the worker `open` starts: the file's size, then the editor on it
 fn opened(path: String) {
+    if crate::lock::holds() {
+        return;
+    }
+
     let size = match read(Path::new(&path)) {
         Ok(size) => size,
         Err(why) => {
@@ -330,14 +334,28 @@ fn opened(path: String) {
         return;
     };
 
+    commit_open(PathBuf::from(path), size, monitor);
+}
+
+fn commit_open(path: PathBuf, size: (u32, u32), monitor: String) {
     let replaced = {
         let mut editor = Editor::write();
+
+        if crate::lock::holds() {
+            if editor.shot.is_some() {
+                editor.close();
+            } else {
+                editor.quiet();
+            }
+
+            return;
+        }
 
         editor.serial = editor.serial.wrapping_add(1);
 
         // a shot still standing here is replaced, not closed: its own notice posts below
         let previous = editor.shot.replace(Shot {
-            path: PathBuf::from(&path),
+            path,
             width: size.0,
             height: size.1,
             monitor,
@@ -984,6 +1002,54 @@ mod tests {
         std::fs::write(&wide, header_only_png(7681, 4320)).expect("a header");
 
         assert!(read(&wide).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn locked_session_refuses_editor_open() {
+        const TEST: &str = "sources::capture::annotate::tests::locked_session_refuses_editor_open";
+        if std::env::var_os("KANADE_ANNOTATE_LOCK_FIXTURE").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KANADE_ANNOTATE_LOCK_FIXTURE", "1")
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("kanade-annotate-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot_path = dir.join("shot.png");
+
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 255, 255, 255])
+                .unwrap();
+        }
+        std::fs::write(&shot_path, png_bytes).unwrap();
+
+        kanade_runtime::Monitors::publish(vec![Monitor {
+            name: String::from("eDP-1"),
+            width: 1920,
+            height: 1080,
+        }]);
+
+        crate::lock::pending_fixture();
+        opened(shot_path.to_string_lossy().into_owned());
+        assert!(Editor::read().shot.is_none());
+
+        commit_open(shot_path, (1, 1), String::from("eDP-1"));
+        assert!(Editor::read().shot.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

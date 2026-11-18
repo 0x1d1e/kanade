@@ -1201,8 +1201,8 @@ impl IslandService {
             Command::ToggleDnd => return Ok(Some(Effect::Dnd(!self.dnd()))),
             Command::SetDnd(dnd) => return Ok((dnd != self.dnd()).then_some(Effect::Dnd(dnd))),
 
-            // nothing is open or opens while the overview is
-            _ if self.overview() => return Ok(None),
+            // nothing is open or opens while the overview is, nor while Auth owns the Island
+            _ if self.overview() || self.surface() == Some(Surface::Auth) => return Ok(None),
 
             Command::Collapse => return collapse(),
 
@@ -1293,6 +1293,10 @@ impl IslandService {
 
     // expands without a press, so the island holds the keyboard to still get Escape, for a while
     pub fn open(&mut self, monitor: &str, surface: Surface, now: Instant) {
+        if surface != Surface::Auth && self.presentations.auth_open() {
+            return;
+        }
+
         self.input(monitor, Input::Open(surface), now);
 
         // nothing opens while the overview is, and a hold without a Surface would starve the keyboard
@@ -1381,15 +1385,7 @@ impl IslandService {
             self.restore(now);
         }
 
-        let open = self
-            .presentations
-            .expanded()
-            .filter(|(_, open)| *open == surface)
-            .map(|(monitor, _)| monitor.to_owned());
-
-        if let Some(monitor) = open {
-            self.give(&monitor, Input::Preempt, now);
-        }
+        self.close_expanded(surface, now);
     }
 
     // the user's input, or an IPC command, which takes a pending AutoExpand over
@@ -1414,8 +1410,28 @@ impl IslandService {
             || self.visit() == visit
                 && self.presentation(monitor) == Presentation::Expanded(surface)
         {
-            self.input(monitor, Input::Collapse, now);
+            if surface == Surface::Auth {
+                self.claim(now);
+                self.close_expanded(surface, now);
+            } else {
+                self.input(monitor, Input::Collapse, now);
+            }
         }
+    }
+
+    fn close_expanded(&mut self, surface: Surface, now: Instant) {
+        let was = self.expanded_on().map(str::to_owned);
+        let Some(monitor) = self.presentations.close_surface(surface) else {
+            return;
+        };
+
+        let island = self.island(&monitor);
+        island.held = false;
+        if island.due.take().is_some() {
+            nudge();
+        }
+        self.sync(now);
+        self.settle_focus(was.as_deref(), now);
     }
 
     // an input to the Presentation, the user's or one the island gives itself
@@ -1436,7 +1452,9 @@ impl IslandService {
          * a pinned island stays open with nobody on it, so it waits for nothing and gives back a
          * held keyboard: holding it unattended would starve every other window
          */
-        if self.presentations.pinned(monitor) {
+        if self.presentations.pinned(monitor)
+            && self.presentations.get(monitor) != Presentation::Expanded(Surface::Auth)
+        {
             let island = self.island(monitor);
             island.held = false;
 
@@ -5043,5 +5061,66 @@ mod tests {
         // turning motion back on under the same held press does not jump to the old target
         island.retime(Timings::default());
         assert_eq!(island.press_scale(now + Duration::from_secs(1)), 1.0);
+    }
+
+    #[test]
+    fn auth_keeps_keyboard_and_blocks_pin_commands_and_preemption_until_displaced() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.open(MONITOR, Surface::Auth, now);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Auth)
+        );
+        assert!(island.held(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
+
+        // Right-click cannot pin Auth or release the held keyboard.
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now);
+        assert!(!island.pinned(MONITOR));
+        assert!(island.held(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
+
+        // Collapse, Preempt, AutoExpand, and other-monitor expand all leave Auth intact.
+        island.input(MONITOR, Input::Collapse, now);
+        island.post(battery(), now);
+        island.post(auto("auth-blocked"), now);
+        island.open(OTHER, Surface::Controls, now);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Auth)
+        );
+        assert!(!island.expanded(OTHER));
+        assert!(island.held(MONITOR));
+
+        // Surface/peek IPC commands are no-ops, while Activity/DND commands still resolve.
+        for command in [
+            Command::Collapse,
+            Command::PeekDown,
+            Command::PeekUp,
+            Command::Open(Surface::Controls),
+            Command::Toggle(Surface::Launcher),
+            Command::Close(Surface::Auth),
+        ] {
+            assert_eq!(island.resolve(command.clone()), Ok(None), "{command:?}");
+        }
+        assert_eq!(
+            island.resolve(Command::ToggleDnd),
+            Ok(Some(Effect::Dnd(true)))
+        );
+
+        // Overview opening after Auth is visible keeps Auth open; displace closes it.
+        island.set_niri(Some(MONITOR.to_owned()), true, now);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Auth)
+        );
+        assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
+
+        island.displace(Surface::Auth, now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert!(!island.held(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
     }
 }

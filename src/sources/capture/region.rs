@@ -67,7 +67,7 @@ impl Service for Region {
 pub fn open(serial: u64) -> bool {
     let mut region = Region::write();
 
-    if region.pick.is_some() {
+    if region.pick.is_some() || crate::lock::holds() {
         region.quiet();
 
         return false;
@@ -88,6 +88,13 @@ pub fn shot(
     frames: impl IntoIterator<Item = (String, Frame)>,
 ) {
     let mut region = Region::write();
+
+    if crate::lock::holds() {
+        kanade_runtime::capture::clear_all();
+        region.quiet();
+
+        return;
+    }
 
     if region.pick.is_some() {
         region.quiet();
@@ -948,5 +955,38 @@ mod tests {
         assert!(matches!(recording::picked_for(9), Some(Some(_))));
         assert!(Region::read().pick.is_none());
         assert_eq!(Region::read().drag, None);
+    }
+
+    #[test]
+    fn locked_session_refuses_open_and_shot_without_storing_frames() {
+        const TEST: &str = "sources::capture::region::tests::locked_session_refuses_open_and_shot_without_storing_frames";
+        if std::env::var_os("KANADE_REGION_LOCK_FIXTURE").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KANADE_REGION_LOCK_FIXTURE", "1")
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        crate::lock::pending_fixture();
+        assert!(!open(42));
+        assert!(Region::read().pick.is_none());
+
+        let (sender, receiver) = mpsc::channel();
+        let frame = Frame {
+            width: 100,
+            height: 100,
+            pixels: Arc::new(vec![0; 100 * 100 * 4]),
+        };
+        shot(sender, [(String::from("eDP-1"), frame)]);
+
+        assert_eq!(receiver.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+        let region = Region::read();
+        assert!(region.pick.is_none());
+        assert!(region.frames.is_empty());
+        assert!(region.pictures.is_empty());
     }
 }

@@ -112,27 +112,36 @@ pub struct Read {
 
 /*
  * a regular file's text, no more than `MOST_BYTES` of it, `whole` saying whether that was all of it.
- * The error is why there is no text: not a regular file (a pipe, a device, a directory, reached by
- * name or through a link), which could block or never end, or the open or the read failing, as it
- * failed. The open does not wait either, in case the file is swapped for a pipe after the check
+ * The error is why there is no text: not a regular single-link file (a pipe, a device, a directory,
+ * hard-linked file, or reached through a link), which could block or never end, or the open or the
+ * read failing, as it failed. Opened with O_NOFOLLOW | O_NONBLOCK and verified by fstat
  */
 pub fn read(path: &Path) -> Result<Read, String> {
     use std::io::Read as _;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
     let named = || plain(&path.display().to_string());
-    let meta = fs::metadata(path).map_err(|error| format!("{}: {error}", named()))?;
+    let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits() as i32)
+        .open(path)
+        .map_err(|error| format!("{}: {error}", named()))?;
+
+    let meta = file
+        .metadata()
+        .map_err(|error| format!("{}: {error}", named()))?;
     if !meta.is_file() {
         return Err(format!("{} is not a file", named()));
+    }
+    if meta.nlink() != 1 {
+        return Err(format!("{} is hard-linked", named()));
     }
 
     // one byte past the limit says whether there was more, which the file's length alone cannot
     let mut bytes = Vec::new();
-    fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
-        .open(path)
-        .and_then(|file| file.take(MOST_BYTES + 1).read_to_end(&mut bytes))
+    file.take(MOST_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("{}: {error}", named()))?;
 
     let whole = bytes.len() as u64 <= MOST_BYTES;
@@ -452,6 +461,33 @@ mod tests {
             "the open's own error: {missing}"
         );
         assert!(read(&dir).unwrap_err().contains("not a file"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn read_rejects_symlinks_and_hard_links() {
+        let dir = std::env::temp_dir().join(format!("kanade-sddm-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let single = dir.join("single");
+        fs::write(&single, "ok").unwrap();
+        assert_eq!(read(&single).unwrap().text, "ok");
+
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&single, &link).unwrap();
+        assert!(read(&link).is_err(), "symlinks must not be followed");
+
+        let target = dir.join("target");
+        fs::write(&target, "secret").unwrap();
+        let hard = dir.join("hard");
+        fs::hard_link(&target, &hard).unwrap();
+        assert!(read(&hard).is_err(), "hard-linked files must be rejected");
+        assert!(
+            read(&target).is_err(),
+            "hard-linked source with nlink > 1 must be rejected"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

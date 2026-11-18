@@ -197,9 +197,34 @@ fn watch(
                     *locked = byte == LOCK;
                     connected = channel.write_all(&[ACK]).is_ok();
                 }
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => connected = false,
-                Err(error) => return Err(error),
-                _ => return Err(io::Error::other("invalid child lock checkpoint")),
+                Ok(byte) => {
+                    eprintln!("kanade: Umbriel recovery: invalid child lock checkpoint {byte:#x}");
+                    stop(child);
+                    return Ok(false);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    connected = false;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("kanade: Umbriel recovery: child checkpoint channel error: {error}");
+                    stop(child);
+                    return Ok(false);
+                }
             }
         }
         if events[2] {
@@ -315,6 +340,18 @@ mod tests {
                     fs::write(dir.join("checkpoint"), "acknowledged").unwrap();
                     if behavior.contains("clear") {
                         checkpoint(false);
+                    }
+                    if behavior == "lock-bad-checkpoint" {
+                        let _ = INHERITED
+                            .get()
+                            .unwrap()
+                            .channel
+                            .lock()
+                            .unwrap()
+                            .write_all(b"X");
+                        loop {
+                            std::thread::park();
+                        }
                     }
                 }
                 if first && (behavior.contains("crash") || behavior == "clean-exit") {
@@ -577,5 +614,67 @@ mod tests {
         let (parent, mut child) = UnixStream::pair().unwrap();
         drop(parent);
         assert!(exchange(&mut child, true).is_err());
+    }
+
+    #[test]
+    fn watch_recovers_and_preserves_locked_on_unread_close_and_bad_checkpoint() {
+        let (_term_w, term_r) = UnixStream::pair().unwrap();
+        let (_comp_w, comp_r) = UnixStream::pair().unwrap();
+        let comp_fd = OwnedFd::from(comp_r);
+
+        // Child exits without reading the parent's greeting byte -> ECONNRESET on parent channel.
+        let (mut parent, child_stream) = UnixStream::pair().unwrap();
+        parent.set_read_timeout(Some(TIMEOUT)).unwrap();
+        parent.set_write_timeout(Some(TIMEOUT)).unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 0.05"])
+            .stdin(Stdio::from(OwnedFd::from(child_stream)))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut locked = true;
+        assert!(
+            !watch(&mut child, &mut parent, &term_r, &comp_fd, &mut locked).unwrap(),
+            "unread close must allow child restart"
+        );
+        assert!(locked, "locked state must be preserved across ECONNRESET");
+        assert!(child.try_wait().unwrap().is_some());
+
+        // Child sends an invalid checkpoint byte while alive -> stopped, reaped, Ok(false), locked kept.
+        let (mut parent, mut child_stream) = UnixStream::pair().unwrap();
+        parent.set_read_timeout(Some(TIMEOUT)).unwrap();
+        parent.set_write_timeout(Some(TIMEOUT)).unwrap();
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let writer = std::thread::spawn(move || {
+            assert_eq!(read_byte(&mut child_stream).unwrap(), LOCK);
+            child_stream.write_all(&[ACK, b'X']).unwrap();
+        });
+        let mut locked = true;
+        assert!(
+            !watch(&mut child, &mut parent, &term_r, &comp_fd, &mut locked).unwrap(),
+            "invalid checkpoint byte must restart child instead of failing supervisor"
+        );
+        writer.join().unwrap();
+        assert!(
+            locked,
+            "locked state must be preserved across bad checkpoint"
+        );
+        assert!(child.try_wait().unwrap().is_some());
+
+        // End-to-end supervisor restarts the misbehaving child with inherited lock preserved.
+        let mut world = World::new("lock-bad-checkpoint");
+        world.start();
+        let children = world.launched(2);
+        assert!(!children[0].1);
+        assert!(children[1].1);
+        world.stop_parent();
+        world.no_children_alive();
     }
 }

@@ -63,7 +63,7 @@ pub(crate) fn surface(_open: bool) -> Rectangle {
                 .label(if details { "Hide details" } else { "Details" })
                 .focused(focused == Focus::Details)
                 .selected(details))
-            .on_click(super::on_left(polkit::details))
+            .on_click(super::on_left_only(polkit::details))
             .child(
                 Text::new(if details { "Back" } else { "Details" })
                     .size(text::LABEL_SMALL)
@@ -206,7 +206,7 @@ fn action(
                 .disabled(!enabled)
                 .focused(focused)
         })
-        .on_click(super::on_left(move || {
+        .on_click(super::on_left_only(move || {
             if enabled {
                 polkit::focus(target);
                 press();
@@ -356,7 +356,7 @@ fn disclosure(prompt: &Prompt) -> Rectangle {
                     .content(metadata.clone())
                     .focused(focus)
             })
-            .on_click(super::on_left(|| polkit::focus(Focus::DetailsBody)))
+            .on_click(super::on_left_only(|| polkit::focus(Focus::DetailsBody)))
             .on_scroll(move |delta| polkit::scroll(delta.y * 24.0, maximum))
             .child(
                 Rectangle::new()

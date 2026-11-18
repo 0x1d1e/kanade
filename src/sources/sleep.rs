@@ -460,7 +460,7 @@ fn run() -> Result<Infallible, String> {
  * second ask, which would drop a password typed on the lock screen meanwhile (`Requests::request`)
  */
 fn hold_again(patience: Duration) -> Result<(), String> {
-    if lock::holds() {
+    if lock::confirmed() {
         return Ok(());
     }
 

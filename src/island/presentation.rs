@@ -380,8 +380,13 @@ impl Presentations {
      * its own visit rather than an island's Surface, and a Collapse or a Preempt ends that visit.
      * False for anything else, which the islands take as they always do
      */
+    pub fn auth_open(&self) -> bool {
+        self.expanded()
+            .is_some_and(|(_, surface)| surface == Surface::Auth)
+    }
+
     fn detached_and_takes(&mut self, monitor: &str, input: Input) -> bool {
-        if !self.detached() {
+        if !self.detached() || self.auth_open() {
             return false;
         }
 
@@ -480,6 +485,10 @@ impl Presentations {
     }
 
     fn of(&self, island: &Island) -> Presentation {
+        if let Some(Raised::Expanded(Surface::Auth)) = island.raised {
+            return Presentation::Expanded(Surface::Auth);
+        }
+
         if self.overview {
             return Presentation::Rest;
         }
@@ -526,7 +535,9 @@ impl Presentations {
 
         if open {
             for island in self.islands.values_mut() {
-                island.raise(None);
+                if !matches!(island.raised, Some(Raised::Expanded(Surface::Auth))) {
+                    island.raise(None);
+                }
             }
         }
     }
@@ -549,6 +560,7 @@ impl Presentations {
             return;
         }
 
+        let auth_open = self.auth_open();
         let now = self.get(monitor);
         let island = self.island(monitor);
 
@@ -558,14 +570,25 @@ impl Presentations {
 
             // the Surface of the Activity under the pointer; Rest has none and no remembered last Surface, so Controls
             (Input::Click(segment), _) => {
-                let under = island.under(segment).cloned();
+                if !auth_open {
+                    let under = island.under(segment).cloned();
 
-                if let Some(surface) = self.clicked(under.as_ref()) {
+                    if let Some(surface) = self.clicked(under.as_ref()) {
+                        self.expand(monitor, surface);
+                    }
+                }
+            }
+
+            (Input::Open(surface), _) => {
+                if !auth_open || surface == Surface::Auth {
                     self.expand(monitor, surface);
                 }
             }
 
-            (Input::Open(surface), _) => self.expand(monitor, surface),
+            (
+                Input::RightClick(_) | Input::Collapse | Input::Preempt,
+                Presentation::Expanded(Surface::Auth),
+            ) => {}
 
             (Input::Collapse | Input::Preempt, Presentation::Expanded(_)) => island.raise(None),
 
@@ -606,7 +629,7 @@ impl Presentations {
                 island.pinned = true;
             }
             (Input::RightClick(_), Presentation::Rest | Presentation::Tray(_)) => {
-                if let Some(surface) = self.clicked(None) {
+                if !auth_open && let Some(surface) = self.clicked(None) {
                     self.expand(monitor, surface);
                     self.island(monitor).pinned = true;
                 }
@@ -626,8 +649,15 @@ impl Presentations {
 
     // at most one island is Expanded, opening one collapses any other; a withheld Surface opens nowhere
     fn expand(&mut self, monitor: &str, surface: Surface) {
-        if !self.offers(surface) || surface == Surface::Launcher && self.detached() {
+        if !self.offers(surface)
+            || surface == Surface::Launcher && self.detached()
+            || self.auth_open() && surface != Surface::Auth
+        {
             return;
+        }
+
+        if surface == Surface::Auth {
+            self.detached = None;
         }
 
         // another island expanding ends a pin of any Presentation, not only of a Surface
@@ -641,12 +671,22 @@ impl Presentations {
         self.visits += 1;
     }
 
+    pub fn close_surface(&mut self, surface: Surface) -> Option<String> {
+        let monitor = self
+            .expanded()
+            .filter(|&(_, open)| open == surface)
+            .map(|(monitor, _)| monitor.to_owned())?;
+        self.island(&monitor).raise(None);
+        Some(monitor)
+    }
+
     /*
      * opens `surface` without the user (`Interrupt::AutoExpand`), returning what it changed;
      * nothing while the overview is open or the island already shows it
      */
     pub fn auto_expand(&mut self, monitor: &str, surface: Surface) -> Option<Prior> {
         if self.overview
+            || self.auth_open()
             || !self.offers(surface)
             || self.get(monitor) == Presentation::Expanded(surface)
         {
@@ -681,7 +721,7 @@ impl Presentations {
      * Activity no longer shows on the island stays ended, as `set_shown` would have ended it
      */
     pub fn restore(&mut self, prior: Prior) {
-        if self.overview {
+        if self.overview || self.auth_open() {
             return;
         }
 
@@ -1855,5 +1895,52 @@ mod tests {
             assert_eq!(presentations.get(MONITOR), back, "{satellite:?}");
             assert_eq!(presentations.pinned(MONITOR), back == Peek, "{satellite:?}");
         }
+    }
+
+    #[test]
+    fn auth_owns_presentation_across_pin_collapse_preempt_auto_expand_and_overview() {
+        let mut presentations = Presentations::default();
+        presentations.set_launcher_style(LauncherStyle::Detached);
+        presentations.set_shown(OTHER, Some(id(Kind::Media)), None);
+        presentations.input(MONITOR, Input::Open(Surface::Auth));
+        assert!(presentations.auth_open());
+        assert_eq!(presentations.get(MONITOR), Expanded(Surface::Auth));
+
+        for input in [
+            Input::RightClick(Primary),
+            Input::Collapse,
+            Input::Preempt,
+            Input::Open(Controls),
+            Input::Open(Launcher),
+        ] {
+            presentations.input(MONITOR, input);
+            assert_eq!(
+                presentations.get(MONITOR),
+                Expanded(Surface::Auth),
+                "{input:?}"
+            );
+            assert!(!presentations.pinned(MONITOR), "{input:?}");
+            assert_eq!(presentations.detached_on(), None, "{input:?}");
+        }
+
+        // Another monitor cannot expand or replace Auth, and AutoExpand stays blocked.
+        for input in [Input::Click(Primary), Input::Open(Controls)] {
+            presentations.input(OTHER, input);
+            assert_eq!(presentations.get(OTHER), Compact, "{input:?}");
+            assert_eq!(presentations.get(MONITOR), Expanded(Surface::Auth));
+        }
+        assert_eq!(presentations.auto_expand(MONITOR, Notifications), None);
+        assert_eq!(presentations.auto_expand(OTHER, Media), None);
+
+        // Overview opening after Auth is already displayed keeps Auth open; close_surface ends it.
+        presentations.set_overview(true);
+        assert_eq!(presentations.get(MONITOR), Expanded(Surface::Auth));
+        assert_eq!(presentations.expanded(), Some((MONITOR, Surface::Auth)));
+        assert_eq!(
+            presentations.close_surface(Surface::Auth),
+            Some(MONITOR.into())
+        );
+        assert!(!presentations.auth_open());
+        assert_eq!(presentations.get(MONITOR), Rest);
     }
 }

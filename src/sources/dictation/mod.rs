@@ -13,6 +13,7 @@ pub mod run;
 pub mod wav;
 
 pub use run::locked;
+pub(crate) use run::{LockOnset, lock_onset};
 
 use std::time::Duration;
 

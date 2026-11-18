@@ -175,7 +175,7 @@ pub fn auth(
                 .focused(focused && !checking)
                 .disabled(checking)
         })
-        .on_click(super::on_left(|| {
+        .on_click(super::on_left_only(|| {
             crate::sources::polkit::focus(crate::sources::polkit::Focus::Password)
         }))
         .child(Row::new(row).gap(12.0).align(Center))

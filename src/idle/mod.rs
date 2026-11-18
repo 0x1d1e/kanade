@@ -212,7 +212,7 @@ fn locked(retry: bool) -> Result<(), String> {
         return Err(String::from("module lock is off"));
     }
 
-    if lock::holds() {
+    if lock::confirmed() {
         return Ok(());
     }
 

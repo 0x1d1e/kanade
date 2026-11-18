@@ -337,11 +337,15 @@ fn bring(w: &Where, config: &Config) -> Result<String, String> {
 }
 
 // what the settings file itself holds for `sddm.theme`, whatever the config files over it say
-fn settings_theme() -> Option<String> {
-    let text = class::text(&config::settings_file()?)?;
+fn settings_theme_from(file: &Path) -> Option<String> {
+    let text = fs::read_to_string(file).ok()?;
     let table = config::settings_table(&text).ok()?;
 
     table.get("sddm")?.get("theme")?.as_str().map(str::to_owned)
+}
+
+fn settings_theme() -> Option<String> {
+    settings_theme_from(&config::settings_file()?)
 }
 
 // writes `sddm.theme` to the settings file, the last layer, so what it gives is what is in effect;
@@ -741,6 +745,25 @@ mod tests {
         let error = snapshot_picture(&pic).unwrap_err();
         assert!(error.contains("MiB"), "{error}");
         assert_eq!(fs::read(&pic).unwrap().len(), big.len());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_theme_reads_symlinked_and_hard_linked_settings_files() {
+        let dir = root("settings-theme");
+        let target = dir.join("real.toml");
+        fs::write(&target, "[sddm]\ntheme = \"breeze\"\n").unwrap();
+
+        let symlink = dir.join("settings.toml");
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+        assert_eq!(settings_theme_from(&symlink).as_deref(), Some("breeze"));
+
+        let hard = dir.join("hard.toml");
+        fs::hard_link(&target, &hard).unwrap();
+        assert_eq!(settings_theme_from(&hard).as_deref(), Some("breeze"));
+
+        assert_eq!(settings_theme_from(&dir.join("missing.toml")), None);
 
         fs::remove_dir_all(dir).unwrap();
     }

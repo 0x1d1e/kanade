@@ -95,13 +95,31 @@ impl WaylandState {
         for output in capture::take_requests() {
             self.capture_output(&output);
         }
+
+        if let Some(captures) = &mut self.captures {
+            let stale: Vec<String> = captures
+                .grabs
+                .keys()
+                .filter(|output| capture::generation(output) == 0)
+                .cloned()
+                .collect();
+
+            for output in stale {
+                if let Some(grab) = captures.grabs.remove(&output) {
+                    grab.destroy();
+                }
+            }
+        }
     }
 
     fn capture_output(&mut self, output: &str) {
-        let object = self.output_named(output);
-
         // the request this serves; a later one bumps it, and this grab's outcome is then dropped
         let generation = capture::generation(output);
+        if generation == 0 {
+            return;
+        }
+
+        let object = self.output_named(output);
 
         let Some(captures) = &mut self.captures else {
             capture::settle(
@@ -333,9 +351,16 @@ impl Dispatch<ZwlrScreencopyFrameV1, String> for WaylandState {
                 };
 
                 // a row too short for its pixels is a layout this cannot read
-                if let Some(order) = order.filter(|_| stride >= width.saturating_mul(4)) {
-                    let size = (stride as usize).saturating_mul(height as usize);
+                let size = (stride as usize)
+                    .checked_mul(height as usize)
+                    .filter(|&bytes| i32::try_from(bytes).is_ok());
+                let valid = width > 0
+                    && height > 0
+                    && width.checked_mul(4).is_some_and(|row| stride >= row)
+                    && size.is_some();
 
+                if let (Some(order), Some(size)) = (order.filter(|_| valid), size.filter(|_| valid))
+                {
                     if let Ok(mut pool) = RawPool::new(size, &state.shm) {
                         let buffer = pool.create_buffer(
                             0,

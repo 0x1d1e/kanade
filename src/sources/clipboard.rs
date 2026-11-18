@@ -554,6 +554,33 @@ pub fn put(text: &str) -> io::Result<()> {
     }
 }
 
+// one-shot hash of a dictated copy when `wl-copy --sensitive` is unavailable, so the
+// fallback selection announcement is suppressed from history without keeping any plaintext
+static SENSITIVE_SELF: Mutex<Option<(ring::digest::Digest, Instant)>> = Mutex::new(None);
+
+fn sha256(bytes: &[u8]) -> ring::digest::Digest {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+}
+
+fn should_suppress_sensitive(bytes: &[u8], now: Instant) -> bool {
+    let mut pending = SENSITIVE_SELF.locked();
+    let Some((digest, until)) = *pending else {
+        return false;
+    };
+
+    if now >= until {
+        *pending = None;
+        return false;
+    }
+
+    if digest.as_ref() == sha256(bytes).as_ref() {
+        *pending = None;
+        return true;
+    }
+
+    false
+}
+
 /*
  * as `put`, but `text` goes to wl-copy on its stdin rather than its arguments, which any process
  * of the user's can read while it runs: for text that is private, like a dictation. `sensitive`
@@ -564,6 +591,15 @@ pub fn put_private(text: &str, sensitive: bool) -> io::Result<()> {
     // without the mark, as the copy of a dictation that could not be inserted
     if sensitive && put_with(text, &["--type", TEXT, "--sensitive"]).is_ok() {
         return Ok(());
+    }
+
+    if sensitive {
+        *SENSITIVE_SELF.locked() = Some((sha256(text.as_bytes()), Instant::now() + PUT));
+        let result = put_with(text, &["--type", TEXT]);
+        if result.is_err() {
+            *SENSITIVE_SELF.locked() = None;
+        }
+        return result;
     }
 
     put_with(text, &["--type", TEXT])
@@ -767,6 +803,10 @@ fn textual(mime: &str) -> bool {
 // records a selection received from the runtime's data-control protocol
 pub fn record_selection(mime: Option<String>, bytes: Vec<u8>) {
     reap();
+
+    if mime.as_deref().is_none_or(textual) && should_suppress_sensitive(&bytes, Instant::now()) {
+        return;
+    }
 
     if let Some(content) = Content::new(mime.as_deref(), bytes) {
         record(content);
@@ -1121,8 +1161,15 @@ mod tests {
         );
     }
 
+    fn clipboard_turn() -> MutexGuard<'static, ()> {
+        static TURN: Mutex<()> = Mutex::new(());
+        TURN.locked()
+    }
+
     #[test]
     fn record_selection_updates_clipboard() {
+        let _turn = clipboard_turn();
+        *SENSITIVE_SELF.locked() = None;
         Clipboard::write().clear();
         record_selection(Some("text/plain".into()), b"first".to_vec());
         assert_eq!(
@@ -1135,5 +1182,86 @@ mod tests {
             Clipboard::read().entries().first().map(|e| &e.content),
             Some(&text("second"))
         );
+    }
+
+    #[test]
+    fn sensitive_self_suppression_is_one_shot_and_expires() {
+        let _turn = clipboard_turn();
+        *SENSITIVE_SELF.locked() = None;
+        Clipboard::write().clear();
+
+        // (a) Armed token suppresses the first matching record_selection and leaves history empty.
+        let secret = b"dictated secret transcript";
+        let now = Instant::now();
+        *SENSITIVE_SELF.locked() = Some((sha256(secret), now + Duration::from_secs(5)));
+
+        record_selection(Some("text/plain".into()), secret.to_vec());
+        assert!(Clipboard::read().entries().is_empty());
+
+        // (b) Second copy of the identical text is NOT suppressed (token was consumed).
+        record_selection(Some("text/plain".into()), secret.to_vec());
+        assert_eq!(
+            Clipboard::read().entries().first().map(|e| &e.content),
+            Some(&text("dictated secret transcript"))
+        );
+
+        // (c) Expired token does not suppress and clears itself.
+        let expired_at = now + Duration::from_secs(5);
+        *SENSITIVE_SELF.locked() = Some((sha256(b"later"), expired_at));
+        assert!(!should_suppress_sensitive(b"later", expired_at));
+        assert!(SENSITIVE_SELF.locked().is_none());
+
+        Clipboard::write().clear();
+    }
+
+    #[test]
+    fn put_private_fallback_arms_and_clears_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const TEST: &str =
+            "sources::clipboard::tests::put_private_fallback_arms_and_clears_on_failure";
+        if std::env::var_os("KANADE_CLIPBOARD_PUT_CHILD").is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KANADE_CLIPBOARD_PUT_CHILD", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("kanade-clipboard-put-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("wl-copy");
+
+        // Fail `--sensitive` (exit 1), succeed without `--sensitive`.
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nfor arg do [ \"$arg\" = \"--sensitive\" ] && exit 1; done\ncat >/dev/null\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let prev_path = std::env::var_os("PATH").unwrap_or_default();
+        let joined = std::env::join_paths(
+            std::iter::once(dir.clone()).chain(std::env::split_paths(&prev_path)),
+        )
+        .unwrap();
+        // SAFETY: isolated single-threaded child process.
+        unsafe { std::env::set_var("PATH", joined) };
+
+        Clipboard::write().clear();
+        put_private("fallback secret", true).unwrap();
+        assert!(SENSITIVE_SELF.locked().is_some());
+        record_selection(Some("text/plain".into()), b"fallback secret".to_vec());
+        assert!(Clipboard::read().entries().is_empty());
+
+        // Fail both `--sensitive` and fallback: token must be cleared.
+        std::fs::write(&helper, "#!/bin/sh\nexit 1\n").unwrap();
+        assert!(put_private("failed copy", true).is_err());
+        assert!(SENSITIVE_SELF.locked().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
