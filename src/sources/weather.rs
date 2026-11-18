@@ -410,6 +410,7 @@ pub fn status() -> String {
 pub fn follow() {
     let queue = QUEUE.receiver();
     let agent: Agent = Agent::config_builder()
+        .https_only(true)
         .timeout_global(Some(PATIENCE))
         .http_status_as_error(false)
         .build()

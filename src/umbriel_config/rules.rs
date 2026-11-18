@@ -88,7 +88,8 @@ pub fn matches_preset(table: &Table, id: &str) -> bool {
 
 /// Checks whether a rule preset is active in the given TOML text.
 pub fn is_rule_active(text: &str, id: &str) -> bool {
-    let Ok(doc) = text.parse::<DocumentMut>() else {
+    let (_, body) = edit::unbom(text);
+    let Ok(doc) = body.parse::<DocumentMut>() else {
         return false;
     };
 
@@ -130,7 +131,8 @@ pub fn apply_rule_to_text(text: &str, id: &str) -> Result<String, String> {
             .map(|opt| opt.unwrap_or_else(|| text.to_owned()));
     }
 
-    let mut doc = text
+    let (bom, body) = edit::unbom(text);
+    let mut doc = body
         .parse::<DocumentMut>()
         .map_err(|e| format!("cannot parse TOML: {e}"))?;
 
@@ -165,7 +167,7 @@ pub fn apply_rule_to_text(text: &str, id: &str) -> Result<String, String> {
         }
     }
 
-    Ok(doc.to_string())
+    Ok(format!("{bom}{doc}"))
 }
 
 /// Removes a rule preset from the TOML document.
@@ -178,7 +180,8 @@ pub fn remove_rule_from_text(text: &str, id: &str) -> Result<Option<String>, Str
         return edit::remove(text, "overview.workspace_wallpaper");
     }
 
-    let mut doc = text
+    let (bom, body) = edit::unbom(text);
+    let mut doc = body
         .parse::<DocumentMut>()
         .map_err(|e| format!("cannot parse TOML: {e}"))?;
 
@@ -196,7 +199,7 @@ pub fn remove_rule_from_text(text: &str, id: &str) -> Result<Option<String>, Str
 
     if let Some(i) = remove_idx {
         aot.remove(i);
-        Ok(Some(doc.to_string()))
+        Ok(Some(format!("{bom}{doc}")))
     } else {
         Ok(None)
     }
@@ -326,5 +329,63 @@ blur_popups = true
             .unwrap();
         assert!(!is_rule_active(&removed, "overview-wallpaper"));
         assert!(is_rule_active(&removed, "blur-kanade"));
+    }
+
+    #[test]
+    fn bom_prefixed_configs_preserve_bom_across_rule_operations() {
+        let bare = "\u{feff}[general]\nautostart = [\"kanade\"]\n";
+        assert!(!is_rule_active(bare, "blur-kanade"));
+        assert!(!is_rule_active(bare, "overview-wallpaper"));
+
+        let with_blur = apply_rule_to_text(bare, "blur-kanade").unwrap();
+        assert!(with_blur.starts_with('\u{feff}'));
+        assert!(is_rule_active(&with_blur, "blur-kanade"));
+        assert_eq!(
+            apply_rule_to_text(&with_blur, "blur-kanade").unwrap(),
+            with_blur
+        );
+
+        let with_both = apply_rule_to_text(&with_blur, "overview-wallpaper").unwrap();
+        assert!(with_both.starts_with('\u{feff}'));
+        assert!(is_rule_active(&with_both, "blur-kanade"));
+        assert!(is_rule_active(&with_both, "overview-wallpaper"));
+
+        let without_blur = remove_rule_from_text(&with_both, "blur-kanade")
+            .unwrap()
+            .unwrap();
+        assert!(without_blur.starts_with('\u{feff}'));
+        assert!(!is_rule_active(&without_blur, "blur-kanade"));
+        assert!(is_rule_active(&without_blur, "overview-wallpaper"));
+
+        let without_either = remove_rule_from_text(&without_blur, "overview-wallpaper")
+            .unwrap()
+            .unwrap();
+        assert!(without_either.starts_with('\u{feff}'));
+        assert!(!is_rule_active(&without_either, "overview-wallpaper"));
+
+        let sample_bom = format!("\u{feff}{SAMPLE}");
+        assert!(is_rule_active(&sample_bom, "blur-kanade"));
+        assert!(!is_rule_active(&sample_bom, "overview-wallpaper"));
+
+        let sample_applied = apply_rule_to_text(&sample_bom, "overview-wallpaper").unwrap();
+        assert!(sample_applied.starts_with('\u{feff}'));
+        assert!(is_rule_active(&sample_applied, "overview-wallpaper"));
+        assert!(is_rule_active(&sample_applied, "blur-kanade"));
+
+        let sample_removed_overview = remove_rule_from_text(&sample_applied, "overview-wallpaper")
+            .unwrap()
+            .unwrap();
+        assert!(sample_removed_overview.starts_with('\u{feff}'));
+        assert!(!is_rule_active(
+            &sample_removed_overview,
+            "overview-wallpaper"
+        ));
+        assert!(is_rule_active(&sample_removed_overview, "blur-kanade"));
+
+        let sample_removed_blur = remove_rule_from_text(&sample_removed_overview, "blur-kanade")
+            .unwrap()
+            .unwrap();
+        assert!(sample_removed_blur.starts_with('\u{feff}'));
+        assert!(!is_rule_active(&sample_removed_blur, "blur-kanade"));
     }
 }

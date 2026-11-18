@@ -33,20 +33,9 @@ pub trait Service: Send + Sync + Sized + 'static {
     }
 
     /// Runs on the Service's own thread, so waiting here never stalls drawing.
-    /// Event-driven Services replace it with their own loop, Services changed
-    /// only by input with an empty one.
-    fn listen() {
-        loop {
-            thread::sleep(Self::interval());
-
-            let mut service = Self::write();
-
-            // a poll that found nothing new redraws nothing
-            if !service.update() {
-                service.quiet();
-            }
-        }
-    }
+    /// Services changed only by events or input leave this empty; polling Services
+    /// override it with their own loop.
+    fn listen() {}
 
     fn read() -> RwLockReadGuard<'static, Self> {
         changes::note_read(TypeId::of::<Self>());
@@ -471,5 +460,26 @@ mod tests {
 
         assert_eq!(*LISTENS.locked(), 2);
         assert_eq!(*REPORTED.locked(), ["Flaky: a bus that went away"]);
+    }
+
+    static DEFAULT_UPDATES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    struct NoPoll;
+
+    impl Service for NoPoll {
+        fn new() -> Self {
+            Self
+        }
+
+        fn update(&mut self) -> bool {
+            DEFAULT_UPDATES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        }
+    }
+
+    #[test]
+    fn default_listen_does_not_poll() {
+        keep_listening::<NoPoll>();
+        assert_eq!(DEFAULT_UPDATES.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

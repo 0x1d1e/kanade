@@ -515,6 +515,10 @@ impl Stack {
             || self.queued.iter().any(|queued| queued.id == id)
     }
 
+    pub fn ids(&self) -> Vec<u32> {
+        self.all().map(|banner| banner.id).collect()
+    }
+
     // in arrival order, a Critical one after the Critical ones already waiting
     fn queue(&mut self, banner: Banner) {
         let at = if banner.critical() {

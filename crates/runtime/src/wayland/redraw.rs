@@ -77,6 +77,8 @@ impl OpenWindow {
 
             if changed {
                 self.role.commit();
+                crate::graphics::after_frame();
+                crate::memory::note_drawn();
             }
 
             return;
@@ -179,15 +181,27 @@ impl OpenWindow {
             return;
         }
 
+        if matches!(self.view, View::Normal(..)) {
+            if !self.frame_requested {
+                self.ask_for_frame();
+                self.role.commit();
+            }
+
+            return;
+        }
+
         /*
          * a window that wants to hide should do so promptly rather than waiting
          * for a frame callback on a surface that is about to hide.
          */
-        let now = Instant::now();
-        clock::set(now);
+        let ui = ui_scale::ui_scale();
+        clock::set(self.frame_clock.probe_now(Instant::now()));
 
-        let (content, _) =
-            frame::run_view(|| self.view.run(), self.width as f32, self.height as f32);
+        let (content, _) = frame::run_view(
+            || self.view.run(),
+            self.width as f32 / ui,
+            self.height as f32 / ui,
+        );
 
         clock::clear();
 

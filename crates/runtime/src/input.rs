@@ -94,6 +94,21 @@ impl crate::service::Service for KeyboardState {
     fn new() -> Self {
         Self::default()
     }
+
+    fn listen() {}
+}
+
+impl KeyboardState {
+    pub(crate) fn clear_caps_lock() {
+        use crate::service::Service;
+
+        let mut state = Self::write();
+        if state.caps_lock {
+            *state = Self::default();
+        } else {
+            state.quiet();
+        }
+    }
 }
 
 // where the pointer is, measured from a widget's top-left corner

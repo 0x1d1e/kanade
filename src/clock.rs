@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 //! The local time Rest shows. A window that draws it subscribes to `WallClock` and arms one
 //! timer for the next minute; when it fires, only the windows that drew the time draw again, and
 //! they arm it for the minute after. A window that stops drawing it stops arming it, so with no
@@ -619,6 +621,7 @@ pub fn catch_termination() -> io::Result<std::os::unix::net::UnixStream> {
     use std::sync::atomic::Ordering;
 
     let (reader, writer) = UnixStream::pair()?;
+    writer.set_nonblocking(true)?;
 
     // kept open for the process's life: the handler writes to it
     TERMINATION.store(writer.into_raw_fd(), Ordering::Relaxed);
@@ -976,29 +979,35 @@ extern "C" fn converse(
     responses: *mut *mut PamResponse,
     data: *mut c_void,
 ) -> c_int {
-    let Ok(count) = usize::try_from(count) else {
+    if data.is_null() || responses.is_null() || messages.is_null() || !(1..=32).contains(&count) {
         return PAM_CONV_ERR;
-    };
+    }
+
+    let count = count as usize;
 
     // SAFETY: `data` is the `Talk` `pam` made, which outlives the transaction and is used by this
     // thread alone
     let talk = unsafe { &mut *data.cast::<Talk<'_>>() };
 
     // SAFETY: Linux-PAM hands `count` messages, an array of pointers, each to a style and a text
-    let texts: Vec<(c_int, String)> = (0..count)
-        .map(|index| unsafe {
-            let message = &**messages.add(index);
-            let text = if message.text.is_null() {
-                String::new()
-            } else {
-                std::ffi::CStr::from_ptr(message.text)
-                    .to_string_lossy()
-                    .into_owned()
-            };
+    let mut texts = Vec::with_capacity(count);
+    for index in 0..count {
+        let ptr = unsafe { *messages.add(index) };
+        if ptr.is_null() {
+            return PAM_CONV_ERR;
+        }
 
-            (message.style, text)
-        })
-        .collect();
+        let message = unsafe { &*ptr };
+        let text = if message.text.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(message.text) }
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        texts.push((message.style, text));
+    }
 
     // all decided before anything is allocated, so a refusal leaves nothing for PAM to free
     let Some(turns) = decide(&texts, &mut talk.answered) else {
@@ -1287,5 +1296,56 @@ mod tests {
         let mut expirations = [0; 8];
         timer.read_exact(&mut expirations).unwrap();
         assert_eq!(u64::from_ne_bytes(expirations), 1);
+    }
+
+    #[test]
+    fn converse_rejects_null_pointers_and_out_of_range_counts() {
+        let password = CString::new("secret").unwrap();
+        let mut tell = |_: Note| {};
+        let mut talk = Talk {
+            password: &password,
+            answered: false,
+            tell: &mut tell,
+        };
+        let prompt = CString::new("Password: ").unwrap();
+        let message = PamMessage {
+            style: PAM_PROMPT_ECHO_OFF,
+            text: prompt.as_ptr(),
+        };
+        let mut msg_ptr: *const PamMessage = &raw const message;
+        let mut response: *mut PamResponse = std::ptr::null_mut();
+        let data = (&raw mut talk).cast::<c_void>();
+
+        assert_eq!(
+            converse(1, &raw mut msg_ptr, &raw mut response, std::ptr::null_mut()),
+            PAM_CONV_ERR
+        );
+        assert_eq!(
+            converse(1, &raw mut msg_ptr, std::ptr::null_mut(), data),
+            PAM_CONV_ERR
+        );
+        assert_eq!(
+            converse(1, std::ptr::null_mut(), &raw mut response, data),
+            PAM_CONV_ERR
+        );
+        assert_eq!(
+            converse(0, &raw mut msg_ptr, &raw mut response, data),
+            PAM_CONV_ERR
+        );
+        assert_eq!(
+            converse(-1, &raw mut msg_ptr, &raw mut response, data),
+            PAM_CONV_ERR
+        );
+        assert_eq!(
+            converse(33, &raw mut msg_ptr, &raw mut response, data),
+            PAM_CONV_ERR
+        );
+
+        let mut null_msg: *const PamMessage = std::ptr::null();
+        assert_eq!(
+            converse(1, &raw mut null_msg, &raw mut response, data),
+            PAM_CONV_ERR
+        );
+        assert!(response.is_null());
     }
 }

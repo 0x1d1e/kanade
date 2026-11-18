@@ -183,7 +183,10 @@ impl RenderConfig {
                 target_height: height,
                 base_color: base_color.premultiply().to_rgba8().to_u32(),
                 lines_size: buffer_sizes.lines.len(),
-                binning_size: buffer_sizes.bin_data.len() - layout.bin_data_start,
+                binning_size: buffer_sizes
+                    .bin_data
+                    .len()
+                    .saturating_sub(layout.bin_data_start),
                 tiles_size: buffer_sizes.tiles.len(),
                 seg_counts_size: buffer_sizes.seg_counts.len(),
                 segments_size: buffer_sizes.segments.len(),
@@ -400,7 +403,7 @@ impl BufferSizes {
         // draws a few dozen paths a frame (measured peaks: 134 segments, 28 lines, one tile per
         // tile of the target), so they follow the target's size, with at least 400 times the
         // measured peaks. A scene past them loses drawing; the shaders check these sizes
-        let bin_data = BufferSize::new(1 << 18);
+        let bin_data = BufferSize::new(layout.bin_data_start.saturating_add(1 << 18));
         let tiles = BufferSize::new((screen_tiles * 16).max(1 << 16));
         let lines = BufferSize::new(1 << 16);
         let seg_counts = BufferSize::new(1 << 16);
@@ -440,4 +443,27 @@ impl BufferSizes {
 
 const fn align_up(len: u32, alignment: u32) -> u32 {
     len + (len.wrapping_neg() & (alignment - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bin_data_never_underflows_when_bin_data_start_exceeds_headroom() {
+        let mut layout = Layout::new();
+        layout.bin_data_start = (1 << 18) + 1024;
+        let workgroups = WorkgroupCounts::new(&layout, 1, 1, 0);
+        let sizes = BufferSizes::new(&layout, &workgroups, 1);
+
+        assert!(sizes.bin_data.len() >= layout.bin_data_start);
+
+        let config = RenderConfig::new(&layout, 16, 16, &peniko::Color::BLACK);
+        assert_eq!(config.gpu.binning_size, 1 << 18);
+
+        layout.bin_data_start = u32::MAX - 16;
+        let saturated = RenderConfig::new(&layout, 16, 16, &peniko::Color::BLACK);
+        assert_eq!(saturated.buffer_sizes.bin_data.len(), u32::MAX);
+        assert_eq!(saturated.gpu.binning_size, 16);
+    }
 }

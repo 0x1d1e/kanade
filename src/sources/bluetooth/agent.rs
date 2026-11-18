@@ -8,6 +8,7 @@
 //! name that owns `org.bluez`, as `system` takes the daemons' own signals. Any process on the bus
 //! can call this path, and the system bus's policy is not Kanade's to rely on.
 
+use std::fmt;
 use std::hash::{BuildHasher, RandomState};
 use std::mem;
 use std::sync::{Mutex, Once};
@@ -26,7 +27,7 @@ const AGENT: &str = "org.bluez.Agent1";
 const CAPABILITY: &str = "DisplayYesNo";
 
 // what the pairing under way needs from the user
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub enum Prompt {
     #[default]
     None,
@@ -48,6 +49,36 @@ pub enum Prompt {
         device: String,
         pin: String,
     },
+}
+
+impl fmt::Debug for Prompt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct Redacted;
+        impl fmt::Debug for Redacted {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("<redacted>")
+            }
+        }
+
+        match self {
+            Prompt::None => formatter.write_str("None"),
+            Prompt::Confirm { device, passkey } => formatter
+                .debug_struct("Confirm")
+                .field("device", device)
+                .field("passkey", passkey)
+                .finish(),
+            Prompt::Show { device, code } => formatter
+                .debug_struct("Show")
+                .field("device", device)
+                .field("code", code)
+                .finish(),
+            Prompt::Pin { device, .. } => formatter
+                .debug_struct("Pin")
+                .field("device", device)
+                .field("pin", &Redacted)
+                .finish(),
+        }
+    }
 }
 
 impl Service for Prompt {
@@ -318,5 +349,17 @@ mod tests {
         assert!(!from_bluez(""));
 
         *OWNER.locked() = None;
+    }
+
+    #[test]
+    fn pin_prompt_debug_redacts_pin() {
+        let prompt = Prompt::Pin {
+            device: String::from("/org/bluez/hci0/dev_AA_BB"),
+            pin: String::from("0492"),
+        };
+        let debug = format!("{prompt:?}");
+
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(!debug.contains("0492"), "{debug}");
     }
 }

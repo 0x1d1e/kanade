@@ -230,12 +230,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let now = clock::now();
     let _on = shape::On::take(monitor);
 
-    // a left press swells the window's drawing and hit targets, a spring of ours too
-    let swell = island.press_scale(now);
-    if !island.press_settled(now) {
-        request_frame();
-    }
-
     let keyboard = island.keyboard(&monitor.name);
     let canvas = canvas(monitor);
     let place = config::get().island_placement();
@@ -246,6 +240,17 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
      * `shell.island` in it and the Dock's at `shell.dock`, under one pane
      */
     let shell = merge::shell(monitor);
+
+    // a left press swells only the unmerged Island's drawing and hit targets on the pressed monitor
+    let swell = if shell.is_none() {
+        if !island.press_settled(&monitor.name, now) {
+            request_frame();
+        }
+        island.press_scale(&monitor.name, now)
+    } else {
+        1.0
+    };
+
     let origin = shell.as_ref().map_or((0.0, 0.0), |shell| shell.island);
     let edge_offset = shell
         .as_ref()
@@ -266,11 +271,12 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
      */
     let covered = covered(monitor, || island.overview());
     let frame = island.frame(&monitor.name, now);
-    // the OSD's own: Transient, so a debug post of any Feedback cannot hold it over the window
+    // the OSD's own: Transient, so a debug post of any Feedback cannot hold it over the window;
+    // suppressed when floats() suppresses the OSD over a Peek, Surface, or uncovered Banner
     let feedback = frame.primary.as_ref().is_some_and(|primary| {
         primary.priority() == Priority::Feedback
             && matches!(primary.lifetime(), Lifetime::Transient(_))
-    });
+    }) && !island.floats(&monitor.name, &frame);
     let raised = raise(
         &monitor.name,
         covered && (feedback || island.expanded(&monitor.name)),
@@ -445,10 +451,11 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     /*
      * a held press scales the window's drawing and hit targets about the Island's own centre, not
-     * the window's, so a body hugging an edge never slides off it. The content stays one rectangle
-     * in the tree either way, so the pressed target keeps its key and its hold lasts the press
+     * the window's, so a body hugging an edge never slides off it, and only when unmerged so a
+     * merged Dock plate and icons never scale. The content stays one rectangle in the tree either
+     * way, so the pressed target keeps its key and its hold lasts the press
      */
-    if swell != 1.0 {
+    if swell != 1.0 && shell.is_none() {
         let (shift_x, shift_y) = press_shift(swell, body_rect, origin, window);
         content = content.scale(swell).translate(shift_x, shift_y);
     }
@@ -776,7 +783,8 @@ fn hover_target(
     peeks: bool,
     compact: f32,
 ) -> (Rectangle, Rc<dyn Fn(f32, f32)>) {
-    let (clicked, moved, hovered, scrolled) = (
+    let (clicked, held, moved, hovered, scrolled) = (
+        monitor.to_owned(),
         monitor.to_owned(),
         monitor.to_owned(),
         monitor.to_owned(),
@@ -799,7 +807,7 @@ fn hover_target(
         .align_child(Start, Start)
         .semantics(|| Semantics::new(Role::Button, "island"))
         .on_hover(move |inside| hover(&hovered, inside, peeks))
-        .on_hold(press)
+        .on_hold(move |down| press(&held, down))
         .on_move(move |point| tracked(area.x + point.x, area.y + point.y))
         .on_click(move |button| match button {
             Button::Left => expand(&clicked),

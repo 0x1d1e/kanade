@@ -44,6 +44,7 @@ const WEIGHT: f32 = 0.2;
  */
 pub struct FrameClock {
     last: Option<Instant>,
+    last_target: Option<Instant>,
     interval: Duration,
 }
 
@@ -51,6 +52,7 @@ impl FrameClock {
     pub fn new() -> Self {
         Self {
             last: None,
+            last_target: None,
             interval: DEFAULT_INTERVAL,
         }
     }
@@ -61,25 +63,36 @@ impl FrameClock {
      * and only a plausible consecutive gap moves the interval
      */
     pub fn next(&mut self, now: Instant) -> Instant {
-        let Some(last) = self.last.replace(now) else {
-            return now;
+        let computed = match self.last.replace(now) {
+            None => now,
+            Some(last) => {
+                let gap = now.saturating_duration_since(last);
+
+                if !(MIN_GAP..=MAX_GAP).contains(&gap) {
+                    now
+                } else {
+                    let smoothed = self.interval.mul_f32(1.0 - WEIGHT) + gap.mul_f32(WEIGHT);
+                    self.interval = smoothed.clamp(MIN_INTERVAL, MAX_INTERVAL);
+
+                    now + self.interval
+                }
+            }
         };
 
-        let gap = now.saturating_duration_since(last);
+        let target = self.probe_now(computed);
+        self.last_target = Some(target);
+        target
+    }
 
-        if !(MIN_GAP..=MAX_GAP).contains(&gap) {
-            return now;
-        }
-
-        let smoothed = self.interval.mul_f32(1.0 - WEIGHT) + gap.mul_f32(WEIGHT);
-        self.interval = smoothed.clamp(MIN_INTERVAL, MAX_INTERVAL);
-
-        now + self.interval
+    // view probes never step `clock::now()` behind the previous frame's predicted present instant
+    pub fn probe_now(&self, now: Instant) -> Instant {
+        self.last_target.map_or(now, |last| now.max(last))
     }
 
     // a frame that was hidden or unconfigured ends the chain: no gap across it teaches the interval
     pub fn reset(&mut self) {
         self.last = None;
+        self.last_target = None;
     }
 }
 
@@ -215,5 +228,28 @@ mod tests {
         let target = clock.next(now + Duration::from_millis(200));
 
         assert!(target <= now + Duration::from_millis(200) + MAX_INTERVAL);
+    }
+
+    #[test]
+    fn probe_now_never_steps_before_last_target() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new();
+
+        assert_eq!(clock.probe_now(start), start);
+
+        let frame = start + Duration::from_micros(16_667);
+        clock.next(start);
+        let target = clock.next(frame);
+        assert!(target > frame);
+
+        let mid = frame + Duration::from_millis(2);
+        assert_eq!(clock.probe_now(mid), target);
+        assert!(clock.probe_now(mid) >= target);
+
+        let later = target + Duration::from_millis(5);
+        assert_eq!(clock.probe_now(later), later);
+
+        clock.reset();
+        assert_eq!(clock.probe_now(mid), mid);
     }
 }

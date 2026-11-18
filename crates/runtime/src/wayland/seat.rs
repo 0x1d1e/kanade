@@ -133,9 +133,11 @@ impl WaylandState {
         });
 
         self.modifiers = crate::Modifiers::default();
+        crate::input::KeyboardState::clear_caps_lock();
 
         crate::input::focus::clear();
         crate::input::released::send();
+        self.sync_ime();
 
         if let Some(keyboard) = keyboard {
             keyboard.release();

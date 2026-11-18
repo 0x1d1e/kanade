@@ -663,12 +663,23 @@ notifications dnd on until <HH:MM>
         },
         verbs: &[],
         start: |app| {
+            let sync_banners = || {
+                let mut island = IslandService::write();
+
+                if !island.sync_banners(Instant::now()) {
+                    island.quiet();
+                }
+            };
+
             service::watch::<Monitors>(banners::forget_gone);
             crate::sources::compositor::watch_focus(banners::follow_focus);
             crate::sources::compositor::watch_focus(banners::follow_cover);
             service::watch::<kanade_runtime::Toplevels>(banners::follow_cover);
             service::watch::<crate::sources::fullscreen::Fullscreen>(banners::follow_cover);
             service::watch::<kanade_runtime::idle::Idle>(banners::presence_changed);
+            service::watch::<crate::banners::Banners>(sync_banners);
+            service::watch::<kanade_runtime::Toplevels>(sync_banners);
+            service::watch::<crate::sources::fullscreen::Fullscreen>(sync_banners);
 
             app.window_per_monitor(banners::window)
         },
@@ -891,7 +902,11 @@ notifications dnd on until <HH:MM>
                     .ok_or(Unparsed::Usage)
             },
         }],
-        start: |app| app,
+        start: |app| {
+            service::watch::<IslandService>(surfaces::controls::follow);
+            service::watch::<lock::Said>(surfaces::controls::follow);
+            app
+        },
     },
     // the wallpaper: Kanade selects, awww renders
     Module {

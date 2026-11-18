@@ -1078,7 +1078,7 @@ fn learned_first(answers: &mut [Answer], query: &str, now: i64, usage: &sources:
     answers.sort_by_key(|answer| {
         let learned = kept(answer).map_or(0, |key| usage.learned(&key, &query, now));
 
-        (answer.fit, std::cmp::Reverse(learned))
+        (answer.filler, answer.fit, std::cmp::Reverse(learned))
     });
 }
 
@@ -3323,6 +3323,35 @@ mod tests {
             ranked,
             "a fit keeps the web away"
         );
+    }
+
+    #[test]
+    fn a_typo_app_match_ranks_before_a_filler_quicklink() {
+        let apps = [App {
+            name: String::from("Firefox"),
+            ..app("firefox")
+        }];
+        let quicklinks = [Quicklink {
+            title: String::from("Look up"),
+            target: quicklinks::Target::Argv(vec![String::from("lookup")]),
+            passes_query: true,
+        }];
+        let apps_provider = AppsProvider(&apps);
+        let quicklinks_provider = Quicklinks(&quicklinks);
+
+        let mut ranked = provider::ranked(&[&apps_provider, &quicklinks_provider], "fierfox");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].fit, Fit::Typo);
+        assert!(!ranked[0].filler);
+        assert!(ranked[1].filler);
+        assert!(matches!(ranked[0].action, Action::Launch(_, _)));
+        assert!(matches!(ranked[1].action, Action::Quicklink(_)));
+
+        let usage = sources::recents::Usage::default();
+        learned_first(&mut ranked, "fierfox", crate::clock::unix_seconds(), &usage);
+        assert_eq!(ranked[0].fit, Fit::Typo);
+        assert!(!ranked[0].filler);
+        assert!(ranked[1].filler);
     }
 
     // only the key that typed a lone prefix hands off, and only while its Module is on: a pasted

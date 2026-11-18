@@ -154,6 +154,10 @@ impl Motion {
         self.cards.is_empty()
     }
 
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.cards.iter().map(|card| card.banner.id)
+    }
+
     /*
      * whether any still moves, so the view wants frames: under reduced motion too, until one gone
      * has settled and can be let go

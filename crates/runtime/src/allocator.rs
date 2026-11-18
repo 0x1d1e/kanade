@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use std::ffi::c_int;
 use std::sync::Once;
 use std::thread;

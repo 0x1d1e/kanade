@@ -43,9 +43,7 @@ impl KeyboardHandler for WaylandState {
             window.keyboard_ready.leave();
         }
         self.modifiers = Modifiers::default();
-        if KeyboardState::read().caps_lock {
-            *KeyboardState::write() = KeyboardState::default();
-        }
+        KeyboardState::clear_caps_lock();
 
         // keys stop arriving, so no text input can stay focused, and no key is held
         focus::clear();

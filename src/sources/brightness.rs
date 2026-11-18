@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Duration;
 
 use kanade_runtime::service::Service;
@@ -94,6 +95,19 @@ impl Service for Brightness {
         self.percent = percent_of(current, highest);
 
         self.percent != before
+    }
+
+    fn listen() {
+        loop {
+            thread::sleep(Self::interval());
+
+            let mut service = Self::write();
+
+            // a poll that found nothing new redraws nothing
+            if !service.update() {
+                service.quiet();
+            }
+        }
     }
 }
 

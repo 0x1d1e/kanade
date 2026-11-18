@@ -33,26 +33,27 @@ impl LauncherProvider for Quicklinks<'_> {
         self.0
             .iter()
             .filter_map(|link| {
-                let fit = if link.passes_query {
+                let (fit, filler) = if link.passes_query {
                     // the query is the argument, so the row takes any text; its name still
                     // ranks it when the text fits, else it waits at the end
                     if query.is_empty() {
                         return None;
                     }
-                    provider::fit_or_typo(query, &link.title).unwrap_or(Fit::Anywhere)
+                    let matched = provider::fit_or_typo(query, &link.title);
+                    (matched.unwrap_or(Fit::Anywhere), matched.is_none())
                 } else if query.is_empty() {
-                    Fit::Prefix
+                    (Fit::Prefix, false)
                 } else {
-                    provider::fit_or_typo(query, &link.title)?
+                    (provider::fit_or_typo(query, &link.title)?, false)
                 };
 
-                Some(answer(link, fit, query))
+                Some(answer(link, fit, filler, query))
             })
             .collect()
     }
 }
 
-fn answer(link: &Quicklink, fit: Fit, query: &str) -> Answer {
+fn answer(link: &Quicklink, fit: Fit, filler: bool, query: &str) -> Answer {
     let (detail, action) = match &link.target {
         Target::Url(url) => (String::new(), Action::Browse(url.clone())),
         Target::Argv(argv) => (
@@ -64,7 +65,7 @@ fn answer(link: &Quicklink, fit: Fit, query: &str) -> Answer {
     Answer {
         fit,
         // a passing row that its title does not fit waits for any text, so it is no answer to it
-        filler: link.passes_query && fit == Fit::Anywhere,
+        filler,
         title: link.title.clone(),
         detail,
         mark: Mark::Icon(Icon::Forward),
@@ -100,7 +101,7 @@ pub fn run(argv: &[String]) -> Result<(), String> {
 
     let child = command
         .spawn()
-        .map_err(|error| format!("{}: {error}", argv[0]))?;
+        .map_err(|error| format!("quicklink failed: {error}"))?;
 
     thread::Builder::new()
         .name("launcher-quicklink".into())
@@ -525,5 +526,13 @@ passes_query = true
         let parsed = read_all(&val).unwrap();
 
         assert_eq!(parsed, links);
+    }
+
+    #[test]
+    fn quicklink_spawn_error_omits_target_argv() {
+        let error = run(&[String::from("/nonexistent-secret-quicklink-target")]).unwrap_err();
+
+        assert!(error.contains("quicklink failed"), "{error}");
+        assert!(!error.contains("secret-quicklink-target"), "{error}");
     }
 }

@@ -7,7 +7,9 @@ use kanade_runtime::queue::Nudge;
 use kanade_runtime::service::Service;
 use kanade_runtime::{Keyboard, Monitors};
 
-use super::activity::{Activity, Detail, Frame, Id, Interrupt, Kind, Lifetime, Scope, Track};
+use super::activity::{
+    Activity, Detail, Frame, Id, Interrupt, Kind, Lifetime, Priority, Scope, Track,
+};
 use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
@@ -133,10 +135,11 @@ pub struct IslandService {
     timings: Timings,
 
     /*
-     * a left press's swell, from rest at 1.0; one press at a time, since the held island is the
-     * one with the pointer and every island shares the swell
+     * a left press's swell, from rest at 1.0; one press at a time, scoped to the monitor holding
+     * or settling the swell
      */
     press: Spring<1>,
+    pressed_on: Option<String>,
 
     // from `resize` and `fit`, else the defaults: how large each body grows (ADR 0030)
     sizes: Sizes,
@@ -283,6 +286,7 @@ impl Service for IslandService {
             confirmed_output: None,
             timings,
             press: Spring::new([1.0], timings.motion),
+            pressed_on: None,
             sizes: Sizes::default(),
             auto: None,
             isolated: false,
@@ -369,34 +373,50 @@ impl IslandService {
      * critically damped spring. A press already headed where it asks is not written again, since
      * a write wakes every window. Reduced motion never swells
      */
-    pub fn press(&mut self, down: bool, now: Instant) {
-        let target = [if down { PRESS_SCALE } else { 1.0 }];
-
-        if self.press.target() == target {
-            return;
+    pub fn set_pressed(&mut self, monitor: &str, pressed: bool, now: Instant) {
+        if pressed {
+            if self.pressed_on.as_deref() == Some(monitor) && self.press.target() == [PRESS_SCALE] {
+                return;
+            }
+            if self.pressed_on.as_deref() != Some(monitor) {
+                self.press = Spring::new([1.0], self.timings.motion);
+                self.pressed_on = Some(monitor.to_owned());
+            }
+            self.press.damp(CRITICAL);
+            self.press.aim(
+                [PRESS_SCALE],
+                self.timings.for_motion(PRESS),
+                self.timings.motion,
+                now,
+            );
+        } else {
+            if self.pressed_on.as_deref() != Some(monitor) || self.press.target() == [1.0] {
+                return;
+            }
+            self.press.damp(CRITICAL);
+            self.press.aim(
+                [1.0],
+                self.timings.for_motion(PRESS),
+                self.timings.motion,
+                now,
+            );
         }
-
-        self.press.damp(CRITICAL);
-        self.press.aim(
-            target,
-            self.timings.for_motion(PRESS),
-            self.timings.motion,
-            now,
-        );
     }
 
-    // the island's press swell now; exactly 1.0, never moving, under reduced motion
-    pub fn press_scale(&self, now: Instant) -> f32 {
-        if self.timings.motion == Mode::Reduced {
+    // the island's press swell now; exactly 1.0, never moving, on other monitors or under reduced motion
+    pub fn press_scale(&self, monitor: &str, now: Instant) -> f32 {
+        if self.timings.motion == Mode::Reduced || self.pressed_on.as_deref() != Some(monitor) {
             return 1.0;
         }
 
         self.press.at(now)[0]
     }
 
-    // false while the press swell still moves, so the view keeps asking for frames
-    pub fn press_settled(&self, now: Instant) -> bool {
-        self.timings.motion == Mode::Reduced || self.press.settled(now)
+    // false while the press swell still moves on `monitor`, so the view keeps asking for frames
+    pub fn press_settled(&self, monitor: &str, now: Instant) -> bool {
+        self.timings.motion == Mode::Reduced
+            || self.pressed_on.as_deref() != Some(monitor)
+            || self.press.settled(now)
     }
 
     /*
@@ -469,6 +489,15 @@ impl IslandService {
             .is_some_and(|auto| !exists(&auto.monitor))
         {
             self.restore(now);
+        }
+
+        if self
+            .pressed_on
+            .as_deref()
+            .is_some_and(|monitor| !exists(monitor))
+        {
+            self.pressed_on = None;
+            self.press = Spring::new([1.0], self.timings.motion);
         }
 
         self.presentations.retain(exists);
@@ -689,7 +718,14 @@ impl IslandService {
             self.presentation(monitor),
             Presentation::Peek | Presentation::Expanded(_)
         );
-        let banner_active = !self.isolated && crate::banners::active(monitor);
+        let monitor_covered = !self.isolated
+            && !self.overview()
+            && Monitors::read()
+                .all()
+                .iter()
+                .find(|m| m.name == monitor)
+                .is_some_and(crate::sources::fullscreen::covers);
+        let banner_active = !self.isolated && !monitor_covered && crate::banners::active(monitor);
 
         frame.feedback()
             && matches!(
@@ -698,6 +734,20 @@ impl IslandService {
             )
             && (raised || banner_active)
             && self.presentations.peeked(monitor) != frame.primary.as_ref().map(Activity::id)
+    }
+
+    // re-syncs islands when Banners change so a waiting Feedback OSD surfaces or suppresses immediately
+    pub fn sync_banners(&mut self, now: Instant) -> bool {
+        if self
+            .arbiter
+            .activities()
+            .any(|activity| activity.priority() == Priority::Feedback)
+        {
+            self.sync(now);
+            true
+        } else {
+            false
+        }
     }
 
     // read in the view at the frame's time
@@ -1222,7 +1272,13 @@ impl IslandService {
                 let down = matches!(command, Command::PeekDown);
                 let changes = match down {
                     true => self.presentations.can_hold(monitor),
-                    false => self.presentations.holding(monitor),
+                    false => {
+                        self.presentations.holding(monitor)
+                            || self
+                                .auto
+                                .as_ref()
+                                .is_some_and(|auto| auto.prior.holds(monitor))
+                    }
                 };
 
                 return Ok(changes.then(|| Effect::Peek(monitor.to_owned(), down)));
@@ -1279,6 +1335,9 @@ impl IslandService {
             Effect::Open(monitor, surface) => self.open(&monitor, surface, now),
             Effect::Collapse(monitor) => self.input(&monitor, Input::Collapse, now),
             Effect::Peek(monitor, down) => {
+                if !down && let Some(auto) = &mut self.auto {
+                    Presentations::clear_held_in_prior(&mut auto.prior, &monitor);
+                }
                 self.input(
                     &monitor,
                     if down { Input::Hold } else { Input::Release },
@@ -1656,6 +1715,9 @@ impl IslandService {
 
     // applies every input that fell due by now, and drops the Transients that expired
     pub fn expire(&mut self, now: Instant) {
+        if self.press.target() == [1.0] && self.press.settled(now) {
+            self.pressed_on = None;
+        }
         for island in std::iter::once(&mut self.untouched).chain(self.islands.values_mut()) {
             if let Some(body) = &mut island.shape {
                 body.tick(now);
@@ -5006,23 +5068,33 @@ mod tests {
         let now = Instant::now();
         let mut island = IslandService::new();
 
-        assert_eq!(island.press_scale(now), 1.0);
-        assert!(island.press_settled(now));
+        assert_eq!(island.press_scale(MONITOR, now), 1.0);
+        assert!(island.press_settled(MONITOR, now));
 
-        island.press(true, now);
-        assert_eq!(island.press_scale(now), 1.0);
-        assert!(island.press_scale(now + ms(45)) > 1.0);
-        assert!(!island.press_settled(now + ms(45)));
+        island.set_pressed(MONITOR, true, now);
+        assert_eq!(island.press_scale(MONITOR, now), 1.0);
+        assert!(island.press_scale(MONITOR, now + ms(45)) > 1.0);
+        assert!(!island.press_settled(MONITOR, now + ms(45)));
+
+        // Another monitor stays completely unscaled while MONITOR swells and settles.
+        assert_eq!(island.press_scale("DP-1", now + ms(45)), 1.0);
+        assert!(island.press_settled("DP-1", now + ms(45)));
 
         let held = now + Duration::from_secs(1);
-        assert_eq!(island.press_scale(held), PRESS_SCALE);
-        assert!(island.press_settled(held));
+        assert_eq!(island.press_scale(MONITOR, held), PRESS_SCALE);
+        assert!(island.press_settled(MONITOR, held));
 
-        island.press(false, held);
-        let falling = island.press_scale(held + ms(45));
+        island.set_pressed(MONITOR, false, held);
+        let falling = island.press_scale(MONITOR, held + ms(45));
         assert!(falling < PRESS_SCALE && falling > 1.0);
-        assert_eq!(island.press_scale(held + Duration::from_secs(1)), 1.0);
-        assert!(island.press_settled(held + Duration::from_secs(1)));
+        assert!(!island.press_settled(MONITOR, held + ms(45)));
+        assert_eq!(island.press_scale("DP-1", held + ms(45)), 1.0);
+        assert!(island.press_settled("DP-1", held + ms(45)));
+        assert_eq!(
+            island.press_scale(MONITOR, held + Duration::from_secs(1)),
+            1.0
+        );
+        assert!(island.press_settled(MONITOR, held + Duration::from_secs(1)));
     }
 
     #[test]
@@ -5030,15 +5102,15 @@ mod tests {
         let now = Instant::now();
         let (mut once, mut twice) = (IslandService::new(), IslandService::new());
 
-        once.press(true, now);
-        twice.press(true, now);
-        twice.press(true, now + ms(30));
+        once.set_pressed(MONITOR, true, now);
+        twice.set_pressed(MONITOR, true, now);
+        twice.set_pressed(MONITOR, true, now + ms(30));
 
         // a second write would restart the leg, and the two would part after it
         for at in [10, 30, 45, 60, 90] {
             assert_eq!(
-                once.press_scale(now + ms(at)),
-                twice.press_scale(now + ms(at))
+                once.press_scale(MONITOR, now + ms(at)),
+                twice.press_scale(MONITOR, now + ms(at))
             );
         }
     }
@@ -5052,15 +5124,21 @@ mod tests {
             ..Timings::default()
         });
 
-        island.press(true, now);
-        assert_eq!(island.press_scale(now), 1.0);
-        assert_eq!(island.press_scale(now + ms(45)), 1.0);
-        assert_eq!(island.press_scale(now + Duration::from_secs(1)), 1.0);
-        assert!(island.press_settled(now));
+        island.set_pressed(MONITOR, true, now);
+        assert_eq!(island.press_scale(MONITOR, now), 1.0);
+        assert_eq!(island.press_scale(MONITOR, now + ms(45)), 1.0);
+        assert_eq!(
+            island.press_scale(MONITOR, now + Duration::from_secs(1)),
+            1.0
+        );
+        assert!(island.press_settled(MONITOR, now));
 
         // turning motion back on under the same held press does not jump to the old target
         island.retime(Timings::default());
-        assert_eq!(island.press_scale(now + Duration::from_secs(1)), 1.0);
+        assert_eq!(
+            island.press_scale(MONITOR, now + Duration::from_secs(1)),
+            1.0
+        );
     }
 
     #[test]
@@ -5122,5 +5200,177 @@ mod tests {
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
         assert!(!island.held(MONITOR));
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+    }
+
+    #[test]
+    fn auto_expand_restores_pinned_peek_on_other_monitor() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.input(OTHER, Input::RightClick(Segment::Primary), now);
+        assert_eq!(island.presentation(OTHER), Presentation::Peek);
+        assert!(island.pinned(OTHER));
+
+        island.post(auto("7"), now + ms(50));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+        assert_eq!(island.presentation(OTHER), Presentation::Compact);
+        assert!(!island.pinned(OTHER));
+
+        island.expire(now + ms(50) + AUTO);
+        assert_eq!(island.presentation(OTHER), Presentation::Peek);
+        assert!(island.pinned(OTHER));
+    }
+
+    #[test]
+    fn peek_up_during_auto_expand_clears_saved_hold_without_claiming() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        let down = island.resolve(Command::PeekDown).unwrap().unwrap();
+        island.apply(down, now + ms(10));
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+        assert!(island.presentations.holding(MONITOR));
+
+        island.post(auto("7"), now + ms(20));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+        assert!(island.auto());
+
+        let up = island.resolve(Command::PeekUp).unwrap().unwrap();
+        island.apply(up, now + ms(30));
+
+        // Releasing PeekUp must not prematurely claim AutoExpand, and a duplicate PeekUp is a no-op.
+        assert!(island.auto());
+        assert_eq!(island.resolve(Command::PeekUp), Ok(None));
+
+        island.expire(now + ms(20) + AUTO);
+        assert!(!island.auto());
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert!(!island.presentations.holding(MONITOR));
+    }
+
+    #[test]
+    fn sync_banners_and_fullscreen_cover_control_feedback_floating() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "island::service::tests::sync_banners_and_fullscreen_cover_child",
+                "--nocapture",
+            ])
+            .env("KANADE_TEST_SYNC_BANNERS", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn sync_banners_and_fullscreen_cover_child() {
+        use crate::banners::{Banner, Banners};
+        use crate::sources::fullscreen::Fullscreen;
+        use crate::sources::notifications::Urgency;
+        use kanade_runtime::{Monitor, service};
+
+        if std::env::var_os("KANADE_TEST_SYNC_BANNERS").is_none() {
+            return;
+        }
+
+        let cfg = crate::config::Config::default();
+        crate::modules::resolve_fixture(&cfg);
+        crate::config::install(cfg);
+
+        Monitors::publish(vec![Monitor {
+            name: MONITOR.to_owned(),
+            width: 1920,
+            height: 1080,
+        }]);
+        service::watch::<Banners>(|| {
+            let mut island = IslandService::write();
+            if !island.sync_banners(Instant::now()) {
+                island.quiet();
+            }
+        });
+
+        let now = Instant::now();
+        let feedback = fixture::shown(
+            Id::new(Kind::Volume, "default"),
+            Priority::Feedback,
+            Duration::from_secs(30),
+        );
+        let frame = Frame {
+            primary: Some(feedback.clone()),
+            satellites: Vec::new(),
+            overflow: 0,
+        };
+
+        IslandService::write().set_niri(Some(MONITOR.to_owned()), false, now);
+        IslandService::write().post(feedback, now);
+        assert!(!IslandService::read().floats(MONITOR, &frame));
+        assert_eq!(
+            IslandService::read().presentation(MONITOR),
+            Presentation::Compact
+        );
+
+        let banner = Banner {
+            id: 42,
+            version: 1,
+            toast: Default::default(),
+            urgency: Urgency::Critical,
+            default: false,
+            actions: Vec::new(),
+            reply: None,
+            history: true,
+            bypass_dnd: true,
+            timeout: None,
+        };
+
+        Banners::write().arrive(banner, false, now);
+        service::derive();
+        assert!(crate::banners::active(MONITOR));
+        assert!(IslandService::read().floats(MONITOR, &frame));
+        assert_eq!(
+            IslandService::read().presentation(MONITOR),
+            Presentation::Rest
+        );
+
+        // Fullscreen covering MONITOR keeps the Layer::Top banner beneath it, so OSD must not float.
+        Fullscreen::write().shown.insert(
+            MONITOR.to_owned(),
+            crate::sources::niri::Showing {
+                app_id: Some(String::from("game")),
+                tile: (1920.0, 1080.0),
+                fullscreen: true,
+            },
+        );
+        assert!(IslandService::write().sync_banners(Instant::now()));
+        assert!(!IslandService::read().floats(MONITOR, &frame));
+        assert_eq!(
+            IslandService::read().presentation(MONITOR),
+            Presentation::Compact
+        );
+
+        // Clear fullscreen, then close the banner: banner arrival/clearance restores via derive().
+        Fullscreen::write().shown.clear();
+        assert!(IslandService::write().sync_banners(Instant::now()));
+        assert!(IslandService::read().floats(MONITOR, &frame));
+        assert_eq!(
+            IslandService::read().presentation(MONITOR),
+            Presentation::Rest
+        );
+
+        Banners::write().close(42, Instant::now());
+        service::derive();
+        assert!(!crate::banners::active(MONITOR));
+        assert!(!IslandService::read().floats(MONITOR, &frame));
+        assert_eq!(
+            IslandService::read().presentation(MONITOR),
+            Presentation::Compact
+        );
     }
 }

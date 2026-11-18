@@ -105,14 +105,20 @@ pub fn refresh() {
     let read = thread::Builder::new()
         .name(String::from("kanade-shelf"))
         .spawn(|| {
+            struct Clear;
+            impl Drop for Clear {
+                fn drop(&mut self) {
+                    READING.store(false, atomic::Ordering::SeqCst);
+                }
+            }
+
+            let _clear = Clear;
             let shelf = Shelf { files: list() };
 
             // a write wakes the window even when nothing changed, so only write a real change
             if *Shelf::read() != shelf {
                 *Shelf::write() = shelf;
             }
-
-            READING.store(false, atomic::Ordering::SeqCst);
         });
 
     if let Err(error) = read {
@@ -164,18 +170,38 @@ fn xbel() -> Option<PathBuf> {
  * notes and settings have no place on the shelf
  */
 fn contained() -> Vec<PathBuf> {
-    let home = std::env::var("HOME").ok();
+    contained_from(|variable| std::env::var_os(variable))
+}
+
+fn contained_from(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    let home = env("HOME").and_then(|value| value.into_string().ok());
     let home = home.as_deref();
 
-    [
+    let mut dirs: Vec<PathBuf> = [
         ("XDG_CONFIG_HOME", ".config"),
         ("XDG_DATA_HOME", ".local/share"),
         ("XDG_STATE_HOME", ".local/state"),
+        ("XDG_CACHE_HOME", ".cache"),
     ]
     .into_iter()
-    .filter_map(|(variable, default)| config::base(variable, default, home))
+    .filter_map(|(variable, default)| {
+        env(variable)
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| home.map(|home| Path::new(home).join(default)))
+    })
     .map(|dir| dir.join("kanade"))
-    .collect()
+    .collect();
+
+    if let Some(runtime) = env("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+    {
+        dirs.push(runtime.join("kanade-clipboard"));
+        dirs.push(runtime.join("kanade-notifications"));
+    }
+
+    dirs
 }
 
 /*
@@ -189,10 +215,24 @@ fn shelf(text: &str, skip: &[PathBuf]) -> Vec<Recent> {
     let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
     let mut scanned = 0;
 
+    let excluded: Vec<(PathBuf, Option<PathBuf>)> = skip
+        .iter()
+        .map(|dir| (normalized(dir), fs::canonicalize(dir).ok()))
+        .collect();
+
     for path in hrefs(text).filter_map(|href| local(&decoded(href))) {
         let path = normalized(&path);
+        let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
 
-        if skip.iter().any(|dir| path.starts_with(dir)) || !seen.insert(path.clone()) {
+        let is_excluded = excluded.iter().any(|(norm, canon)| {
+            path.starts_with(norm)
+                || canonical.starts_with(norm)
+                || canon
+                    .as_ref()
+                    .is_some_and(|dir| path.starts_with(dir) || canonical.starts_with(dir))
+        });
+
+        if is_excluded || !seen.insert(canonical) {
             continue;
         }
 
@@ -247,9 +287,10 @@ fn local(address: &str) -> Option<PathBuf> {
     rest.starts_with('/').then(|| PathBuf::from(rest))
 }
 
-// `value` with its `%XX` escapes read as bytes; an escape that is not one is kept as it is
+// `value` with XML character/named entities unescaped first, then `%XX` escapes read as bytes
 fn decoded(value: &str) -> String {
-    let bytes = value.as_bytes();
+    let unescaped = unescape_xml(value);
+    let bytes = unescaped.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;
 
@@ -271,6 +312,58 @@ fn decoded(value: &str) -> String {
     }
 
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn unescape_xml(value: &str) -> String {
+    if !value.contains('&') {
+        return value.to_owned();
+    }
+
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        let limit = after.len().min(16);
+
+        if let Some(semi) = after.as_bytes()[..limit].iter().position(|&b| b == b';')
+            && !after[..semi].contains('&')
+            && let Some(ch) = xml_entity(&after[..semi])
+        {
+            out.push(ch);
+            rest = &after[semi + 1..];
+        } else {
+            out.push('&');
+            rest = after;
+        }
+    }
+
+    out.push_str(rest);
+    out
+}
+
+fn xml_entity(entity: &str) -> Option<char> {
+    match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => {
+            let code = if let Some(hex) = entity
+                .strip_prefix("#x")
+                .or_else(|| entity.strip_prefix("#X"))
+            {
+                u32::from_str_radix(hex, 16).ok()?
+            } else {
+                let dec = entity.strip_prefix('#')?;
+                dec.parse::<u32>().ok()?
+            };
+
+            char::from_u32(code).filter(|&ch| ch != '\0')
+        }
+    }
 }
 
 // the file `path` names, once it is a regular file this user can read; none otherwise
@@ -498,5 +591,123 @@ mod tests {
         assert!(file.matches("notes kanade"));
         assert!(file.matches("projects txt"));
         assert!(!file.matches("notes other"));
+    }
+
+    #[test]
+    fn xml_entities_in_xbel_uris_are_decoded_before_percent_decoding() {
+        let dir = temp("xml-entities");
+        let special = dir.join("R&D's \"notes\" <v1>.txt");
+        fs::write(&special, b"ok").expect("a file");
+
+        let text = format!(
+            r#"<xbel><bookmark href="file://{}/R&amp;D&apos;s%20&quot;notes&quot;%20&lt;v1&gt;.txt"/></xbel>"#,
+            dir.display()
+        );
+        let found = shelf(&text, &[]);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, special);
+
+        // Numeric entities decode, and double-escaping stays single-pass.
+        assert_eq!(
+            decoded("file:///a/&#38;&#x27;&amp;apos;%20b.txt"),
+            "file:///a/&'&apos; b.txt"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unescape_xml_handles_multibyte_utf8_across_scan_limit() {
+        let path = "file:///tmp/a&日本語テスト123456.txt";
+        assert_eq!(unescape_xml(path), path);
+        assert_eq!(decoded(path), path);
+
+        let with_semi = "file:///tmp/a&日本語;テスト123456.txt";
+        assert_eq!(unescape_xml(with_semi), with_semi);
+        assert_eq!(decoded(with_semi), with_semi);
+
+        assert_eq!(
+            decoded("file:///tmp/a&日本語テスト&amp;123456.txt"),
+            "file:///tmp/a&日本語テスト&123456.txt"
+        );
+    }
+
+    #[test]
+    fn symlinked_state_cache_and_runtime_previews_are_excluded() {
+        let dir = temp("symlinks");
+        let real_root = dir.join("real");
+        let real_state = real_root.join("state").join("kanade");
+        let real_cache = real_root.join("cache").join("kanade");
+        let real_runtime = dir.join("runtime");
+        let clip_preview = real_runtime.join("kanade-clipboard").join("123");
+        let notif_preview = real_runtime.join("kanade-notifications").join("123");
+        let link_home = dir.join("home");
+        let docs = dir.join("docs");
+
+        fs::create_dir_all(&real_state).unwrap();
+        fs::create_dir_all(&real_cache).unwrap();
+        fs::create_dir_all(&clip_preview).unwrap();
+        fs::create_dir_all(&notif_preview).unwrap();
+        fs::create_dir_all(link_home.join(".local")).unwrap();
+        fs::create_dir_all(&docs).unwrap();
+
+        std::os::unix::fs::symlink(real_root.join("state"), link_home.join(".local/state"))
+            .unwrap();
+        std::os::unix::fs::symlink(real_root.join("cache"), link_home.join(".cache")).unwrap();
+
+        let state_file = real_state.join("emoji-recents");
+        let cache_file = real_cache.join("weather.json");
+        let clip_file = clip_preview.join("1.png");
+        let notif_file = notif_preview.join("2.png");
+        let outside_file = docs.join("notes.txt");
+        let symlink_into_cache = docs.join("leaked-cache.json");
+
+        fs::write(&state_file, b"state").unwrap();
+        fs::write(&cache_file, b"cache").unwrap();
+        fs::write(&clip_file, b"png").unwrap();
+        fs::write(&notif_file, b"png").unwrap();
+        fs::write(&outside_file, b"public").unwrap();
+        std::os::unix::fs::symlink(&cache_file, &symlink_into_cache).unwrap();
+
+        let skip = contained_from(|var| match var {
+            "HOME" => Some(link_home.as_os_str().to_owned()),
+            "XDG_RUNTIME_DIR" => Some(real_runtime.as_os_str().to_owned()),
+            _ => None,
+        });
+
+        // Both symlinked (~/.local/state/kanade/...) and canonical (/real/cache/kanade/...) paths
+        // plus clipboard/notification runtime previews and symlinks pointing into excluded dirs
+        // must be excluded, while ordinary files stay visible.
+        let via_symlink_state = link_home.join(".local/state/kanade/emoji-recents");
+        let via_symlink_cache = link_home.join(".cache/kanade/weather.json");
+        let text = format!(
+            concat!(
+                r#"<xbel>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"<bookmark href="file://{}"/>"#,
+                r#"</xbel>"#,
+            ),
+            via_symlink_state.display(),
+            state_file.display(),
+            via_symlink_cache.display(),
+            cache_file.display(),
+            clip_file.display(),
+            notif_file.display(),
+            symlink_into_cache.display(),
+            outside_file.display(),
+        );
+
+        let files = shelf(&text, &skip);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, outside_file);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

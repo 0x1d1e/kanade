@@ -268,10 +268,14 @@ impl Input {
         !matches!(self, Input::Wheel(_))
     }
 
-    // the user's own choice, which takes a pending AutoExpand over; the island's timers and a
-    // Preempt are policy, not choice
+    // the user's own choice, which takes a pending AutoExpand over; the island's timers, a
+    // Preempt, and releasing a prior `peek down` hold are not choices taking the AutoExpand over
     pub fn claims(self) -> bool {
-        self.decides() && !matches!(self, Input::Hover(_) | Input::Unhover | Input::Preempt)
+        self.decides()
+            && !matches!(
+                self,
+                Input::Hover(_) | Input::Unhover | Input::Preempt | Input::Release
+            )
     }
 }
 
@@ -335,6 +339,25 @@ impl Prior {
         self.0
             .iter()
             .any(|(_, raised, _, _)| *raised == Some(Raised::Expanded(surface)))
+    }
+
+    // whether `monitor` had an active `peek down` hold saved before AutoExpand
+    pub fn holds(&self, monitor: &str) -> bool {
+        self.0
+            .iter()
+            .any(|(name, _, _, held)| name == monitor && *held)
+    }
+
+    // clears a saved `peek down` hold for `monitor` when `peek up` arrives during AutoExpand
+    pub fn clear_held(&mut self, monitor: &str) {
+        for (name, raised, pinned, held) in &mut self.0 {
+            if name == monitor && *held {
+                *held = false;
+                if !*pinned && matches!(raised, Some(Raised::Peek(_) | Raised::Tray)) {
+                    *raised = None;
+                }
+            }
+        }
     }
 }
 
@@ -699,7 +722,9 @@ impl Presentations {
             .islands
             .iter()
             .filter(|&(name, island)| {
-                name == monitor || matches!(island.raised, Some(Raised::Expanded(_)))
+                name == monitor
+                    || island.pinned
+                    || matches!(island.raised, Some(Raised::Expanded(_)))
             })
             .map(|(name, island)| {
                 (
@@ -714,6 +739,11 @@ impl Presentations {
         self.expand(monitor, surface);
 
         Some(Prior(prior))
+    }
+
+    // clears a saved `peek down` hold in `prior` without claiming AutoExpand
+    pub fn clear_held_in_prior(prior: &mut Prior, monitor: &str) {
+        prior.clear_held(monitor);
     }
 
     /*
@@ -1743,6 +1773,25 @@ mod tests {
         assert_eq!(presentations.get(MONITOR), Rest);
         assert_eq!(presentations.visit(), visit + 1);
         assert_eq!(presentations.expanded(), Some((OTHER, Controls)));
+    }
+
+    #[test]
+    fn restore_brings_back_a_pinned_peek_on_another_monitor() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_shown(OTHER, Some(id(Kind::Media)), None);
+        presentations.input(OTHER, Input::RightClick(Primary));
+        assert_eq!(presentations.get(OTHER), Peek);
+        assert!(presentations.pinned(OTHER));
+
+        let prior = presentations.auto_expand(MONITOR, Notifications).unwrap();
+        assert_eq!(presentations.get(OTHER), Compact);
+        assert!(!presentations.pinned(OTHER));
+
+        presentations.restore(prior);
+        assert_eq!(presentations.get(OTHER), Peek);
+        assert!(presentations.pinned(OTHER));
+        assert_eq!(presentations.peeked(OTHER), Some(&id(Kind::Media)));
     }
 
     // media primary and a timer Satellite on MONITOR, after these inputs

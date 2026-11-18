@@ -231,6 +231,8 @@ impl Service for Prompt {
     fn new() -> Self {
         Self::default()
     }
+
+    fn listen() {}
 }
 
 // start answering polkit: on the system bus, where polkit itself is, and as the lock engages,

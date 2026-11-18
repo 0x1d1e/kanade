@@ -133,14 +133,19 @@ impl OpenWindow {
     pub fn resize(&mut self, width: u32, height: u32) {
         let visible = match &self.role {
             Role::Layer { settings, .. } => {
+                let ui = crate::ui_scale::ui_scale();
+                crate::clock::set(self.frame_clock.probe_now(Instant::now()));
                 let (content, reads) =
-                    frame::run_view(|| self.view.run(), width as f32, height as f32);
+                    frame::run_view(|| self.view.run(), width as f32 / ui, height as f32 / ui);
+                crate::clock::clear();
                 self.reads = reads;
                 let visible = self.shown(&content);
                 if !visible {
                     if self.configured.is_none() {
                         self.configured = Some((1, 1));
-                        self.clear_to_hidden();
+                        if self.clear_to_hidden() {
+                            crate::graphics::after_frame();
+                        }
                         self.width = 0;
                         self.height = 0;
                         return;

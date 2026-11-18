@@ -1602,3 +1602,89 @@ fn set(focus: Focus) {
 
     store(focus);
 }
+
+// clears any Wi-Fi password draft once Controls closes or the session locks
+pub fn follow() {
+    let close_password =
+        IslandService::read().surface() != Some(Surface::Controls) || crate::lock::holds();
+    if !close_password {
+        return;
+    }
+
+    let mut focus = Focus::write();
+    if matches!(focus.sub, Some(Subsurface::Password { .. })) {
+        *focus = Focus::default();
+        drop(focus);
+        wireless::unwatch();
+    } else {
+        focus.quiet();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::island::presentation::Input;
+
+    #[test]
+    fn password_subsurface_clears_when_controls_closes_or_lock_holds() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "surfaces::controls::tests::password_subsurface_clears_child",
+                "--nocapture",
+            ])
+            .env("KANADE_TEST_CONTROLS_PASSWORD", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn password_subsurface_clears_child() {
+        if std::env::var_os("KANADE_TEST_CONTROLS_PASSWORD").is_none() {
+            return;
+        }
+
+        let now = Instant::now();
+        {
+            let mut island = IslandService::write();
+            island.set_niri(Some(String::from("eDP-1")), false, now);
+            island.open("eDP-1", Surface::Controls, now);
+        }
+
+        let visit = IslandService::read().visit();
+        let mut focus = Focus::read().of(visit, true).into_password("corp-wifi");
+        if let Some(Subsurface::Password { secret, .. }) = &mut focus.sub {
+            secret.push('s');
+            secret.push('3');
+        }
+        *Focus::write() = focus;
+
+        follow();
+        assert!(matches!(
+            Focus::read().sub,
+            Some(Subsurface::Password { .. })
+        ));
+
+        // Closing Controls clears the Wi-Fi password subsurface immediately.
+        IslandService::write().input("eDP-1", Input::Collapse, now);
+        follow();
+        assert_eq!(Focus::read().sub, None);
+
+        // Locking the session clears the Wi-Fi password even while Controls is open.
+        IslandService::write().open("eDP-1", Surface::Controls, now);
+        let visit = IslandService::read().visit();
+        let mut focus = Focus::read().of(visit, true).into_password("corp-wifi");
+        if let Some(Subsurface::Password { secret, .. }) = &mut focus.sub {
+            secret.push('p');
+            secret.push('w');
+        }
+        *Focus::write() = focus;
+
+        crate::lock::pending_fixture();
+        assert!(crate::lock::holds());
+        follow();
+        assert_eq!(Focus::read().sub, None);
+    }
+}

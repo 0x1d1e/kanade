@@ -131,14 +131,18 @@ pub fn ranked(providers: &[&dyn LauncherProvider], query: &str) -> Vec<Answer> {
 pub fn ordered(mut answers: Vec<Answer>, query: &str) -> Vec<Answer> {
     let query = query.trim();
 
-    // Fit remains the outer ordering; scores sort only answers in the same tier. `sort_by`
-    // is stable, so a provider's own order breaks score ties.
+    // Non-filler answers rank ahead of `passes_query` fillers (`false < true`); Fit remains the
+    // outer ordering across real answers and scores sort only within the same tier. `sort_by` is
+    // stable, so a provider's own order breaks score ties.
     answers.sort_by(|left, right| {
-        left.fit.cmp(&right.fit).then_with(|| {
-            let left_score = match_score(query, &left.title).unwrap_or(i32::MIN);
-            let right_score = match_score(query, &right.title).unwrap_or(i32::MIN);
-            right_score.cmp(&left_score)
-        })
+        left.filler
+            .cmp(&right.filler)
+            .then_with(|| left.fit.cmp(&right.fit))
+            .then_with(|| {
+                let left_score = match_score(query, &left.title).unwrap_or(i32::MIN);
+                let right_score = match_score(query, &right.title).unwrap_or(i32::MIN);
+                right_score.cmp(&left_score)
+            })
     });
 
     answers

@@ -1220,19 +1220,28 @@ mod tests {
 
         const TEST: &str =
             "sources::clipboard::tests::put_private_fallback_arms_and_clears_on_failure";
-        if std::env::var_os("KANADE_CLIPBOARD_PUT_CHILD").is_none() {
+        let Some(dir_os) = std::env::var_os("KANADE_CLIPBOARD_PUT_DIR") else {
+            let dir =
+                std::env::temp_dir().join(format!("kanade-clipboard-put-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let prev_path = std::env::var_os("PATH").unwrap_or_default();
+            let joined = std::env::join_paths(
+                std::iter::once(dir.clone()).chain(std::env::split_paths(&prev_path)),
+            )
+            .unwrap();
             let status = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
-                .env("KANADE_CLIPBOARD_PUT_CHILD", "1")
+                .env("KANADE_CLIPBOARD_PUT_DIR", &dir)
+                .env("PATH", joined)
                 .status()
                 .unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
             assert!(status.success());
             return;
-        }
+        };
 
-        let dir = std::env::temp_dir().join(format!("kanade-clipboard-put-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::path::PathBuf::from(dir_os);
         let helper = dir.join("wl-copy");
 
         // Fail `--sensitive` (exit 1), succeed without `--sensitive`.
@@ -1242,14 +1251,6 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-        let prev_path = std::env::var_os("PATH").unwrap_or_default();
-        let joined = std::env::join_paths(
-            std::iter::once(dir.clone()).chain(std::env::split_paths(&prev_path)),
-        )
-        .unwrap();
-        // SAFETY: isolated single-threaded child process.
-        unsafe { std::env::set_var("PATH", joined) };
 
         Clipboard::write().clear();
         put_private("fallback secret", true).unwrap();

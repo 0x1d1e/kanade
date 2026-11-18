@@ -115,7 +115,8 @@ impl OpenWindow {
         // Present a 1x1 transparent frame to clear visual contents without unmapping.
         // Keeping the surface mapped with exclusive zone 0, empty input region, and size 1x1
         // completely avoids Smithay's unmap configure reset race (wrong configure serial).
-        if !self.clear_to_hidden() {
+        let cleared = self.clear_to_hidden();
+        if !cleared {
             self.role.commit();
         }
 
@@ -127,6 +128,10 @@ impl OpenWindow {
         self.frame_requested = false;
 
         self.gpu.release_images();
+
+        if cleared {
+            crate::graphics::after_frame();
+        }
     }
 }
 

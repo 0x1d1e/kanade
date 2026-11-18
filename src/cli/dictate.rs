@@ -8,6 +8,8 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
+use zeroize::{Zeroize, Zeroizing};
+
 use super::{Reply, complain, print};
 use crate::sources::dictation::Request;
 use crate::sources::dictation::gate::{self, Key};
@@ -41,7 +43,7 @@ pub fn run(request: Request) -> ExitCode {
  */
 fn key() -> Result<String, String> {
     let stdin = io::stdin();
-    let line = if stdin.is_terminal() {
+    let line: Zeroizing<String> = if stdin.is_terminal() {
         eprint!("Gemini API key (hidden): ");
         drop(io::stderr().flush());
 
@@ -66,8 +68,8 @@ fn key() -> Result<String, String> {
     Ok(said)
 }
 
-fn read_line() -> Result<String, String> {
-    let mut line = String::new();
+fn read_line() -> Result<Zeroizing<String>, String> {
+    let mut line = Zeroizing::new(String::with_capacity(LINE as usize));
 
     io::stdin()
         .lock()
@@ -81,9 +83,9 @@ fn read_line() -> Result<String, String> {
 /*
  * runs `read` with the terminal not echoing, not turning Ctrl-C into a signal (it is read as a
  * key, so `read` can stop and the terminal is restored; a signal would leave it silent) and not
- * waiting for a line. The settings it had are put back after, even for a failed read.
+ * waiting for a line. Refuses if stty cannot hide terminal echo; restores the saved settings after.
  */
-fn hidden<T>(read: impl FnOnce() -> T) -> T {
+fn hidden<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let stty = |arguments: &[&str], output: Stdio| {
         Command::new("stty")
             .args(arguments)
@@ -93,46 +95,60 @@ fn hidden<T>(read: impl FnOnce() -> T) -> T {
             .output()
     };
 
-    // `stty -g` prints the settings in a form `stty` takes back
-    let saved = Command::new("stty")
-        .arg("-g")
-        .stdin(Stdio::inherit())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|saved| saved.trim().to_owned())
-        .filter(|saved| !saved.is_empty());
+    hidden_with(
+        || {
+            stty(&["-g"], Stdio::piped())
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|saved| saved.trim().to_owned())
+                .filter(|saved| !saved.is_empty())
+        },
+        |arguments| stty(arguments, Stdio::null()).is_ok_and(|output| output.status.success()),
+        read,
+    )
+}
 
-    let hidden = saved.is_some()
-        && stty(
-            &["-echo", "-isig", "-icanon", "min", "1", "time", "0"],
-            Stdio::null(),
-        )
-        .is_ok_and(|output| output.status.success());
+fn hidden_with<T>(
+    save: impl FnOnce() -> Option<String>,
+    apply: impl Fn(&[&str]) -> bool,
+    read: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let saved = save();
+
+    let hidden = saved.is_some() && apply(&["-echo", "-isig", "-icanon", "min", "1", "time", "0"]);
 
     if !hidden {
-        eprintln!("(cannot hide the typing: stty failed)");
+        if let Some(saved) = saved {
+            let _ = apply(&[saved.as_str()]);
+        }
+
+        return Err(String::from(
+            "cannot hide terminal echo; pipe the key via stdin instead",
+        ));
     }
 
     let read = read();
 
     if let Some(saved) = saved {
-        drop(stty(&[saved.as_str()], Stdio::null()));
+        let _ = apply(&[saved.as_str()]);
     }
 
     read
 }
 
 // a line typed with the terminal as `hidden` leaves it: Ctrl-C or Ctrl-D cancels, Backspace edits
-fn read_secret() -> Result<String, String> {
-    let mut line = Vec::new();
+fn read_secret() -> Result<Zeroizing<String>, String> {
     let mut stdin = io::stdin().lock();
-    let mut byte = [0u8; 1];
+    read_secret_from(&mut stdin)
+}
+
+fn read_secret_from(reader: &mut impl Read) -> Result<Zeroizing<String>, String> {
+    let mut line = Zeroizing::new(Vec::<u8>::with_capacity(LINE as usize));
+    let mut byte = Zeroizing::new([0u8; 1]);
 
     loop {
-        match stdin.read(&mut byte) {
+        match reader.read(&mut *byte) {
             Ok(0) => break,
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -143,13 +159,26 @@ fn read_secret() -> Result<String, String> {
             b'\n' | b'\r' => break,
             0x03 => return Err(String::from("cancelled")),
             0x04 if line.is_empty() => return Err(String::from("cancelled")),
-            0x7f | 0x08 => drop(line.pop()),
+            0x7f | 0x08 => {
+                if let Some(last) = line.last_mut() {
+                    last.zeroize();
+                }
+                let _ = line.pop();
+            }
             other if line.len() < LINE as usize => line.push(other),
             _ => {}
         }
     }
 
-    String::from_utf8(line).map_err(|_| String::from("that is not an API key: not plain ASCII"))
+    byte.zeroize();
+
+    let bytes = std::mem::take(&mut *line);
+    String::from_utf8(bytes)
+        .map(Zeroizing::new)
+        .map_err(|error| {
+            error.into_bytes().zeroize();
+            String::from("that is not an API key: not plain ASCII")
+        })
 }
 
 /*
@@ -208,5 +237,73 @@ fn forget() -> Result<String, String> {
         .flatten()
         .collect::<Vec<_>>()
         .join("; ")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn hidden_refuses_when_stty_cannot_hide_echo() {
+        let called = Cell::new(false);
+        let result = hidden_with(
+            || None,
+            |_| true,
+            || {
+                called.set(true);
+                Ok(Zeroizing::new(String::from("secret")))
+            },
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "cannot hide terminal echo; pipe the key via stdin instead"
+        );
+        assert!(!called.get());
+
+        let restored = RefCell::new(Vec::new());
+        let result = hidden_with(
+            || Some(String::from("saved-mode")),
+            |args| {
+                if args == ["saved-mode"] {
+                    restored.borrow_mut().push(args[0].to_owned());
+                    true
+                } else {
+                    false
+                }
+            },
+            || {
+                called.set(true);
+                Ok(Zeroizing::new(String::from("secret")))
+            },
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "cannot hide terminal echo; pipe the key via stdin instead"
+        );
+        assert!(!called.get());
+        assert_eq!(*restored.borrow(), ["saved-mode"]);
+    }
+
+    #[test]
+    fn read_secret_handles_backspace_cancel_and_non_utf8() {
+        let mut cursor = Cursor::new(b"ab\x7fc\n");
+        let secret = read_secret_from(&mut cursor).unwrap();
+        assert_eq!(secret.as_str(), "ac");
+
+        let mut cancelled = Cursor::new(b"ab\x03");
+        assert_eq!(read_secret_from(&mut cancelled).unwrap_err(), "cancelled");
+
+        let mut eof_empty = Cursor::new(b"\x04");
+        assert_eq!(read_secret_from(&mut eof_empty).unwrap_err(), "cancelled");
+
+        let mut bad_utf8 = Cursor::new(b"\xff\xfe\n");
+        assert_eq!(
+            read_secret_from(&mut bad_utf8).unwrap_err(),
+            "that is not an API key: not plain ASCII"
+        );
     }
 }

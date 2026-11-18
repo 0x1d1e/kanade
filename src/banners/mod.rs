@@ -70,8 +70,8 @@ const FADE_SCALE: f32 = 0.92;
 // how each output's Banners move, kept between draws
 static MOTIONS: LazyLock<Mutex<HashMap<String, Motion>>> = LazyLock::new(Mutex::default);
 
-// per output, which captured pane each Banner uses
-static PANES: LazyLock<Mutex<HashMap<String, Panes>>> = LazyLock::new(Mutex::default);
+// monitor-independent reply field slot per Banner id, kept until the Banner leaves Banners
+static PANES: LazyLock<Mutex<Panes>> = LazyLock::new(Mutex::default);
 
 // the tallest a Banner gets, as its text lays out the same for good
 static TALLEST: OnceLock<f32> = OnceLock::new();
@@ -231,6 +231,10 @@ impl Banners {
         self.stack.contains(id)
     }
 
+    pub fn ids(&self) -> Vec<u32> {
+        self.stack.ids()
+    }
+
     pub fn close(&mut self, id: u32, now: Instant) {
         self.stack.close(id, now);
         nudge();
@@ -315,7 +319,6 @@ pub fn forget_gone() {
     let monitors = Monitors::read();
 
     MOTIONS.locked().retain(|monitor, _| monitors.has(monitor));
-    PANES.locked().retain(|monitor, _| monitors.has(monitor));
 
     // the Banners those outputs left out have room again
     let left = {
@@ -402,13 +405,16 @@ pub fn silence(now: Instant) {
  */
 pub fn window(monitor: &Monitor) -> LayerWindow {
     // reading subscribes this window to the Banners
-    let shown = Banners::read().shown_on(&monitor.name);
-
-    // the ones waiting behind them, which the column counts under the cards
-    let queued = if shown.is_empty() {
-        0
-    } else {
-        Banners::read().queued()
+    let (shown, queued, mut keep) = {
+        let banners = Banners::read();
+        let shown = banners.shown_on(&monitor.name);
+        // the ones waiting behind them, which the column counts under the cards
+        let queued = if shown.is_empty() {
+            0
+        } else {
+            banners.queued()
+        };
+        (shown, queued, banners.ids())
     };
 
     let now = Instant::now();
@@ -550,6 +556,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         if motion.is_empty() {
             motions.remove(&monitor.name);
         }
+        keep.extend(motions.values().flat_map(Motion::ids));
 
         /*
          * oldest first, so a new one comes out over the others, and one gone is let go from among
@@ -560,26 +567,25 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         (placed, moving)
     };
 
-    // each Banner's reply field slot, kept while it shows
+    // each Banner's reply field slot, kept across focus moves until it leaves Banners and fades out
     let (panes, freed) = {
-        let mut all = PANES.locked();
-        let panes = all.entry(monitor.name.clone()).or_default();
+        let mut panes = PANES.locked();
         let ids: Vec<u32> = placed.iter().map(|placed| placed.banner.id).collect();
-        let freed = panes.follow(&ids);
+        let freed = panes.follow(&ids, &keep);
 
         (panes.by.clone(), freed)
     };
 
     for pane in freed {
         // what was typed there is not for the Banner that takes the pane next
-        let field = reply_field(&monitor.name, pane);
+        let field = reply_field(pane);
         TextInput::blur_if_focused(field);
         TextInput::set_text(field, "");
     }
 
     // A reply field becomes keyboard interactive only after its own click focuses it. Reply
     // capability alone must not let an arriving layer window take application focus.
-    let keyboard = banner_keyboard(&placed, &monitor.name, &panes, TextInput::is_focused);
+    let keyboard = banner_keyboard(&placed, &panes, TextInput::is_focused);
 
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
     let mut areas = Vec::new();
@@ -664,7 +670,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                         &placed.banner,
                         &now_look,
                         card_height,
-                        reply_field(&monitor.name, panes[&placed.banner.id]),
+                        reply_field(panes[&placed.banner.id]),
                         &roles,
                     ),
                 ])
@@ -754,7 +760,6 @@ fn reply_keyboard(focused: bool) -> Keyboard {
 
 fn banner_keyboard(
     placed: &[motion::Placed],
-    monitor: &str,
     panes: &HashMap<u32, usize>,
     is_focused: impl Fn(&'static str) -> bool,
 ) -> Keyboard {
@@ -762,25 +767,24 @@ fn banner_keyboard(
         let Some(pane) = panes.get(&placed.banner.id) else {
             return false;
         };
-        placed.banner.reply.is_some() && is_focused(reply_field(monitor, *pane))
+        !placed.leaving && placed.banner.reply.is_some() && is_focused(reply_field(*pane))
     }))
 }
 
-fn reply_field(monitor: &str, pane: usize) -> &'static str {
-    static NAMES: LazyLock<Mutex<HashMap<(String, usize), &'static str>>> =
-        LazyLock::new(Mutex::default);
+fn reply_field(pane: usize) -> &'static str {
+    static NAMES: LazyLock<Mutex<HashMap<usize, &'static str>>> = LazyLock::new(Mutex::default);
 
-    // the runtime keeps a field's text under its name, which must be one per output and pane;
-    // a name lives as long as the shell, and there are few outputs and panes
+    // the runtime keeps a field's text under its name, keyed by Banner slot across outputs;
+    // a name lives as long as the shell, and there are few panes
     NAMES
         .locked()
-        .entry((monitor.to_owned(), pane))
-        .or_insert_with(|| Box::leak(format!("banner-reply-{monitor}-{pane}").into_boxed_str()))
+        .entry(pane)
+        .or_insert_with(|| Box::leak(format!("banner-reply-{pane}").into_boxed_str()))
 }
 
 /*
- * which reply field each Banner on an output uses: stable while it shows, with the lowest free
- * slot assigned to a new Banner
+ * which reply field slot each Banner uses: stable across monitor focus moves while it remains in
+ * Banners or fading out, with the lowest free slot assigned to a new Banner
  */
 #[derive(Debug, Default)]
 struct Panes {
@@ -788,18 +792,20 @@ struct Panes {
 }
 
 impl Panes {
-    // follows the Banners `ids` drawn now; says the panes let go, even one another Banner took
-    fn follow(&mut self, ids: &[u32]) -> Vec<usize> {
+    // follows the Banners `assign` placed on this output while retaining `keep` (shown, queued,
+    // or still fading out across outputs); says the panes let go, even one another Banner took
+    fn follow(&mut self, assign: &[u32], keep: &[u32]) -> Vec<usize> {
         let mut freed: Vec<usize> = self
             .by
             .iter()
-            .filter(|(id, _)| !ids.contains(id))
+            .filter(|(id, _)| !keep.contains(id) && !assign.contains(id))
             .map(|(_, pane)| *pane)
             .collect();
 
-        self.by.retain(|id, _| ids.contains(id));
+        self.by
+            .retain(|id, _| keep.contains(id) || assign.contains(id));
 
-        for id in ids {
+        for id in assign {
             if !self.by.contains_key(id) {
                 let free = (0..)
                     .find(|pane| !self.by.values().any(|taken| taken == pane))
@@ -1510,6 +1516,7 @@ fn send(id: u32, field: &'static str, text: &str) {
     } else {
         TextInput::set_text(field, "");
         TextInput::blur_if_focused(field);
+        draft(id, false);
     }
 }
 
@@ -1563,14 +1570,13 @@ fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
 
 #[cfg(test)]
 mod tests {
-    use super::{Keyboard, Urgency, banner_keyboard, reply_field};
+    use std::time::Instant;
 
-    // the runtime keeps a field's text under its name, so two outputs showing a reply must not share one
-    #[test]
-    fn reply_keyboard_uses_the_focused_reply_identity() {
-        let panes = [(7, 0)].into_iter().collect();
-        let banner = super::stack::Banner {
-            id: 7,
+    use super::{Banner, Banners, Keyboard, Panes, Urgency, banner_keyboard, reply_field};
+
+    fn reply_banner(id: u32) -> Banner {
+        Banner {
+            id,
             version: 0,
             toast: Default::default(),
             urgency: Urgency::Normal,
@@ -1580,32 +1586,64 @@ mod tests {
             history: false,
             bypass_dnd: false,
             timeout: None,
-        };
+        }
+    }
+
+    // the runtime keeps a field's text under its name, matched to the focused reply slot
+    #[test]
+    fn reply_keyboard_uses_the_focused_reply_identity() {
+        let panes = [(7, 0)].into_iter().collect();
+        let banner = reply_banner(7);
         let placed = [super::motion::Placed {
             banner: banner.clone(),
             out: 1.0,
             slot: 0.0,
             leaving: false,
         }];
-        let field = reply_field("test", 0);
+        let field = reply_field(0);
 
+        assert_eq!(banner_keyboard(&placed, &panes, |_| false), Keyboard::None);
         assert_eq!(
-            banner_keyboard(&placed, "test", &panes, |_| false),
-            Keyboard::None
-        );
-        assert_eq!(
-            banner_keyboard(&placed, "test", &panes, |id| id == field),
+            banner_keyboard(&placed, &panes, |id| id == field),
             Keyboard::OnDemand
         );
     }
 
     #[test]
-    fn a_reply_field_is_one_per_output_and_pane() {
-        assert_ne!(reply_field("eDP-1", 0), reply_field("HDMI-A-5", 0));
-        assert_ne!(reply_field("eDP-1", 0), reply_field("eDP-1", 1));
-        assert!(std::ptr::eq(
-            reply_field("eDP-1", 0),
-            reply_field("eDP-1", 0)
-        ));
+    fn a_reply_field_keeps_its_identity_across_monitor_focus_moves_until_banner_leaves() {
+        let now = Instant::now();
+        let mut banners = Banners {
+            stack: Default::default(),
+            focused_output: Some(String::from("eDP-1")),
+            fitted: Default::default(),
+        };
+        banners.arrive(reply_banner(7), false, now);
+
+        let mut panes = Panes::default();
+        let shown_edp: Vec<u32> = banners.shown_on("eDP-1").iter().map(|b| b.id).collect();
+        assert_eq!(shown_edp, [7]);
+        assert!(panes.follow(&shown_edp, &banners.ids()).is_empty());
+
+        let slot = panes.by[&7];
+        let field = reply_field(slot);
+
+        // Moving focus to HDMI-A-1 drops the banner from eDP-1's shown list, while Banners still
+        // keeps it: neither eDP-1's empty draw nor HDMI-A-1's draw frees or changes the field.
+        banners.focus(Some(String::from("HDMI-A-1")), now);
+        let shown_edp: Vec<u32> = banners.shown_on("eDP-1").iter().map(|b| b.id).collect();
+        assert!(shown_edp.is_empty());
+        assert!(panes.follow(&shown_edp, &banners.ids()).is_empty());
+
+        let shown_hdmi: Vec<u32> = banners.shown_on("HDMI-A-1").iter().map(|b| b.id).collect();
+        assert_eq!(shown_hdmi, [7]);
+        assert!(panes.follow(&shown_hdmi, &banners.ids()).is_empty());
+        assert_eq!(panes.by[&7], slot);
+        assert!(std::ptr::eq(reply_field(panes.by[&7]), field));
+
+        // Only once the banner leaves Banners completely is the slot freed.
+        banners.close(7, now);
+        assert!(!banners.contains(7));
+        assert_eq!(panes.follow(&[], &banners.ids()), [slot]);
+        assert!(!panes.by.contains_key(&7));
     }
 }

@@ -48,7 +48,7 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
 };
 use wayland_protocols::wp::viewporter::client::wp_viewport::{self, WpViewport};
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::paint::{self, Faces, Field, Look};
 use crate::picture;
@@ -150,8 +150,8 @@ struct State {
     control: bool,
     caps_lock: bool,
 
-    // the password typed, as UTF-8, zeroed whenever it empties
-    password: Vec<u8>,
+    // the password typed, as UTF-8, zeroed whenever it empties or drops
+    password: Zeroizing<Vec<u8>>,
 
     // the caret shows, and the timer blinking it while locked
     caret: bool,
@@ -298,7 +298,7 @@ fn connect(
         pointer: None,
         control: false,
         caps_lock: false,
-        password: Vec::with_capacity(LONGEST),
+        password: Zeroizing::new(Vec::with_capacity(LONGEST)),
         caret: true,
         blink: None,
         refused: None,
@@ -1074,7 +1074,7 @@ impl State {
         }
 
         // typed from keysyms, so it is UTF-8; otherwise its copy is zeroed and nothing sent
-        let password = match String::from_utf8(self.password.clone()) {
+        let password = match String::from_utf8((*self.password).clone()) {
             Ok(password) => password,
             Err(error) => {
                 error.into_bytes().zeroize();

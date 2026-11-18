@@ -5,7 +5,7 @@ use wayland_client::{
 
 use crate::changes::{self, Reads};
 use crate::graphics::Gpu;
-use crate::input::{Pointer, focus, released};
+use crate::input::{KeyboardState, Pointer, focus, released};
 use crate::ui_scale;
 use crate::unpoisoned::MutexExt;
 use crate::window::OPEN;
@@ -248,6 +248,7 @@ impl WaylandState {
             window.keyboard_ready.leave();
         }
         self.modifiers = Modifiers::default();
+        KeyboardState::clear_caps_lock();
 
         focus::clear();
         released::send();

@@ -12,12 +12,23 @@ use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
 use syn::{
-    Attribute, Expr, ExprCall, ExprMethodCall, ExprPath, ImplItemFn, Item, ItemMod, ItemUse, Lit,
-    LitStr, Macro, Meta, MetaList, Path as SynPath, Token, UseRename, UseTree,
+    Attribute, Expr, ExprCall, ExprMethodCall, ExprPath, Ident, ImplItemFn, Item, ItemMod, ItemUse,
+    Lit, LitStr, Macro, Meta, MetaList, Path as SynPath, Token, UseRename, UseTree,
 };
+
+fn ident_name(ident: &Ident) -> String {
+    ident.unraw().to_string()
+}
+
+fn path_is_ident(path: &SynPath, name: &str) -> bool {
+    path.leading_colon.is_none()
+        && path.segments.len() == 1
+        && ident_name(&path.segments[0].ident) == name
+}
 
 // Strip labels are source text only. Window titles and app ids must go through content(),
 // whose Structure-mode redaction is exercised by the runtime's semantic-tree tests.
@@ -27,7 +38,7 @@ fn strip_semantic_labels_cannot_publish_window_content() {
     struct Labels(Vec<String>);
     impl<'ast> Visit<'ast> for Labels {
         fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
-            if call.method == "label"
+            if ident_name(&call.method) == "label"
                 && !matches!(call.args.first(), Some(Expr::Lit(lit)) if matches!(lit.lit, Lit::Str(_)))
             {
                 self.0
@@ -88,6 +99,15 @@ impl Checker {
         }
     }
 
+    fn check_use_segments(&mut self, segments: &[String]) {
+        self.check_segments(segments);
+
+        if segments.len() == 1 && segments.iter().any(|s| s == SERVICE) {
+            self.violations
+                .push(format!("uses service: {}", segments.join("::")));
+        }
+    }
+
     // macro bodies are opaque to syn, so rebuild the `a::b::c` paths from tokens and apply
     // the same rules; a lone `kanade_runtime` identifier is rejected anywhere
     fn check_tokens(&mut self, tokens: TokenStream) {
@@ -96,7 +116,7 @@ impl Checker {
         while let Some(token) = tokens.next() {
             match token {
                 TokenTree::Ident(ident) => {
-                    let mut segments = vec![ident.to_string()];
+                    let mut segments = vec![ident_name(&ident)];
 
                     while let Some(next) = take_path_segment(&mut tokens) {
                         segments.push(next);
@@ -132,19 +152,19 @@ fn take_path_segment(tokens: &mut Peekable<proc_macro2::token_stream::IntoIter>)
 
     *tokens = lookahead;
 
-    Some(ident.to_string())
+    Some(ident_name(&ident))
 }
 
 fn flatten(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
     match tree {
         UseTree::Path(path) => {
-            prefix.push(path.ident.to_string());
+            prefix.push(ident_name(&path.ident));
             flatten(&path.tree, prefix, out);
             prefix.pop();
         }
-        UseTree::Name(name) => out.push([prefix.as_slice(), &[name.ident.to_string()]].concat()),
+        UseTree::Name(name) => out.push([prefix.as_slice(), &[ident_name(&name.ident)]].concat()),
         UseTree::Rename(rename) => {
-            out.push([prefix.as_slice(), &[rename.ident.to_string()]].concat());
+            out.push([prefix.as_slice(), &[ident_name(&rename.ident)]].concat());
         }
         UseTree::Glob(_) => out.push(prefix.clone()),
         UseTree::Group(group) => {
@@ -162,12 +182,12 @@ impl<'ast> Visit<'ast> for Checker {
         flatten(&item.tree, &mut Vec::new(), &mut paths);
 
         for segments in paths {
-            self.check_segments(&segments);
+            self.check_use_segments(&segments);
         }
     }
 
     fn visit_path(&mut self, path: &'ast SynPath) {
-        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let segments: Vec<String> = path.segments.iter().map(|s| ident_name(&s.ident)).collect();
 
         self.check_segments(&segments);
 
@@ -182,7 +202,7 @@ impl<'ast> Visit<'ast> for Checker {
             .path
             .segments
             .last()
-            .is_some_and(|s| s.ident == "include")
+            .is_some_and(|s| ident_name(&s.ident) == "include")
         {
             self.violations
                 .push("include! escapes the checked tree".into());
@@ -214,15 +234,16 @@ impl<'ast> Visit<'ast> for Checker {
     }
 
     fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
-        self.violations.push(format!("extern crate {}", item.ident));
+        self.violations
+            .push(format!("extern crate {}", ident_name(&item.ident)));
     }
 }
 
 // `#[path = ..]` directly or smuggled in `#[cfg_attr(.., path = ..)]`, however deeply nested
 fn has_path_attr(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        attr.path().is_ident("path")
-            || attr.path().is_ident("cfg_attr")
+        path_is_ident(attr.path(), "path")
+            || path_is_ident(attr.path(), "cfg_attr")
                 && matches!(&attr.meta, Meta::List(list) if mentions(list.tokens.clone(), "path"))
     })
 }
@@ -230,7 +251,7 @@ fn has_path_attr(attrs: &[Attribute]) -> bool {
 // whether any identifier, in a macro too, is `name`; comments are no tokens
 fn mentions(tokens: TokenStream, name: &str) -> bool {
     tokens.into_iter().any(|token| match token {
-        TokenTree::Ident(ident) => ident == name,
+        TokenTree::Ident(ident) => ident_name(&ident) == name,
         TokenTree::Group(group) => mentions(group.stream(), name),
         _ => false,
     })
@@ -397,7 +418,7 @@ impl Literals {
         while let Some(token) = tokens.next() {
             match token {
                 TokenTree::Ident(ident) => {
-                    let mut segments = vec![ident.to_string()];
+                    let mut segments = vec![ident_name(&ident)];
 
                     while let Some(next) = take_path_segment(&mut tokens) {
                         segments.push(next);
@@ -446,7 +467,7 @@ impl Literals {
                     }
                 }
                 TokenTree::Ident(ident) => {
-                    let mut segments = vec![ident.to_string()];
+                    let mut segments = vec![ident_name(&ident)];
 
                     while let Some(next) = take_path_segment(&mut tokens) {
                         segments.push(next);
@@ -482,8 +503,8 @@ fn hex(text: &str) -> bool {
 // `#[test]`, or a `#[cfg(..)]` that holds only under test, like `cfg(all(test, unix))`
 fn test_only(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        attr.path().is_ident("test")
-            || attr.path().is_ident("cfg")
+        path_is_ident(attr.path(), "test")
+            || path_is_ident(attr.path(), "cfg")
                 && attr
                     .parse_args::<Meta>()
                     .is_ok_and(|meta| needs_test(&meta))
@@ -493,16 +514,16 @@ fn test_only(attrs: &[Attribute]) -> bool {
 // a cfg predicate that is false outside test builds
 fn needs_test(meta: &Meta) -> bool {
     let Meta::List(list) = meta else {
-        return meta.path().is_ident("test");
+        return path_is_ident(meta.path(), "test");
     };
 
     let Ok(args) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) else {
         return false;
     };
 
-    if list.path.is_ident("all") {
+    if path_is_ident(&list.path, "all") {
         args.iter().any(needs_test)
-    } else if list.path.is_ident("any") {
+    } else if path_is_ident(&list.path, "any") {
         !args.is_empty() && args.iter().all(needs_test)
     } else {
         false
@@ -537,7 +558,7 @@ fn literal(expr: &Expr) -> bool {
 }
 
 fn segments(path: &SynPath) -> Vec<String> {
-    path.segments.iter().map(|s| s.ident.to_string()).collect()
+    path.segments.iter().map(|s| ident_name(&s.ident)).collect()
 }
 
 // every `use .. Color as X`, so `X::WHITE` is caught too
@@ -545,8 +566,8 @@ struct Renames(HashSet<String>);
 
 impl<'ast> Visit<'ast> for Renames {
     fn visit_use_rename(&mut self, rename: &'ast UseRename) {
-        if rename.ident == COLOR {
-            self.0.insert(rename.rename.to_string());
+        if ident_name(&rename.ident) == COLOR {
+            self.0.insert(ident_name(&rename.rename));
         }
     }
 }
@@ -609,7 +630,7 @@ impl<'ast> Visit<'ast> for Literals {
      * string handed to `into` is the one other way the runtime makes one
      */
     fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
-        if call.method == "into"
+        if ident_name(&call.method) == "into"
             && let Expr::Lit(literal) = &*call.receiver
             && let Lit::Str(text) = &literal.lit
             && hex(&text.value())
@@ -668,8 +689,8 @@ fn module_names(tokens: TokenStream, out: &mut Vec<String>) {
 
         let [
             TokenTree::Ident(module),
-            TokenTree::Punct(_),
-            TokenTree::Punct(_),
+            TokenTree::Punct(first),
+            TokenTree::Punct(second),
             TokenTree::Ident(on),
             TokenTree::Group(call),
         ] = tokens[at..].iter().take(5).collect::<Vec<_>>()[..]
@@ -677,12 +698,19 @@ fn module_names(tokens: TokenStream, out: &mut Vec<String>) {
             continue;
         };
 
-        if module != "modules" || on != "on" || call.delimiter() != Delimiter::Parenthesis {
+        if first.as_char() != ':'
+            || second.as_char() != ':'
+            || ident_name(module) != "modules"
+            || ident_name(on) != "on"
+            || call.delimiter() != Delimiter::Parenthesis
+        {
             continue;
         }
 
-        if let Some(TokenTree::Literal(name)) = call.stream().into_iter().next() {
-            out.push(name.to_string().trim_matches('"').to_owned());
+        if let Some(TokenTree::Literal(name)) = call.stream().into_iter().next()
+            && let Ok(text) = syn::parse_str::<LitStr>(&name.to_string())
+        {
+            out.push(text.value());
         }
     }
 }
@@ -721,7 +749,7 @@ fn module_names_are_in_the_catalog() {
 
 #[cfg(test)]
 mod checker {
-    use super::{WAYLAND, color_literals, mentions, violations};
+    use super::{WAYLAND, color_literals, mentions, module_names, violations};
 
     fn flagged(source: &str, depth: usize) -> bool {
         !violations(source, depth).is_empty()
@@ -742,7 +770,15 @@ mod checker {
         assert!(flagged("use super::service::IslandService;", 1));
         assert!(flagged("use super::service as s;", 1));
         assert!(flagged("use crate::island::service::IslandService;", 1));
+        assert!(flagged("use service;", 1));
+        assert!(flagged("use service::*;", 1));
+        assert!(flagged("use service as s;", 1));
+        assert!(flagged("use r#service::x;", 1));
+        assert!(flagged("use r#service::*;", 1));
+        assert!(flagged("use r#kanade_runtime::x;", 1));
         assert!(flagged("fn f() { let _ = service::IslandService; }", 1));
+        assert!(flagged("fn f() { let _ = r#service::IslandService; }", 1));
+        assert!(!flagged("fn f() { let service = 1; let _ = service; }", 1));
     }
 
     #[test]
@@ -812,6 +848,7 @@ mod checker {
         let named = |source: &str| mentions(source.parse().unwrap(), WAYLAND);
 
         assert!(named("use wayland_client::Connection;"));
+        assert!(named("use r#wayland_client::Connection;"));
         assert!(named("extern crate wayland_client as w;"));
         assert!(named(
             "fn f() { let _ = vec![::wayland_client::Connection::connect_to_env()]; }"
@@ -819,6 +856,15 @@ mod checker {
         assert!(!named(
             "// wayland_client\nfn f() { let _ = \"wayland_client\"; }"
         ));
+
+        let mut modules = Vec::new();
+        module_names(
+            r##"fn f() { r#modules::r#on(r#"island"#); }"##
+                .parse()
+                .unwrap(),
+            &mut modules,
+        );
+        assert_eq!(modules, ["island"]);
     }
 
     #[test]

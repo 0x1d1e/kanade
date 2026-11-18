@@ -130,11 +130,11 @@ pub struct Fields<'a> {
 }
 
 impl Launch {
-    // whether the entry's `Exec` has a file code, so a drop on it starts something
+    // whether the entry's `Exec` has a file code and no `Path`, so a drop on it starts something
     pub fn takes_files(&self) -> bool {
         self.command
             .as_ref()
-            .is_some_and(|command| command.files.is_some())
+            .is_some_and(|command| command.files.is_some() && command.dir.is_none())
     }
 
     // none for an entry that cannot start: no `Exec` that parses, nor a bus name to activate
@@ -230,8 +230,9 @@ impl Launch {
     }
 
     /*
-     * passes absolute existing paths as arguments to niri's `Spawn`; entries needing a shell or
-     * that take no files are skipped. This blocks on niri, so run it off the view thread.
+     * passes absolute existing paths as arguments directly (niri's `Spawn`, or direct argv process
+     * spawn under Umbriel), never through a shell; entries needing `Path` or that take no files
+     * are skipped. This blocks on niri, so run it off the view thread.
      */
     pub fn run_files(&self, files: &[PathBuf]) -> Result<(), String> {
         let command = self
@@ -271,14 +272,7 @@ impl Launch {
             }
 
             if super::compositor::active() == super::compositor::Compositor::Umbriel {
-                let shell = format!(
-                    "exec {}",
-                    argv.iter()
-                        .map(|arg| quoted(arg))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                super::umbriel::spawn(&shell)?;
+                spawn_direct(&argv)?;
             } else {
                 act(&spawn(&argv))?;
             }
@@ -452,6 +446,36 @@ fn spawn(argv: &[String]) -> String {
         r#"{{"Action":{{"Spawn":{{"command":{}}}}}}}"#,
         json::Json::from(argv)
     )
+}
+
+// spawns `argv` directly without a shell and reaps the child in a detached thread
+fn spawn_direct(argv: &[String]) -> Result<(), String> {
+    let Some((program, args)) = argv.split_first() else {
+        return Err(String::from("empty argv"));
+    };
+
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("{program}: {error}"))?;
+
+    std::thread::Builder::new()
+        .name("launch-files".into())
+        .spawn(move || match child.wait() {
+            Ok(status) if !status.success() => {
+                eprintln!("launch: command failed ({status})");
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("launch: wait: {error}"),
+        })
+        .map(drop)
+        .map_err(|error| format!("launch: {error}"))
 }
 
 // the dropped files as arguments: an absolute path, as UTF-8 for niri, to something that exists
@@ -1125,6 +1149,19 @@ mod tests {
         .unwrap();
 
         assert!(launch.validate().is_ok());
+    }
+
+    #[test]
+    fn takes_files_rejects_entries_with_path() {
+        let without_path = Launch::of(&fields("viewer %F")).unwrap();
+        assert!(without_path.takes_files());
+
+        let with_path = Launch::of(&Fields {
+            path: Some("/tmp"),
+            ..fields("viewer %F")
+        })
+        .unwrap();
+        assert!(!with_path.takes_files());
     }
 
     #[test]

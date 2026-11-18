@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 //! Kanade's runtime: the Wayland event loop, windows, input, layout, drawing
 //! and the Service store every view reads (ADR 0028). Third-party licenses
 //! are listed in THIRD_PARTY_NOTICES.md.
