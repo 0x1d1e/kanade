@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::service::Service;
 
 // a screen the compositor shows windows on, handed to views made once per monitor
@@ -14,6 +16,7 @@ pub struct Monitor {
 #[derive(Debug, Default)]
 pub struct Monitors {
     all: Vec<Monitor>,
+    origins: HashMap<String, (i32, i32)>,
 }
 
 impl Monitors {
@@ -23,6 +26,10 @@ impl Monitors {
 
     pub fn has(&self, name: &str) -> bool {
         self.all.iter().any(|monitor| monitor.name == name)
+    }
+
+    pub fn origin(&self, name: &str) -> Option<(i32, i32)> {
+        self.origins.get(name).copied()
     }
 
     pub fn publish(all: Vec<Monitor>) {
@@ -41,11 +48,16 @@ impl Service for Monitors {
 
 // the monitors as they now are; the same again changes nothing
 pub(crate) fn publish(all: Vec<Monitor>) {
+    publish_with_origins(all, HashMap::new());
+}
+
+pub(crate) fn publish_with_origins(all: Vec<Monitor>, origins: HashMap<String, (i32, i32)>) {
     let mut monitors = Monitors::write();
 
-    if monitors.all == all {
+    if monitors.all == all && monitors.origins == origins {
         monitors.quiet();
     } else {
         monitors.all = all;
+        monitors.origins = origins;
     }
 }

@@ -208,6 +208,11 @@ impl Stack {
 
     // fullscreen silence came on or off; quiet Banners wait, then show with a fresh time, and the
     // sound they skipped is not played. false when it already was
+    #[cfg(test)]
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+
     pub fn set_held(&mut self, held: bool, now: Instant) -> bool {
         if self.held == held {
             return false;

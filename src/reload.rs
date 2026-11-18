@@ -25,7 +25,7 @@ use crate::atomic::{self, Mode};
 use crate::config::{self, Config, Place};
 use crate::hooks::{self, Event};
 use crate::island::service::IslandService;
-use crate::{appearance, dock, modules, settings, sources, supervise, view};
+use crate::{appearance, modules, settings, sources, supervise, view};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -99,14 +99,6 @@ pub fn spawn() {
 }
 
 /*
- * whether the Modules read again what lives outside the config: one turned on or off, or the weather
- * moved to another place, which its thread learns only from this (ADR 0017)
- */
-fn rereads(running: &Config, next: &Config) -> bool {
-    next.off != running.off || next.location != running.location
-}
-
-/*
  * reads every layer again and applies them if they hold no problem; says on stderr what came of it.
  * The paths whose contents applied are kept for `status`, and handed to the worker to write, so no
  * file is written on the thread that draws a frame
@@ -156,15 +148,7 @@ pub fn reload() -> Outcome {
                 config::announce();
             }
 
-            // only when a module was turned on or off; a reload that changed nothing else is a no-op
-            if rereads(&running, &next) {
-                modules::reread();
-            } else if next.pinned != running.pinned && modules::on("dock") {
-                // `rereads` leaves out a change only to `dock.pinned`, which the Dock's own hook
-                // publishes: after the install above, its views draw the order the config names
-                // (ADR 0160). When `rereads` runs, that hook does it already
-                dock::pin();
-            }
+            modules::reread();
 
             state.generation += 1;
             state.error = None;
@@ -522,15 +506,65 @@ fn relevant(watches: &HashMap<WatchDescriptor, Vec<Want>>, event: &inotify::Even
 
 #[cfg(test)]
 mod tests {
-    // the weather thread learns of a new place only from this: it read the old one back otherwise
     #[test]
-    fn a_new_weather_location_makes_the_modules_read_again() {
-        let running = Config::default();
-        let mut next = running.clone();
-        assert!(!rereads(&running, &next));
+    fn reload_runs_module_hooks_when_weather_location_is_unchanged() {
+        use std::process::Command;
 
-        next.location = Some(config::Location::new(11.56, 104.92).unwrap());
-        assert!(rereads(&running, &next));
+        const CHILD: &str =
+            "reload::tests::reload_runs_module_hooks_when_weather_location_is_unchanged_child";
+        let root = env_dir("modules-reread");
+        let xdg_config = root.join("config");
+        let xdg_state = root.join("state");
+        let xdg_data = root.join("data");
+        let kanade_config = xdg_config.join("kanade");
+        fs::create_dir_all(&kanade_config).unwrap();
+        fs::create_dir_all(&xdg_state).unwrap();
+        fs::create_dir_all(&xdg_data).unwrap();
+        fs::write(
+            kanade_config.join("config.toml"),
+            format!(
+                "schema_version = {}\n\n[ui]\ndescribe = \"content\"\n\n[night-light]\nmode = \"on\"\n",
+                config::SCHEMA_VERSION
+            ),
+        )
+        .unwrap();
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CHILD, "--nocapture"])
+            .env("KANADE_TEST_RELOAD_REREAD", "1")
+            .env("HOME", &root)
+            .env("XDG_CONFIG_HOME", &xdg_config)
+            .env("XDG_STATE_HOME", &xdg_state)
+            .env("XDG_DATA_HOME", &xdg_data)
+            .status()
+            .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn reload_runs_module_hooks_when_weather_location_is_unchanged_child() {
+        if std::env::var_os("KANADE_TEST_RELOAD_REREAD").is_none() {
+            return;
+        }
+
+        let running = Config::default();
+        modules::resolve_fixture(&running);
+        config::install(running);
+        crate::ui::reread();
+        assert_eq!(
+            kanade_runtime::ui::mode(),
+            kanade_runtime::ui::Mode::Structure
+        );
+        let revision = sources::night_light::revision();
+
+        assert_eq!(reload(), Outcome::Valid(Vec::new()));
+        assert_eq!(
+            kanade_runtime::ui::mode(),
+            kanade_runtime::ui::Mode::Content
+        );
+        assert!(sources::night_light::revision() > revision);
     }
 
     use std::fs;

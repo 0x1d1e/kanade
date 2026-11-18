@@ -15,7 +15,6 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::sources::niri::Niri;
 use crate::sources::notifications::{Notification, Notifications, Urgency};
 use kanade_runtime::idle::{Idle, PRESENCE};
 use kanade_runtime::queue::Nudge;
@@ -262,6 +261,16 @@ impl Banners {
     pub fn queued(&self) -> usize {
         self.stack.queued()
     }
+
+    #[cfg(test)]
+    pub fn focused_output(&self) -> Option<&str> {
+        self.focused_output.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn is_held(&self) -> bool {
+        self.stack.is_held()
+    }
 }
 
 /*
@@ -276,9 +285,9 @@ pub fn active(monitor: &str) -> bool {
     showing(monitor)
 }
 
-// a watcher of `Niri`: the Banners follow the focus to its output; the same again changes nothing
+// a watcher of the selected compositor: the Banners follow the focus to its output; the same again changes nothing
 pub fn follow_focus() {
-    let focused = Niri::read().seen.focused_output.clone();
+    let focused = crate::sources::compositor::focused_output();
     let mut banners = Banners::write();
 
     if banners.focused_output == focused {

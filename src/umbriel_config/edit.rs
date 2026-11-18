@@ -128,9 +128,14 @@ impl Node<'_> {
     }
 }
 
+pub(crate) fn unbom(text: &str) -> (&str, &str) {
+    text.split_at(text.len() - text.trim_start_matches('\u{feff}').len())
+}
+
 /// Retrieves the formatted string value at `path` from `text`.
 pub fn get(text: &str, path: &str) -> Result<String, String> {
-    let doc = text
+    let (_, body) = unbom(text);
+    let doc = body
         .parse::<DocumentMut>()
         .map_err(|e| format!("cannot parse TOML: {e}"))?;
     let segments = parse_path(path)?;
@@ -172,14 +177,15 @@ pub fn get(text: &str, path: &str) -> Result<String, String> {
 ///
 /// Returns `Ok(Some(new_text))` if changed, or `Ok(None)` if the value was already identical.
 pub fn set(text: &str, path: &str, value_str: &str) -> Result<Option<String>, String> {
-    let mut doc = text
+    let (bom, body) = unbom(text);
+    let mut doc = body
         .parse::<DocumentMut>()
         .map_err(|e| format!("cannot parse TOML: {e}"))?;
     let segments = parse_path(path)?;
     let new_val = parse_value(value_str)?;
 
     // Check if already set to same value
-    if let Ok(existing) = get(text, path) {
+    if let Ok(existing) = get(body, path) {
         let new_rendered = new_val.to_string().trim().to_string();
         if existing == new_rendered {
             return Ok(None);
@@ -187,7 +193,7 @@ pub fn set(text: &str, path: &str, value_str: &str) -> Result<Option<String>, St
     }
 
     set_in_doc(&mut doc, &segments, new_val)?;
-    Ok(Some(doc.to_string()))
+    Ok(Some(format!("{bom}{doc}")))
 }
 
 enum MutNode<'a> {
@@ -203,12 +209,22 @@ fn set_in_doc(doc: &mut DocumentMut, segments: &[Segment], val: Value) -> Result
     let (last_seg, parents) = segments.split_last().unwrap();
     let mut current = MutNode::Item(doc.as_item_mut());
 
-    for seg in parents {
+    for (depth, seg) in parents.iter().enumerate() {
         current = match (current, seg) {
             (MutNode::Item(Item::Table(t)), Segment::Key(k))
             | (MutNode::Table(t), Segment::Key(k)) => {
                 if !t.contains_key(k) {
+                    // Keep trailing `[include]` / `[include.optional]` at the end of the root
+                    // table so included overrides (like appearance sync's `kanade.toml`) still win.
+                    let trailing_include = (depth == 0
+                        && k != "include"
+                        && t.iter().last().is_some_and(|(key, _)| key == "include"))
+                    .then(|| t.remove_entry("include"))
+                    .flatten();
                     t.insert(k, Item::Table(Table::new()));
+                    if let Some((inc_key, inc_item)) = trailing_include {
+                        t.insert_formatted(&inc_key, inc_item);
+                    }
                 }
                 MutNode::Item(t.get_mut(k).unwrap())
             }
@@ -260,7 +276,8 @@ fn set_in_doc(doc: &mut DocumentMut, segments: &[Segment], val: Value) -> Result
 ///
 /// Returns `Ok(Some(new_text))` if removed, or `Ok(None)` if the key was not set.
 pub fn remove(text: &str, path: &str) -> Result<Option<String>, String> {
-    let mut doc = text
+    let (bom, body) = unbom(text);
+    let mut doc = body
         .parse::<DocumentMut>()
         .map_err(|e| format!("cannot parse TOML: {e}"))?;
     let segments = parse_path(path)?;
@@ -310,7 +327,7 @@ pub fn remove(text: &str, path: &str) -> Result<Option<String>, String> {
     };
 
     if removed {
-        Ok(Some(doc.to_string()))
+        Ok(Some(format!("{bom}{doc}")))
     } else {
         Ok(None)
     }

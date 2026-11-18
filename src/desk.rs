@@ -110,7 +110,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     // the card off, nothing is typed into it: what was typed is kept, and the file is not read
     if !config.desk_notes {
-        notes::close();
+        notes::close_on(&monitor.name);
     }
 
     // each face reads its Service only while its switch is on. Weather and the agenda add no
@@ -461,7 +461,7 @@ fn faces_on(config: &config::Config) -> bool {
 
 // no Desk on this output for now: a face being moved goes with it, and its place stays as it was
 fn hidden(corner: Corner, monitor: &str) -> LayerWindow {
-    notes::close();
+    notes::close_on(monitor);
     ring::clear(monitor);
 
     // a face being moved goes with the window, and a hovered handle is let go: written on a worker,

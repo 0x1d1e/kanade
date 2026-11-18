@@ -246,15 +246,7 @@ pub fn compositor_rect(
 }
 
 fn monitor_logical_origin(monitor_name: &str) -> (i32, i32) {
-    let Ok(reply) = crate::sources::niri::ask("\"Outputs\"") else {
-        return (0, 0);
-    };
-    let outputs = crate::settings::outputs::parse_outputs(&reply);
-    outputs
-        .iter()
-        .find(|o| o.name == monitor_name)
-        .and_then(|o| o.logical.as_ref())
-        .map_or((0, 0), |logical| (logical.x, logical.y))
+    crate::sources::compositor::output_logical_origin(monitor_name)
 }
 
 fn drag_update(monitor: &str, monitor_size: (f32, f32), point: Point) {

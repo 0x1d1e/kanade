@@ -238,6 +238,12 @@ struct Watch {
 // held for a whole read, so the watch and a reload never interleave
 static WATCH: Mutex<Option<Watch>> = Mutex::new(None);
 
+// resolved places last read, so unrelated config reloads skip re-parsing unchanged `.ics` files
+static LAST_PLACES: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+
+// true once the inotify watch fails; manual config reloads then re-read even if `places` did not
+static WATCH_FAILED: AtomicBool = AtomicBool::new(false);
+
 // what makes an event under one watch a change to the calendars
 #[derive(Debug, Clone, PartialEq)]
 enum Want {
@@ -271,6 +277,7 @@ const WATCHED_FILE: WatchMask = WatchMask::CLOSE_WRITE
 pub fn follow() {
     if let Err(error) = watch() {
         *WATCH.locked() = None;
+        WATCH_FAILED.store(true, Ordering::Relaxed);
 
         let why = format!("calendar changes are not followed, reload by hand: {error}");
 
@@ -280,12 +287,7 @@ pub fn follow() {
     }
 }
 
-/*
- * reads the calendars again from the places the config names and watches those places as they
- * are now; on the watch's thread after a change, on the reload's after a config reload
- */
-pub fn reread() {
-    let mut watch = WATCH.locked();
+fn resolved_places() -> Vec<PathBuf> {
     let mut places = places(&config::get().calendars, data_home().as_deref());
 
     // Google's, once the sync thread vouched for it and a sync made it, either then telling this
@@ -302,6 +304,34 @@ pub fn reread() {
     // the events added in the Calendar Surface, whatever `calendar.paths` names (ADR 0045)
     places.extend(add::directory());
 
+    places
+}
+
+/*
+ * reads the calendars again from the places the config names and watches those places as they
+ * are now; on the watch's thread after a change, or from google/subscriptions updates
+ */
+pub fn reread() {
+    let mut watch = WATCH.locked();
+    reread_with(&mut watch, resolved_places());
+}
+
+/*
+ * config reload hook: skips synchronous `.ics` parsing when a prior read already loaded the exact
+ * same resolved `places` list, and reads again when `calendar.paths` or source directories changed
+ */
+pub fn reread_config() {
+    let mut watch = WATCH.locked();
+    let places = resolved_places();
+
+    if !WATCH_FAILED.load(Ordering::Relaxed) && LAST_PLACES.locked().as_ref() == Some(&places) {
+        return;
+    }
+
+    reread_with(&mut watch, places);
+}
+
+fn reread_with(watch: &mut Option<Watch>, places: Vec<PathBuf>) {
     let found = find(&places);
 
     if let Some(watch) = watch.as_mut() {
@@ -319,6 +349,7 @@ pub fn reread() {
     }
 
     store(found.files.len(), own, calendars);
+    *LAST_PLACES.locked() = Some(places);
 }
 
 /*
@@ -2883,5 +2914,88 @@ mod tests {
         let found = complete(&calendars, day(2026, 10, 12), day(2026, 10, 13), plus_two);
         let starts: Vec<NaiveDateTime> = found.iter().map(|found| found.start).collect();
         assert_eq!(starts, [at(day(2026, 10, 12), 11, 0)]);
+    }
+
+    #[test]
+    fn reread_config_skips_parsing_when_places_are_unchanged_and_reloads_when_paths_change() {
+        use std::process::Command;
+
+        const CHILD: &str = "sources::calendar::tests::reread_config_skips_parsing_when_places_are_unchanged_and_reloads_when_paths_change_child";
+        let root = std::env::temp_dir().join(format!("kanade-cal-reread-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("data");
+        fs::create_dir_all(&data).unwrap();
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CHILD, "--nocapture"])
+            .env("KANADE_TEST_CAL_REREAD", root.to_str().unwrap())
+            .env("HOME", &root)
+            .env("XDG_DATA_HOME", &data)
+            .status()
+            .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn reread_config_skips_parsing_when_places_are_unchanged_and_reloads_when_paths_change_child() {
+        let Some(root) = std::env::var_os("KANADE_TEST_CAL_REREAD").map(PathBuf::from) else {
+            return;
+        };
+
+        let dir_a = root.join("cal-a");
+        let dir_b = root.join("cal-b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+
+        let sample = |uid: &str, summary: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:20261012T100000\r\nSUMMARY:{summary}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+        };
+        fs::write(dir_a.join("a1.ics"), sample("a1", "AlphaOne")).unwrap();
+        fs::write(dir_b.join("b1.ics"), sample("b1", "BetaOne")).unwrap();
+
+        let mut cfg = config::Config {
+            calendars: vec![dir_a.to_string_lossy().into_owned()],
+            ..config::Config::default()
+        };
+        config::install(cfg.clone());
+
+        reread();
+        let initial_gen = Calendars::read().generation;
+        assert_eq!(Calendars::read().files, 1);
+
+        // Adding a file on disk without changing `calendar.paths` does not re-parse on `reread_config()`.
+        fs::write(dir_a.join("a2.ics"), sample("a2", "AlphaTwo")).unwrap();
+        reread_config();
+        assert_eq!(Calendars::read().generation, initial_gen);
+        assert_eq!(Calendars::read().files, 1);
+
+        // Direct `reread()` (used by inotify/google/subscriptions) still reads everything.
+        reread();
+        let after_full = Calendars::read().generation;
+        assert_eq!(after_full, initial_gen + 1);
+        assert_eq!(Calendars::read().files, 2);
+
+        // Changing `calendar.paths` triggers a full reload in `reread_config()`.
+        cfg.calendars = vec![dir_b.to_string_lossy().into_owned()];
+        config::install(cfg);
+        reread_config();
+        let after_path_change = Calendars::read().generation;
+        assert_eq!(after_path_change, after_full + 1);
+        assert_eq!(Calendars::read().files, 1);
+        let events = Calendars::read()
+            .occurrences(day(2026, 10, 12), day(2026, 10, 13))
+            .occurrences;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].title, "BetaOne");
+
+        // Subsequent `reread_config()` with the same new `calendar.paths` skips parsing again.
+        fs::write(dir_b.join("b2.ics"), sample("b2", "BetaTwo")).unwrap();
+        reread_config();
+        assert_eq!(Calendars::read().generation, after_path_change);
+        assert_eq!(Calendars::read().files, 1);
     }
 }

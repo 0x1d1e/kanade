@@ -757,6 +757,82 @@ fn symlink_edge_cases_dangling_loop_and_read_only() {
 }
 
 #[test]
+fn cross_directory_symlink_validates_beside_symlink_for_relative_includes() {
+    let dir = Dir::new("cross-dir-symlink", "layout {\n    gaps 4\n}\n");
+    let dotfiles = dir.0.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    let real = dotfiles.join("config.kdl");
+    let link = dir.config();
+
+    fs::write(dir.0.join("niri/extra.kdl"), "prefer-no-csd\n").unwrap();
+    fs::write(&real, "layout {\n    gaps 4\n}\ninclude \"extra.kdl\"\n").unwrap();
+    fs::remove_file(&link).unwrap();
+    symlink(&real, &link).unwrap();
+
+    let seen = RefCell::new(Vec::new());
+    let validate = |file: &Path| -> Result<(), String> {
+        seen.borrow_mut().push(file.to_owned());
+        let text = fs::read_to_string(file).map_err(|e| e.to_string())?;
+        edit::parse(&text)?;
+        for (_, inc, _) in edit::includes(&text)? {
+            let resolved = file.parent().unwrap().join(inc);
+            if !resolved.exists() {
+                return Err(format!("missing include beside {}", file.display()));
+            }
+        }
+        if text.contains("reject-me") {
+            return Err(format!("reject-me in {}", file.display()));
+        }
+        Ok(())
+    };
+
+    let editor = editor(&dir, &validate);
+    editor.set("layout.gaps", "12").unwrap();
+    assert!(fs::read_to_string(&real).unwrap().contains("gaps 12"));
+
+    let seen_paths = seen.borrow();
+    assert_eq!(seen_paths[0], link);
+    assert_eq!(seen_paths[1].parent(), link.parent());
+    assert_ne!(seen_paths[1], link);
+    drop(seen_paths);
+
+    // No stray .part files in symlink dir or target dir
+    assert_eq!(dir.strays(), ["extra.kdl"]);
+    let target_strays: Vec<_> = fs::read_dir(&dotfiles)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            (name != "config.kdl").then_some(name)
+        })
+        .collect();
+    assert!(target_strays.is_empty(), "{target_strays:?}");
+
+    // Rejected candidate replaces staged basename with config.kdl and leaves no .part file
+    let err = editor.set("layout.gaps", "reject-me").unwrap_err();
+    assert!(err.contains("config.kdl"), "{err}");
+    assert!(!err.contains(".part"), "{err}");
+    assert_eq!(dir.strays(), ["extra.kdl"]);
+
+    // Read-only parent directory around symlink falls back to validating beside target
+    let ro_validate = |file: &Path| -> Result<(), String> {
+        let text = fs::read_to_string(file).map_err(|e| e.to_string())?;
+        edit::parse(&text).map(drop)
+    };
+    let ro_editor = Editor {
+        file: link.clone(),
+        state: dir.state(),
+        validate: &ro_validate,
+        now_ms: || 1_700_000_000_000,
+    };
+    let niri_dir = dir.0.join("niri");
+    fs::set_permissions(&niri_dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let res = ro_editor.set("layout.gaps", "16");
+    fs::set_permissions(&niri_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    res.unwrap();
+    assert!(fs::read_to_string(&real).unwrap().contains("gaps 16"));
+}
+
+#[test]
 fn unset_things_read_as_unset_and_flags_as_false() {
     let dir = Dir::new("get", "layout {\n    border {\n        off\n    }\n}\n");
     let seen = RefCell::new(Vec::new());

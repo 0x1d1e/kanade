@@ -36,11 +36,21 @@ pub const DEFAULT_CONFIG: &str = include_str!("../dist/umbriel/config.toml");
 
 /// Installs the default Umbriel config to `dest` if missing.
 pub fn create_default(dest: &Path) -> Result<(), String> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create directory {}: {e}", parent.display()))?;
+    if dest.starts_with("/etc")
+        || dest
+            .parent()
+            .and_then(|p| fs::canonicalize(p).ok())
+            .is_some_and(|p| p.starts_with("/etc"))
+    {
+        return Err(format!(
+            "{} is the system config, which Kanade does not write",
+            dest.display()
+        ));
     }
-    fs::write(dest, DEFAULT_CONFIG)
+    if fs::symlink_metadata(dest).is_ok() {
+        return Err(format!("{}: file already exists", dest.display()));
+    }
+    atomic::write(dest, DEFAULT_CONFIG.as_bytes(), Mode::Shared)
         .map_err(|e| format!("cannot write default config {}: {e}", dest.display()))?;
     Ok(())
 }
@@ -179,6 +189,8 @@ impl Editor<'_> {
         self.change(true, |bytes| {
             let text = std::str::from_utf8(bytes)
                 .map_err(|_| String::from("the config is not UTF-8; Umbriel would not read it"))?;
+            let includes = self.load_includes(text)?;
+            ensure_not_included(&includes, &self.file, path)?;
 
             let was = edit::get(text, path).ok();
 
@@ -200,6 +212,8 @@ impl Editor<'_> {
         self.change(true, |bytes| {
             let text = std::str::from_utf8(bytes)
                 .map_err(|_| String::from("the config is not UTF-8; Umbriel would not read it"))?;
+            let includes = self.load_includes(text)?;
+            ensure_not_included(&includes, &self.file, path)?;
 
             let was = edit::get(text, path).ok();
 
@@ -281,7 +295,7 @@ impl Editor<'_> {
 
     /// Creates the default configuration if the file does not exist yet.
     pub fn create_default(&self) -> Result<(), String> {
-        if self.file.exists() {
+        if fs::symlink_metadata(&self.file).is_ok() {
             return Err(format!("{}: file already exists", self.file.display()));
         }
         create_default(&self.file)
@@ -294,10 +308,16 @@ impl Editor<'_> {
             let mut text = std::str::from_utf8(bytes)
                 .map_err(|_| String::from("the config is not UTF-8; Umbriel would not read it"))?
                 .to_owned();
+            let includes = if changes.is_empty() {
+                Vec::new()
+            } else {
+                self.load_includes(&text)?
+            };
             let mut said = Vec::new();
             let mut written = false;
 
             for &(path, value) in changes {
+                ensure_not_included(&includes, &self.file, path)?;
                 let was = edit::get(&text, path).ok();
                 match value {
                     Some(val) => match edit::set(&text, path, val)? {
@@ -394,8 +414,11 @@ impl Editor<'_> {
         validate_original: bool,
         plan: impl FnOnce(&[u8]) -> Result<Plan, String>,
     ) -> Result<String, String> {
+        // Check before locking so `/etc`, links and missing files do not create state lockfiles,
+        // then re-check under the lock so target metadata is resolved atomically with the edit.
         self.writable()?;
         let _lock = self.lock()?;
+        let meta = self.writable()?;
         let symlink_meta = fs::symlink_metadata(&self.file)
             .map_err(|error| format!("{}: {error}", self.file.display()))?;
         let is_symlink = symlink_meta.file_type().is_symlink();
@@ -406,8 +429,6 @@ impl Editor<'_> {
         } else {
             self.file.clone()
         };
-        let meta =
-            fs::metadata(&target).map_err(|error| format!("{}: {error}", target.display()))?;
         let (snapshot, old) = Snapshot::of(&target)?;
 
         if validate_original {
@@ -433,9 +454,36 @@ impl Editor<'_> {
             )
         })?;
 
-        (self.validate)(staged.path()).map_err(|why| {
-            let part = staged
-                .path()
+        let validation_staged = if is_symlink && self.file.parent() != target.parent() {
+            let stage_file = if self
+                .file
+                .parent()
+                .is_some_and(|parent| parent.as_os_str().is_empty())
+            {
+                Path::new(".").join(&self.file)
+            } else {
+                self.file.clone()
+            };
+            match atomic::stage(&stage_file, &new, Mode::Private) {
+                Ok(val_staged) => Some(val_staged),
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot stage the change beside {}: {error}",
+                        self.file.display()
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
+        let validate_path = validation_staged
+            .as_ref()
+            .map_or_else(|| staged.path(), |s| s.path());
+
+        (self.validate)(validate_path).map_err(|why| {
+            let part = validate_path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
@@ -451,13 +499,21 @@ impl Editor<'_> {
             )
         })?;
 
+        drop(validation_staged);
+
         let ring = self.ring();
         let before = ring
             .stage(&old, (self.now_ms)())
             .map_err(|error| format!("cannot keep a backup, so nothing was changed: {error}"))?;
 
         // Read again right before committing to detect disk changes
-        let (now, _) = Snapshot::of(&target)?;
+        let (now, _) = match Snapshot::of(&target) {
+            Ok(now) => now,
+            Err(error) => {
+                ring.discard(&before);
+                return Err(error);
+            }
+        };
 
         if now.hash != snapshot.hash || now.len != snapshot.len || now.modified != snapshot.modified
         {
@@ -472,6 +528,41 @@ impl Editor<'_> {
             return Err(String::from(
                 "config symlink changed on disk since it was read; nothing was written, try again",
             ));
+        }
+
+        if !is_symlink {
+            match fs::symlink_metadata(&self.file) {
+                Ok(self_meta) if !self_meta.file_type().is_symlink() => {}
+                Ok(_) => {
+                    ring.discard(&before);
+                    return Err(String::from(
+                        "config changed to a symlink on disk since it was read; nothing was written, try again",
+                    ));
+                }
+                Err(error) => {
+                    ring.discard(&before);
+                    return Err(format!("{}: {error}", self.file.display()));
+                }
+            }
+        }
+
+        match fs::symlink_metadata(&target) {
+            Ok(target_meta)
+                if !target_meta.file_type().is_symlink()
+                    && target_meta.is_file()
+                    && target_meta.nlink() == 1
+                    && !target.starts_with("/etc") => {}
+            Ok(_) => {
+                ring.discard(&before);
+                return Err(format!(
+                    "{}: target changed to an unsafe file on disk; nothing was written, try again",
+                    target.display()
+                ));
+            }
+            Err(error) => {
+                ring.discard(&before);
+                return Err(format!("{}: {error}", target.display()));
+            }
         }
 
         let after = hash(&new);
@@ -646,6 +737,115 @@ impl Editor<'_> {
 
         Ok(meta)
     }
+
+    fn load_includes(&self, text: &str) -> Result<Vec<(PathBuf, String)>, String> {
+        let mut found = Vec::new();
+        self.walk_includes(&self.file, false, &mut Vec::new(), Some(text), &mut found)?;
+        Ok(found)
+    }
+
+    fn walk_includes(
+        &self,
+        file: &Path,
+        optional: bool,
+        walking: &mut Vec<PathBuf>,
+        given: Option<&str>,
+        found: &mut Vec<(PathBuf, String)>,
+    ) -> Result<(), String> {
+        let here = fs::canonicalize(file).unwrap_or_else(|_| file.components().collect());
+
+        if walking.contains(&here) {
+            return Err(format!("{}: includes itself", file.display()));
+        }
+
+        if walking.len() > crate::sources::binds::DEEPEST {
+            return Err(format!("{}: includes too deeply", file.display()));
+        }
+
+        let text = match given {
+            Some(text) => text.to_owned(),
+            None => {
+                match fs::symlink_metadata(file) {
+                    Ok(_) => {}
+                    Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(format!("{}: {error}", file.display())),
+                }
+                match fs::metadata(file) {
+                    Ok(meta) if meta.is_file() => {}
+                    Ok(_) if optional => return Ok(()),
+                    Ok(_) => return Err(format!("{}: is not a regular file", file.display())),
+                    Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(format!("{}: {error}", file.display())),
+                }
+                let text = fs::read_to_string(file)
+                    .map_err(|error| format!("{}: {error}", file.display()))?;
+                found.push((file.to_owned(), text.clone()));
+                text
+            }
+        };
+
+        let (_, body) = edit::unbom(&text);
+        let doc = body
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("{}: cannot parse TOML: {e}", file.display()))?;
+
+        let mut includes = Vec::new();
+        if let Some(inc) = doc.get("include") {
+            if let Some(files) = inc.get("files").and_then(|f| f.as_array()) {
+                for val in files {
+                    if let Some(s) = val.as_str() {
+                        includes.push((s.to_owned(), false));
+                    }
+                }
+            }
+            if let Some(opt) = inc.get("optional")
+                && let Some(files) = opt.get("files").and_then(|f| f.as_array())
+            {
+                for val in files {
+                    if let Some(s) = val.as_str() {
+                        includes.push((s.to_owned(), true));
+                    }
+                }
+            }
+        }
+
+        for (entry, opt) in includes {
+            let inc_path = crate::sources::binds::beside(file, &entry);
+            walking.push(here.clone());
+            let walked = self.walk_includes(&inc_path, opt, walking, None, found);
+            walking.pop();
+            walked?;
+        }
+
+        Ok(())
+    }
+}
+
+fn ensure_not_included(
+    includes: &[(PathBuf, String)],
+    self_file: &Path,
+    path: &str,
+) -> Result<(), String> {
+    edit::parse_path(path)?;
+    for (owner, inc_text) in includes {
+        if edit::get(inc_text, path).is_ok() {
+            let sync = if owner.file_name().is_some_and(|name| name == "kanade.toml") {
+                " (appearance.sync writes it)"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "{path}: set by {}{sync}, an include; Kanade edits only {}",
+                owner.display(),
+                self_file.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 const MOST_OUTPUT: u64 = 1 << 20;
@@ -663,8 +863,8 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<String
 /// Fallback TOML syntax validator when umbriel CLI is not available.
 pub fn fallback_syntax_validate(file: &Path) -> Result<(), String> {
     let content = fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    content
-        .parse::<toml_edit::DocumentMut>()
+    let (_, body) = edit::unbom(&content);
+    body.parse::<toml_edit::DocumentMut>()
         .map_err(|e| format!("syntax error: {e}"))?;
     Ok(())
 }
@@ -869,5 +1069,214 @@ gap = 8
         let config_file = config_dir.join("config.toml");
         fs::write(&config_file, "this is not valid toml = [[[").unwrap();
         assert!(fallback_syntax_validate(&config_file).is_err());
+    }
+
+    #[test]
+    fn create_default_refuses_dangling_symlink_and_etc() {
+        use std::os::unix::fs::symlink;
+
+        let (config_dir, state_dir) = test_dir("create_default_symlink");
+        let config_file = config_dir.join("config.toml");
+        let missing_target = config_dir.join("nowhere.toml");
+        symlink(&missing_target, &config_file).unwrap();
+
+        let editor = Editor {
+            file: config_file.clone(),
+            state: state_dir,
+            validate: &fallback_syntax_validate,
+            now_ms,
+        };
+
+        assert!(editor.create_default().is_err());
+        assert!(create_default(&config_file).is_err());
+        assert!(!missing_target.exists());
+        assert!(create_default(Path::new("/etc/umbriel/config.toml")).is_err());
+    }
+
+    #[test]
+    fn cross_directory_symlink_validates_beside_symlink_for_relative_includes() {
+        use std::cell::RefCell;
+        use std::os::unix::fs::symlink;
+
+        let (config_dir, state_dir) = test_dir("cross_dir_symlink");
+        let dotfiles = config_dir.parent().unwrap().join("dotfiles");
+        fs::create_dir_all(&dotfiles).unwrap();
+        let real = dotfiles.join("config.toml");
+        let link = config_dir.join("config.toml");
+        let extra = config_dir.join("extra.toml");
+
+        fs::write(&extra, "[input]\nmiddle_click_paste = true\n").unwrap();
+        fs::write(
+            &real,
+            "[layout]\ngap = 8\n\n[include]\nfiles = [\"extra.toml\"]\n",
+        )
+        .unwrap();
+        symlink(&real, &link).unwrap();
+
+        let validated_paths = RefCell::new(Vec::new());
+        let validate = |file: &Path| -> Result<(), String> {
+            validated_paths.borrow_mut().push(file.to_owned());
+            let content = fs::read_to_string(file).map_err(|e| e.to_string())?;
+            let (_, body) = edit::unbom(&content);
+            let doc = body
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| e.to_string())?;
+            let inc = doc
+                .get("include")
+                .and_then(|i| i.get("files"))
+                .and_then(|f| f.as_array())
+                .and_then(|a| a.get(0))
+                .and_then(|v| v.as_str())
+                .unwrap();
+            let resolved = file.parent().unwrap().join(inc);
+            if !resolved.exists() {
+                return Err(format!("missing include beside {}", file.display()));
+            }
+            if content.contains("reject-me") {
+                return Err(format!("reject-me in {}", file.display()));
+            }
+            Ok(())
+        };
+
+        let editor = Editor {
+            file: link.clone(),
+            state: state_dir,
+            validate: &validate,
+            now_ms,
+        };
+
+        editor.set("layout.gap", "12").unwrap();
+        assert_eq!(editor.get("layout.gap").unwrap(), "12");
+        assert!(fs::read_to_string(&real).unwrap().contains("gap = 12"));
+
+        let paths = validated_paths.borrow();
+        assert_eq!(paths[0], link);
+        assert_eq!(paths[1].parent(), link.parent());
+        assert_ne!(paths[1], link);
+        drop(paths);
+
+        // No stray .part files left beside symlink or target
+        let strays_in = |dir: &Path| -> Vec<String> {
+            fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|e| {
+                    let name = e.ok()?.file_name().to_string_lossy().into_owned();
+                    name.ends_with(".part").then_some(name)
+                })
+                .collect()
+        };
+        assert!(strays_in(&config_dir).is_empty());
+        assert!(strays_in(&dotfiles).is_empty());
+
+        // Validation failure replaces staged part name with config.toml and cleans up
+        let err = editor.set("layout.mode", "\"reject-me\"").unwrap_err();
+        assert!(err.contains("config.toml"), "{err}");
+        assert!(!err.contains(".part"), "{err}");
+        assert!(strays_in(&config_dir).is_empty());
+        assert!(strays_in(&dotfiles).is_empty());
+
+        // Read-only symlink parent falls back cleanly to validating beside target
+        let ro_validate = |file: &Path| fallback_syntax_validate(file);
+        let ro_editor = Editor {
+            file: link.clone(),
+            state: editor.state.clone(),
+            validate: &ro_validate,
+            now_ms,
+        };
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let res = ro_editor.set("layout.gap", "16");
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        res.unwrap();
+        assert!(fs::read_to_string(&real).unwrap().contains("gap = 16"));
+    }
+
+    #[test]
+    fn utf8_bom_is_preserved_across_set_remove_and_undo() {
+        let (config_dir, state_dir) = test_dir("bom");
+        let config_file = config_dir.join("config.toml");
+        let initial = "\u{feff}[layout]\ngap = 8\n";
+        fs::write(&config_file, initial).unwrap();
+
+        let editor = Editor {
+            file: config_file.clone(),
+            state: state_dir,
+            validate: &fallback_syntax_validate,
+            now_ms,
+        };
+
+        assert_eq!(editor.get("layout.gap").unwrap(), "8");
+
+        editor.set("layout.gap", "12").unwrap();
+        let after_set = fs::read_to_string(&config_file).unwrap();
+        assert!(after_set.starts_with('\u{feff}'));
+        assert!(after_set.contains("gap = 12"));
+
+        editor.undo().unwrap();
+        assert_eq!(fs::read_to_string(&config_file).unwrap(), initial);
+
+        editor.set("appearance.corner_radius", "6").unwrap();
+        let after_new = fs::read_to_string(&config_file).unwrap();
+        assert!(after_new.starts_with('\u{feff}'));
+        assert_eq!(editor.get("appearance.corner_radius").unwrap(), "6");
+
+        editor.remove("appearance.corner_radius").unwrap();
+        let after_remove = fs::read_to_string(&config_file).unwrap();
+        assert!(after_remove.starts_with('\u{feff}'));
+        assert!(editor.get("appearance.corner_radius").is_err());
+
+        editor.restore("orig").unwrap();
+        assert_eq!(fs::read_to_string(&config_file).unwrap(), initial);
+    }
+
+    #[test]
+    fn include_optional_shadows_are_refused_and_new_tables_precede_include() {
+        let (config_dir, state_dir) = test_dir("includes_and_order");
+        let config_file = config_dir.join("config.toml");
+        let kanade_file = config_dir.join("kanade.toml");
+
+        let initial = "\u{feff}[general]\nautostart = [\"kanade\"]\n\n[layout]\ngap = 8\n\n[include.optional]\nfiles = [\"kanade.toml\"]\n";
+        fs::write(&config_file, initial).unwrap();
+        fs::write(
+            &kanade_file,
+            "\u{feff}[colors]\nbackground = \"#111111ff\"\naccent_primary = \"#abcdef\"\n",
+        )
+        .unwrap();
+
+        let editor = Editor {
+            file: config_file.clone(),
+            state: state_dir,
+            validate: &fallback_syntax_validate,
+            now_ms,
+        };
+
+        // Editing a setting defined in `kanade.toml` is refused via set, remove, and apply
+        let err = editor.set("colors.background", "\"#000000\"").unwrap_err();
+        assert!(
+            err.contains("kanade.toml") && err.contains("appearance.sync"),
+            "{err}"
+        );
+        assert!(editor.remove("colors.accent_primary").is_err());
+        assert!(
+            editor
+                .apply(&[
+                    ("layout.gap", Some("16")),
+                    ("colors.background", Some("\"#000000\"")),
+                ])
+                .is_err()
+        );
+        // Batch failure wrote nothing
+        assert_eq!(fs::read_to_string(&config_file).unwrap(), initial);
+
+        // Creating a brand-new top-level table inserts it before `[include.optional]`
+        editor.set("window_rules.opacity", "0.95").unwrap();
+        let text = fs::read_to_string(&config_file).unwrap();
+        assert!(text.starts_with('\u{feff}'));
+        let window_rules_pos = text.find("[window_rules]").unwrap();
+        let include_pos = text.find("[include.optional]").unwrap();
+        assert!(
+            window_rules_pos < include_pos,
+            "expected [window_rules] before [include.optional]:\n{text}"
+        );
+        assert_eq!(editor.get("window_rules.opacity").unwrap(), "0.95");
     }
 }

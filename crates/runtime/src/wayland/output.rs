@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use smithay_client_toolkit::output::{OutputHandler, OutputInfo, OutputState};
 use wayland_client::{Connection, QueueHandle, protocol::wl_output::WlOutput};
 
@@ -79,15 +81,23 @@ impl OutputHandler for WaylandState {
 impl WaylandState {
     // every monitor there is, but one `gone`, to the Monitors Service
     pub(super) fn publish(&self, gone: Option<&WlOutput>) {
-        let all = self
-            .output
-            .outputs()
-            .filter(|output| Some(output) != gone)
-            .filter_map(|output| self.output.info(&output))
-            .map(|info| describe(&info))
-            .collect();
+        let mut all = Vec::new();
+        let mut origins = HashMap::new();
 
-        monitor::publish(all);
+        for output in self.output.outputs() {
+            if Some(&output) == gone {
+                continue;
+            }
+            let Some(info) = self.output.info(&output) else {
+                continue;
+            };
+            if let (Some(name), Some(position)) = (&info.name, info.logical_position) {
+                origins.insert(name.clone(), position);
+            }
+            all.push(describe(&info));
+        }
+
+        monitor::publish_with_origins(all, origins);
     }
 }
 

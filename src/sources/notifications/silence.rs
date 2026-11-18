@@ -155,6 +155,10 @@ fn save() -> Result<(), String> {
 
 // banners already up for a newly silenced app go, history stays; a matching rule still shows
 fn quiet_shown() {
+    if !crate::modules::on("notifications") {
+        return;
+    }
+
     let rules = config::get().notification_rules.clone();
     let ids: Vec<u32> = Notifications::read()
         .list()

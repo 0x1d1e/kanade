@@ -106,34 +106,65 @@ pub enum Provider {
 // the one Module that cannot be turned off: without it no window opens, and the runtime needs one
 pub const CORE: &str = "island";
 
-// each Surface the island opens, with the Module that draws it
-const SURFACES: [(Surface, &str); 18] = [
-    (Surface::Media, "media"),
-    (Surface::Notifications, "notification-surface"),
-    (Surface::Controls, "controls"),
-    (Surface::Launcher, "launcher"),
-    (Surface::Tray, "tray"),
-    (Surface::Clipboard, "clipboard-surface"),
-    (Surface::Calendar, "calendar-surface"),
-    (Surface::Weather, "weather-surface"),
-    (Surface::Session, "session"),
-    (Surface::Wallpapers, "wallpaper-surface"),
-    (Surface::Keys, "keys-surface"),
-    (Surface::Timer, "timer-surface"),
-    (Surface::Capture, "capture-surface"),
-    (Surface::Window, "window-surface"),
-    (Surface::Strip, "strip-surface"),
-    (Surface::Emoji, "emoji-surface"),
-    (Surface::ScreenTime, "screen-time"),
-    (Surface::Files, "files-surface"),
+// every Surface variant, kept alongside `surface_module` whose match rejects unmapped variants at compile time
+const ALL_SURFACES: [Surface; 20] = [
+    Surface::Media,
+    Surface::Notifications,
+    Surface::Controls,
+    Surface::Launcher,
+    Surface::Tray,
+    Surface::Clipboard,
+    Surface::Calendar,
+    Surface::Weather,
+    Surface::Session,
+    Surface::Wallpapers,
+    Surface::Keys,
+    Surface::Timer,
+    Surface::Capture,
+    Surface::Window,
+    Surface::Welcome,
+    Surface::Strip,
+    Surface::Emoji,
+    Surface::ScreenTime,
+    Surface::Files,
+    Surface::Auth,
 ];
+
+// the Module that draws each Surface, or `None` for core-only Surfaces
+const fn surface_module(surface: Surface) -> Option<&'static str> {
+    match surface {
+        Surface::Media => Some("media"),
+        Surface::Notifications => Some("notification-surface"),
+        Surface::Controls => Some("controls"),
+        Surface::Launcher => Some("launcher"),
+        Surface::Tray => Some("tray"),
+        Surface::Clipboard => Some("clipboard-surface"),
+        Surface::Calendar => Some("calendar-surface"),
+        Surface::Weather => Some("weather-surface"),
+        Surface::Session => Some("session"),
+        Surface::Wallpapers => Some("wallpaper-surface"),
+        Surface::Keys => Some("keys-surface"),
+        Surface::Timer => Some("timer-surface"),
+        Surface::Capture => Some("capture-surface"),
+        Surface::Window => Some("window-surface"),
+        Surface::Welcome => None,
+        Surface::Strip => Some("strip-surface"),
+        Surface::Emoji => Some("emoji-surface"),
+        Surface::ScreenTime => Some("screen-time"),
+        Surface::Files => Some("files-surface"),
+        Surface::Auth => Some("polkit"),
+    }
+}
 
 // the Surfaces whose Module is off, which the island never opens
 fn withheld() -> Vec<Surface> {
-    SURFACES
-        .iter()
-        .filter(|(_, module)| !on(module))
-        .map(|&(surface, _)| surface)
+    withheld_when(on)
+}
+
+fn withheld_when(is_on: impl Fn(&str) -> bool) -> Vec<Surface> {
+    ALL_SURFACES
+        .into_iter()
+        .filter(|&surface| surface_module(surface).is_some_and(|module| !is_on(module)))
         .collect()
 }
 
@@ -758,5 +789,29 @@ mod tests {
         }
 
         assert_eq!(ALL[0].name, CORE);
+    }
+
+    #[test]
+    fn every_surface_maps_to_a_module_and_polkit_off_withholds_auth() {
+        for (at, &surface) in ALL_SURFACES.iter().enumerate() {
+            assert!(
+                ALL_SURFACES[..at].iter().all(|other| *other != surface),
+                "{surface:?} twice in ALL_SURFACES"
+            );
+            if let Some(name) = surface_module(surface) {
+                assert!(
+                    ALL.iter().any(|module| module.name == name),
+                    "{surface:?} maps to unknown module {name}"
+                );
+            } else {
+                assert_eq!(surface, Surface::Welcome);
+            }
+        }
+
+        let off = resolve(ALL, |name| name == "polkit");
+        assert!(withheld_when(|name| off.on(name)).contains(&Surface::Auth));
+
+        let on = resolve(ALL, |_| false);
+        assert!(!withheld_when(|name| on.on(name)).contains(&Surface::Auth));
     }
 }

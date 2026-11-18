@@ -378,20 +378,9 @@ fn commit_open(path: PathBuf, size: (u32, u32), monitor: String) {
 // the focused output's name, else the first monitor compositor lists; none with no monitor to show on
 fn focused_monitor() -> Option<String> {
     let monitors = kanade_runtime::Monitors::read();
-    let focused = crate::sources::niri::Niri::read()
-        .seen
-        .focused_output
-        .clone()
+    crate::sources::compositor::focused_output()
         .filter(|name| monitors.has(name))
-        .or_else(|| {
-            crate::sources::umbriel::Umbriel::read()
-                .seen
-                .focused_output
-                .clone()
-                .filter(|name| monitors.has(name))
-        });
-
-    focused.or_else(|| monitors.all().first().map(|monitor| monitor.name.clone()))
+        .or_else(|| monitors.all().first().map(|monitor| monitor.name.clone()))
 }
 
 // the screenshot's size in pixels, refusing a file too large to read or an image too large to draw

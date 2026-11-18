@@ -26,14 +26,11 @@ pub struct Fullscreen {
 }
 
 // a watcher of the selected compositor: the window each output shows; the same again changes nothing.
-// niri's stream is the one while it is connected; otherwise Umbriel's snapshot, which is empty until
-// that stream says a window
 pub fn follow_shown() {
-    let niri = Niri::read();
-    let shown = if niri.connected {
-        niri.seen.shown.clone()
-    } else {
-        Umbriel::read().seen.shown.clone()
+    let shown = match super::compositor::active() {
+        super::compositor::Compositor::Umbriel => Umbriel::read().seen.shown.clone(),
+        super::compositor::Compositor::Niri => Niri::read().seen.shown.clone(),
+        super::compositor::Compositor::None => BTreeMap::new(),
     };
     let mut fullscreen = Fullscreen::write();
 

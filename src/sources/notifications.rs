@@ -445,11 +445,7 @@ pub fn fullscreen_quiet() -> bool {
 
 // the focused output's shown window is fullscreen and fills it
 fn output_covered() -> bool {
-    let Some(name) = crate::sources::niri::Niri::read()
-        .seen
-        .focused_output
-        .clone()
-    else {
+    let Some(name) = crate::sources::compositor::focused_output() else {
         return false;
     };
     let monitors = kanade_runtime::Monitors::read();

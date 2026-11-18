@@ -664,8 +664,8 @@ notifications dnd on until <HH:MM>
         verbs: &[],
         start: |app| {
             service::watch::<Monitors>(banners::forget_gone);
-            service::watch::<Niri>(banners::follow_focus);
-            service::watch::<Niri>(banners::follow_cover);
+            crate::sources::compositor::watch_focus(banners::follow_focus);
+            crate::sources::compositor::watch_focus(banners::follow_cover);
             service::watch::<kanade_runtime::Toplevels>(banners::follow_cover);
             service::watch::<crate::sources::fullscreen::Fullscreen>(banners::follow_cover);
             service::watch::<kanade_runtime::idle::Idle>(banners::presence_changed);
@@ -1036,7 +1036,7 @@ notifications dnd on until <HH:MM>
         needs: &[],
         settings: config::CALENDAR,
         hooks: Hooks {
-            reload: Some(calendar::reread),
+            reload: Some(calendar::reread_config),
             ..Hooks::NONE
         },
         verbs: &[],

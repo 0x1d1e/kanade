@@ -176,10 +176,17 @@ pub struct Umbriel {
     raw_windows: Vec<Json>,
     raw_workspaces: Vec<Json>,
     output_widths: HashMap<String, f64>,
+    output_origins: HashMap<String, (i32, i32)>,
     // Security prompts require fresh explicit focus on an output in the current snapshot.
     // seen.focused_output intentionally retains navigation's remembered/first-output fallback.
     confirmed_output: Option<String>,
     output_names: BTreeSet<String>,
+}
+
+impl Umbriel {
+    pub fn output_origin(&self, name: &str) -> Option<(i32, i32)> {
+        self.output_origins.get(name).copied()
+    }
 }
 
 impl Service for Umbriel {
@@ -247,6 +254,45 @@ pub fn outputs() -> Result<Json, String> {
     let reply = request(r#"{"cmd":"outputs"}"#)?;
     decode_response(&reply.to_string())?;
     Ok(reply)
+}
+
+fn parse_output_origin(out: &Json) -> Option<(i32, i32)> {
+    if out.get("enabled").and_then(Json::as_bool) == Some(false) {
+        return None;
+    }
+
+    let position = out.get("position")?;
+    let x = position.get("x")?.as_i64()?.try_into().ok()?;
+    let y = position.get("y")?.as_i64()?.try_into().ok()?;
+    Some((x, y))
+}
+
+/// Returns the logical `(x, y)` origin for an output from Umbriel's cache or IPC query.
+pub fn output_logical_origin(name: &str) -> Option<(i32, i32)> {
+    if let Some(origin) = Umbriel::read().output_origin(name) {
+        return Some(origin);
+    }
+
+    let reply = outputs().ok()?;
+    let listed = reply.get("ok").and_then(Json::as_array)?;
+    listed
+        .iter()
+        .find(|out| out.get("name").and_then(Json::as_str) == Some(name))
+        .and_then(parse_output_origin)
+}
+
+/// Selects the focused (or first enabled) output name from an Umbriel `outputs` reply.
+pub(crate) fn focused_output_from_outputs(reply: &Json) -> Option<String> {
+    let listed = reply.get("ok").and_then(Json::as_array)?;
+    let enabled = |out: &&Json| out.get("enabled").and_then(Json::as_bool) != Some(false);
+
+    listed
+        .iter()
+        .filter(enabled)
+        .find(|out| out.get("focused").and_then(Json::as_bool) == Some(true))
+        .or_else(|| listed.iter().find(enabled))
+        .and_then(|out| out.get("name").and_then(Json::as_str))
+        .map(str::to_owned)
 }
 
 /// Encodes output properties for a live trial, without changing the config.
@@ -579,6 +625,7 @@ fn end_stream() {
     state.raw_windows.clear();
     state.raw_workspaces.clear();
     state.output_widths.clear();
+    state.output_origins.clear();
     state.output_names.clear();
     state.confirmed_output = None;
     state.workspace_bridge.targets.clear();
@@ -1068,6 +1115,7 @@ fn apply_event(state: &mut Umbriel, event: &Json) {
                 .or_else(|| event.get("outputs").and_then(Json::as_array));
             if let Some(outputs) = outputs {
                 state.output_widths.clear();
+                state.output_origins.clear();
                 state.output_names.clear();
                 let mut focused = None;
                 let mut first = None;
@@ -1079,6 +1127,9 @@ fn apply_event(state: &mut Umbriel, event: &Json) {
                         }
                         if out.get("focused").and_then(Json::as_bool) == Some(true) {
                             focused = Some(name.to_string());
+                        }
+                        if let Some(origin) = parse_output_origin(out) {
+                            state.output_origins.insert(name.to_string(), origin);
                         }
                         let width = out
                             .get("logical_size")

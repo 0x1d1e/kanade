@@ -60,11 +60,13 @@ impl Service for Notes {
 struct Jobs {
     read: bool,
     write: Option<Vec<String>>,
+    due_at: Option<Instant>,
 }
 
 static JOBS: Mutex<Jobs> = Mutex::new(Jobs {
     read: false,
     write: None,
+    due_at: None,
 });
 
 static WAKE: Condvar = Condvar::new();
@@ -79,11 +81,35 @@ pub fn run() {
         let (read, write) = {
             let mut jobs = JOBS.locked();
 
-            while !jobs.read && jobs.write.is_none() {
-                jobs = WAKE.wait(jobs).unwrap_or_else(PoisonError::into_inner);
-            }
+            loop {
+                let now = Instant::now();
+                let write_due = jobs.write.is_some() && jobs.due_at.is_none_or(|due| due <= now);
 
-            (std::mem::take(&mut jobs.read), jobs.write.take())
+                if jobs.read || write_due {
+                    let read = std::mem::take(&mut jobs.read);
+                    let write = if write_due {
+                        jobs.due_at = None;
+                        *SAVED.locked() = Some(now);
+                        jobs.write.take()
+                    } else {
+                        None
+                    };
+                    break (read, write);
+                }
+
+                if let Some(due) = jobs.due_at.filter(|_| jobs.write.is_some()) {
+                    let wait = due.saturating_duration_since(now);
+                    if wait.is_zero() {
+                        continue;
+                    }
+                    let (guard, _) = WAKE
+                        .wait_timeout(jobs, wait)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    jobs = guard;
+                } else {
+                    jobs = WAKE.wait(jobs).unwrap_or_else(PoisonError::into_inner);
+                }
+            }
         };
 
         // the lock is let go first, since writing the Service draws the windows that read it
@@ -152,21 +178,22 @@ fn store(lines: &[String]) {
     notes.lines = lines;
 }
 
-// one snapshot of the notes for the worker, written now when `now`, else at most once EVERY
+// one snapshot of the notes for the worker, written now when `now`, else coalesced to EVERY
 fn save(lines: Vec<String>, now: bool) {
-    let mut saved = SAVED.locked();
-    let due = now || saved.is_none_or(|last| last.elapsed() >= EVERY);
+    let last_saved = *SAVED.locked();
+    let current = Instant::now();
+    let target = if now {
+        current
+    } else {
+        last_saved.map_or(current, |last| last + EVERY)
+    };
 
-    if !due {
-        // the next key, or leaving the card, saves what this one typed
-        return;
-    }
-
-    *saved = Some(Instant::now());
-
-    drop(saved);
-
-    JOBS.locked().write = Some(lines);
+    let mut jobs = JOBS.locked();
+    jobs.write = Some(lines);
+    jobs.due_at = Some(match jobs.due_at {
+        Some(prev) if !now => prev.min(target),
+        _ => target,
+    });
 
     WAKE.notify_one();
 }
@@ -426,6 +453,15 @@ impl Cards {
 
         self.edit.take().map(|edit| keep(&edit.lines))
     }
+
+    // only this output's card stops editing, leaving another monitor's active edit and hover alone
+    pub fn close_on(&mut self, monitor: &str) -> Option<Vec<String>> {
+        if self.over.as_deref() == Some(monitor) {
+            self.over = None;
+        }
+
+        self.blur(monitor)
+    }
 }
 
 static CARDS: Mutex<Cards> = Mutex::new(Cards::new());
@@ -516,6 +552,15 @@ pub fn blur(monitor: &str) {
 // the face turned off or the overview opened: whatever was being typed into is kept and let go
 pub fn close() {
     let lines = CARDS.locked().close();
+
+    if let Some(lines) = lines {
+        save(lines, true);
+    }
+}
+
+// only this output's card turned off or hid: keep its typed notes and leave other monitors alone
+pub fn close_on(monitor: &str) {
+    let lines = CARDS.locked().close_on(monitor);
 
     if let Some(lines) = lines {
         save(lines, true);
@@ -786,5 +831,94 @@ mod tests {
 
         assert_eq!(kept.len(), LINES);
         assert!(kept.iter().all(|note| note == "n"));
+    }
+
+    #[test]
+    fn close_on_other_preserves_active_edit_and_hover_on_monitor() {
+        let mut cards = Cards::new();
+
+        cards.hover(MONITOR, true);
+        cards.start(MONITOR, &lines(&["one"]));
+        cards.press(Key::Character('x'));
+
+        assert_eq!(cards.close_on(OTHER), None);
+        assert!(cards.editing(MONITOR));
+        assert!(cards.keyboard(MONITOR));
+        assert_eq!(cards.shown(MONITOR, &[]), lines(&["one", "x"]));
+
+        cards.hover(OTHER, true);
+        assert_eq!(cards.close_on(OTHER), None);
+        assert!(cards.editing(MONITOR));
+        assert!(!cards.keyboard(OTHER));
+
+        assert_eq!(cards.close_on(MONITOR), Some(lines(&["one", "x"])));
+        assert!(!cards.editing(MONITOR));
+        assert!(!cards.keyboard(MONITOR));
+    }
+
+    #[test]
+    fn rapid_saves_flush_trailing_snapshot_after_coalesce_window() {
+        use std::process::Command;
+
+        const CHILD: &str =
+            "desk::notes::tests::rapid_saves_flush_trailing_snapshot_after_coalesce_window_child";
+        let root =
+            std::env::temp_dir().join(format!("kanade-notes-coalesce-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let state = root.join("state");
+        fs::create_dir_all(&state).unwrap();
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CHILD, "--nocapture"])
+            .env("KANADE_TEST_NOTES_COALESCE", root.to_str().unwrap())
+            .env("HOME", &root)
+            .env("XDG_STATE_HOME", &state)
+            .status()
+            .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn rapid_saves_flush_trailing_snapshot_after_coalesce_window_child() {
+        let Some(root) = std::env::var_os("KANADE_TEST_NOTES_COALESCE").map(PathBuf::from) else {
+            return;
+        };
+        let notes_file = root.join("state/kanade/desk-notes");
+        std::thread::spawn(run);
+
+        let wait_until = |expected: &[&str], timeout: Duration| {
+            let expected = lines(expected);
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                if Notes::read().lines == expected
+                    && fs::read(&notes_file).ok().as_deref() == Some(text(&expected).as_slice())
+                {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            false
+        };
+
+        // First non-immediate save at t=0 flushes immediately.
+        save(lines(&["first"]), false);
+        assert!(
+            wait_until(&["first"], Duration::from_millis(500)),
+            "first key did not flush promptly"
+        );
+
+        // Rapid follow-ups within < EVERY coalesce and flush the trailing snapshot automatically.
+        save(lines(&["second"]), false);
+        save(lines(&["third"]), false);
+        assert_eq!(Notes::read().lines, lines(&["first"]));
+
+        assert!(
+            wait_until(&["third"], EVERY + Duration::from_secs(2)),
+            "trailing snapshot did not flush after coalesce timer: service={:?} disk={:?}",
+            Notes::read().lines,
+            fs::read_to_string(&notes_file)
+        );
     }
 }

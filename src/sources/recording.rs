@@ -50,8 +50,9 @@ use rustix::io::Errno;
 
 use self::encode::QUIET;
 use self::machine::{Effect, Event, Machine, Phase, Pick, Segment};
+use self::plan::MUXER;
+pub(crate) use self::plan::Source;
 pub use self::plan::{Audio, ENCODER, JOINER, RECORDER, Rect};
-use self::plan::{MUXER, Source};
 use super::capture::{self, COPY, SHOW, SHOWN, region};
 use super::json::Json;
 use super::niri::{self, Heard};
@@ -760,19 +761,19 @@ fn ask_for(request: Request, later: &Later) -> Result<(), String> {
     Ok(())
 }
 
-// starts recording what `start` says, to a path `later` is answered with
-fn begin(start: Start, later: &Later) -> Result<(), String> {
-    let Start { target, audio } = start;
-    let pick = target == Target::Area(None);
-
-    let source = match target {
-        Target::Screen => Some(Source::Output(
-            focused_output()
-                .map_err(|error| format!("niri: {error}"))?
-                .ok_or("no output to record")?,
-        )),
-        Target::Area(Some(area)) => Some(Source::Area(area.fitted()?)),
+pub(crate) fn resolve_source(target: Target) -> Result<Option<Source>, String> {
+    match target {
+        Target::Screen => Ok(Some(Source::Output(
+            focused_output()?.ok_or("no output to record")?,
+        ))),
+        Target::Area(Some(area)) => Ok(Some(Source::Area(area.fitted()?))),
         Target::Window(id) => {
+            if super::compositor::active() == super::compositor::Compositor::Umbriel {
+                return Err(String::from(
+                    "window recording is not supported under umbriel (no window screen cast API)",
+                ));
+            }
+
             for program in [ENCODER, MUXER] {
                 if !wake::found(program) {
                     return Err(format!("{program} is not installed; it records a window"));
@@ -781,15 +782,23 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
 
             let found = window::find(id)?;
 
-            Some(Source::window(
+            Ok(Some(Source::window(
                 found.id,
                 found.width,
                 found.height,
                 found.app,
-            )?)
+            )?))
         }
-        Target::Area(None) => None,
-    };
+        Target::Area(None) => Ok(None),
+    }
+}
+
+// starts recording what `start` says, to a path `later` is answered with
+fn begin(start: Start, later: &Later) -> Result<(), String> {
+    let Start { target, audio } = start;
+    let pick = target == Target::Area(None);
+
+    let source = resolve_source(target)?;
 
     let dir = capture::home(FOLDER).ok_or("no recording folder: HOME is not set")?;
 
@@ -1088,9 +1097,22 @@ pub fn copied(path: &str) {
     }
 }
 
-// the focused output's name, none while niri focuses none
-fn focused_output() -> io::Result<Option<String>> {
-    Ok(output_name(&niri::ask("\"FocusedOutput\"")?))
+// the focused output's name, none while the active compositor focuses none
+fn focused_output() -> Result<Option<String>, String> {
+    match super::compositor::active() {
+        super::compositor::Compositor::Umbriel => {
+            if let Some(name) = super::umbriel::Umbriel::read().seen.focused_output.clone() {
+                return Ok(Some(name));
+            }
+            let reply = super::umbriel::outputs().map_err(|error| format!("umbriel: {error}"))?;
+            Ok(super::umbriel::focused_output_from_outputs(&reply))
+        }
+        super::compositor::Compositor::Niri => {
+            let reply = niri::ask("\"FocusedOutput\"").map_err(|error| format!("niri: {error}"))?;
+            Ok(output_name(&reply))
+        }
+        super::compositor::Compositor::None => Ok(None),
+    }
 }
 
 fn output_name(reply: &Json) -> Option<String> {

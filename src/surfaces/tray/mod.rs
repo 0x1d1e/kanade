@@ -43,6 +43,10 @@ const NOTCH: f32 = 120.0;
 
 // the items shown: a passive one has nothing to say right now
 fn items() -> Vec<Item> {
+    if !crate::modules::on("tray") {
+        return Vec::new();
+    }
+
     Tray::read()
         .items
         .iter()

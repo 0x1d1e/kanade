@@ -1374,10 +1374,11 @@ impl Editor<'_> {
         validate_original: bool,
         plan: impl FnOnce(&[u8]) -> Result<Plan, String>,
     ) -> Result<String, String> {
-        // lock before checking the file mode, so another writer cannot change it between check and
-        // write. Reject the system config, links and missing files before locking, which needs a path
+        // Check before locking so `/etc`, links and missing files do not create state lockfiles,
+        // then re-check under the lock so target metadata is resolved atomically with the edit.
         self.writable()?;
         let _lock = self.lock()?;
+        let meta = self.writable()?;
         let symlink_meta = fs::symlink_metadata(&self.file)
             .map_err(|error| format!("{}: {error}", self.file.display()))?;
         let is_symlink = symlink_meta.file_type().is_symlink();
@@ -1388,8 +1389,6 @@ impl Editor<'_> {
         } else {
             self.file.clone()
         };
-        let meta =
-            fs::metadata(&target).map_err(|error| format!("{}: {error}", target.display()))?;
         let (snapshot, old) = Snapshot::of(&target)?;
 
         if validate_original {
@@ -1415,9 +1414,36 @@ impl Editor<'_> {
             )
         })?;
 
-        (self.validate)(staged.path()).map_err(|why| {
-            let part = staged
-                .path()
+        let validation_staged = if is_symlink && self.file.parent() != target.parent() {
+            let stage_file = if self
+                .file
+                .parent()
+                .is_some_and(|parent| parent.as_os_str().is_empty())
+            {
+                Path::new(".").join(&self.file)
+            } else {
+                self.file.clone()
+            };
+            match atomic::stage(&stage_file, &new, Mode::Private) {
+                Ok(val_staged) => Some(val_staged),
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot stage the change beside {}: {error}",
+                        self.file.display()
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
+        let validate_path = validation_staged
+            .as_ref()
+            .map_or_else(|| staged.path(), |s| s.path());
+
+        (self.validate)(validate_path).map_err(|why| {
+            let part = validate_path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
@@ -1433,13 +1459,21 @@ impl Editor<'_> {
             )
         })?;
 
+        drop(validation_staged);
+
         let ring = self.ring();
         let before = ring
             .stage(&old, (self.now_ms)())
             .map_err(|error| format!("cannot keep a backup, so nothing was changed: {error}"))?;
 
         // read again at the last moment: a save by an editor since the snapshot is not lost
-        let (now, _) = Snapshot::of(&target)?;
+        let (now, _) = match Snapshot::of(&target) {
+            Ok(now) => now,
+            Err(error) => {
+                ring.discard(&before);
+                return Err(error);
+            }
+        };
 
         if now.hash != snapshot.hash || now.len != snapshot.len || now.modified != snapshot.modified
         {
@@ -1456,6 +1490,41 @@ impl Editor<'_> {
             return Err(String::from(
                 "config symlink changed on disk since it was read; nothing was written, try again",
             ));
+        }
+
+        if !is_symlink {
+            match fs::symlink_metadata(&self.file) {
+                Ok(self_meta) if !self_meta.file_type().is_symlink() => {}
+                Ok(_) => {
+                    ring.discard(&before);
+                    return Err(String::from(
+                        "config changed to a symlink on disk since it was read; nothing was written, try again",
+                    ));
+                }
+                Err(error) => {
+                    ring.discard(&before);
+                    return Err(format!("{}: {error}", self.file.display()));
+                }
+            }
+        }
+
+        match fs::symlink_metadata(&target) {
+            Ok(target_meta)
+                if !target_meta.file_type().is_symlink()
+                    && target_meta.is_file()
+                    && target_meta.nlink() == 1
+                    && !target.starts_with("/etc") => {}
+            Ok(_) => {
+                ring.discard(&before);
+                return Err(format!(
+                    "{}: target changed to an unsafe file on disk; nothing was written, try again",
+                    target.display()
+                ));
+            }
+            Err(error) => {
+                ring.discard(&before);
+                return Err(format!("{}: {error}", target.display()));
+            }
         }
 
         let after = hash(&new);

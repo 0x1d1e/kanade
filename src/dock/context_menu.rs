@@ -384,7 +384,7 @@ fn entries(open: &Open) -> Vec<Entry<'_>> {
         entries.push(Entry::Pin);
     }
 
-    if silence_target(&open.item).is_some() {
+    if crate::modules::on("notifications") && silence_target(&open.item).is_some() {
         entries.push(Entry::Silence);
     }
     entries.extend(open.windows.iter().map(Entry::Window));
@@ -1202,5 +1202,40 @@ mod tests {
         );
 
         close();
+    }
+
+    #[test]
+    fn silence_entry_is_omitted_when_notifications_module_is_off() {
+        use std::process::Command;
+
+        const CHILD: &str = "dock::context_menu::tests::silence_entry_is_omitted_when_notifications_module_is_off_child";
+        for disabled in ["1", "0"] {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CHILD, "--nocapture"])
+                .env("KANADE_TEST_NOTIFICATIONS_OFF", disabled)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
+    #[test]
+    fn silence_entry_is_omitted_when_notifications_module_is_off_child() {
+        let Some(disabled) = std::env::var_os("KANADE_TEST_NOTIFICATIONS_OFF") else {
+            return;
+        };
+        let off = disabled == "1";
+        let mut cfg = crate::config::Config::default();
+        if off {
+            cfg.off = vec!["notifications"];
+        }
+        crate::modules::resolve_fixture(&cfg);
+        crate::config::install(cfg);
+
+        let open = menu_of("eDP-1");
+        let has_silence = entries(&open)
+            .iter()
+            .any(|entry| matches!(entry, Entry::Silence));
+        assert_eq!(has_silence, !off);
     }
 }

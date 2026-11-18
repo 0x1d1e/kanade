@@ -109,7 +109,7 @@ static FADE: Mutex<Option<HashMap<String, Fade>>> = Mutex::new(None);
 
 // whether the settings ask for the indicators, which the Controls Surface follows too
 pub fn on() -> bool {
-    config::get().privacy_indicators
+    crate::modules::on("privacy") && config::get().privacy_indicators
 }
 
 /*
@@ -333,5 +333,35 @@ mod tests {
         dot.follow(false, FADE, FADE, later(3000));
         assert!(!dot.moving(later(4000)));
         assert_eq!(dot.opacity(later(4000)), 0.0);
+    }
+
+    #[test]
+    fn cluster_is_off_when_privacy_module_is_off() {
+        use std::process::Command;
+
+        const CHILD: &str = "cluster::tests::cluster_is_off_when_privacy_module_is_off_child";
+        for disabled in ["1", "0"] {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CHILD, "--nocapture"])
+                .env("KANADE_TEST_PRIVACY_OFF", disabled)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
+    #[test]
+    fn cluster_is_off_when_privacy_module_is_off_child() {
+        let Some(disabled) = std::env::var_os("KANADE_TEST_PRIVACY_OFF") else {
+            return;
+        };
+        let off = disabled == "1";
+        let mut cfg = config::Config::default();
+        if off {
+            cfg.off = vec!["privacy"];
+        }
+        crate::modules::resolve_fixture(&cfg);
+        config::install(cfg);
+        assert_eq!(on(), !off);
     }
 }
